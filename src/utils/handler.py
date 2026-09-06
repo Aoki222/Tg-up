@@ -2,6 +2,8 @@ from pathlib import Path
 import asyncio
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from typing import Callable
+
 
 from ..logger import get_logger
 from ..database.create import insert_single_task
@@ -15,9 +17,10 @@ logger = get_logger(__name__)
 
 class Handler(FileSystemEventHandler):
     
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self, loop: asyncio.AbstractEventLoop, notify_callback: Callable[[],None] | None):
         super().__init__()
         self._loop = loop
+        self._notify_callback = notify_callback
 
     def on_created(self, event):
         if not event.is_directory:            
@@ -77,18 +80,25 @@ class Handler(FileSystemEventHandler):
             file_path,
             file_size / (1024 * 1024),
         )
+        if self._notify_callback:
+            try:
+                self._notify_callback()
+            except Exception as e:
+                logger.exception("唤醒调度器时发生异常: %s", e)
+                
 
 
 class FolderWatcher:
-    def __init__(self, path, recursive=True):
+    def __init__(self, path, recursive=True, notify_callback = None):
         self._path = path # path为监听的文件夹路径
         self._recursive = recursive
         self._handler = None
         self._observer = Observer()
+        self._notify = notify_callback
 
     async def start(self):
-        loop = asyncio.get_event_loop()
-        self._handler = Handler(loop)
+        loop = asyncio.get_running_loop()
+        self._handler = Handler(loop, notify_callback=self._notify)  # 这里可以传入一个回调函数，用于通知调度器
         self._observer.schedule(self._handler, self._path, recursive=self._recursive)
         self._observer.start()
 

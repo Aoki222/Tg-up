@@ -1,6 +1,7 @@
 import asyncio
 import os
 from telethon.errors import FloodWaitError
+from typing import Callable
 
 from ..database.connection import get_db
 from ..logger import get_logger
@@ -8,10 +9,10 @@ from ..logger import get_logger
 logger = get_logger(__name__)
 
 class BotWorker:
-    def __init__(self, name, client, scheduler, max_concurrent=3):
+    def __init__(self, name, client, notify_callback: Callable[[], None] | None = None, max_concurrent=3):
         self.name = name
         self.client = client                # Telethon Client
-        self.scheduler = scheduler
+        self.notify_callback = notify_callback
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.queue = asyncio.Queue()
         self._running = False
@@ -81,7 +82,11 @@ class BotWorker:
 
             finally:
                 logger.info("[%s] 任务处理结束：任务ID=%s", self.name, task_id)
-                self.scheduler.notify()
+                if self.notify_callback:
+                    try:
+                        self.notify_callback()
+                    except Exception as e:
+                        logger.exception("[%s] 唤醒调度器时发生异常: %s", self.name, e)
 
     async def _handle_failure(self, task, error_msg):
         new_retry = task.get('retry_count', 0) + 1

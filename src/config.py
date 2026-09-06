@@ -6,6 +6,8 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.resolve()
 PROJECT_DIR = BASE_DIR.parent
 SESSION_DIR = PROJECT_DIR / "sessions"
+DATABASE_PATH = PROJECT_DIR / "data" / "app.db"
+
 
 from dotenv import load_dotenv
 

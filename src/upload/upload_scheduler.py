@@ -1,7 +1,9 @@
 import asyncio
 
+from ..config import OBSERVER_PATH
 from ..logger import get_logger
 from ..database.connection import get_db
+from ..utils.handler import FolderWatcher
 
 
 logger = get_logger(__name__)
@@ -10,8 +12,11 @@ logger = get_logger(__name__)
 class UploadScheduler:
     def __init__(self, workers: dict, max_per_bot=3):
         self.workers = workers              # {name: BotWorker}
+        self.watcher = FolderWatcher(OBSERVER_PATH, notify_callback=self.notify) # 监控文件夹变化，将新文件信息放入队列
+        
         self.max_per_bot = max_per_bot
         self.wakeup = asyncio.Event()
+        
         self._running = False
 
     def notify(self):
@@ -21,6 +26,8 @@ class UploadScheduler:
 
     async def start(self):
         self._running = True
+        await self.watcher.start()  # 启动文件夹监听器
+        logger.info("文件夹监听器已启动：监听目录=%s", self.watcher._path)
         logger.info("上传调度器已启动：Worker数量=%s，每个Worker最大任务数=%s", len(self.workers), self.max_per_bot)
         self.notify()                       # 启动时立刻跑一次
         asyncio.create_task(self._timeout_checker())
