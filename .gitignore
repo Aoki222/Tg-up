@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[oc]
+*.pyc
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+
+# Virtual environments
+.venv
+
+# Env & secrets - NEVER commit real credentials
+.env
+sessions/*.session
+sessions/*.session-journal
+
+# Runtime data - large / binary / local only
+data/
+download/
+logs/
+src/logs/
+page/
+*.db
+*.log
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
