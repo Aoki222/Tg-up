@@ -1,7 +1,5 @@
 import asyncio
-
-from src.upload.core import Uploader
-
+from src.upload.uploader_application import UploaderApplication
 
 if __name__ == "__main__":
-	asyncio.run(Uploader().main())
+    asyncio.run(UploaderApplication().run()) 
