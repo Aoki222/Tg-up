@@ -22,8 +22,12 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     chat_id         INTEGER NOT NULL,
     caption         TEXT    DEFAULT '',
     
+    single_page     INTEGER NOT NULL DEFAULT 0,
+    content_page     INTEGER NOT NULL DEFAULT 0,
+    page_path        TEXT    DEFAULT NULL,
+    
     status          TEXT    NOT NULL DEFAULT 'pending',
-    -- pending / assigned / uploading / success / failed / retrying
+    -- pending / assigned / uploading / success / failed / retrying / preparing
     
     assigned_bot    TEXT,
     retry_count     INTEGER NOT NULL DEFAULT 0,
@@ -36,7 +40,7 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     finished_at     DATETIME,
     deleted         INTEGER NOT NULL DEFAULT 0,
     
-    CHECK(status IN ('pending','assigned','uploading','success','failed','retrying'))
+    CHECK(status IN ('pending','assigned','uploading','success','failed','retrying', 'preparing'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_status          ON upload_tasks(status);

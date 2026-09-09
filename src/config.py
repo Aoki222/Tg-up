@@ -56,6 +56,11 @@ OBSERVER_PATH = get_path_env(
     str(PROJECT_DIR / "observer"),
 )
 
+PAGE_DIR = get_path_env(
+    "PAGE_DIR",
+    "page",
+)
+
 UPLOAD_CONCURRENCY = int(
     os.getenv(
         "UPLOAD_CONCURRENCY",
@@ -81,3 +86,10 @@ SESSION_FILES = {
     path.stem: path.with_suffix("")
     for path in SESSION_DIR.glob("*.session")
 }
+
+SINGLE_PAGE_ENABLED = os.getenv("SINGLE_PAGE_ENABLED", "false").lower() == "true"
+CONTENT_PAGE_ENABLED = os.getenv("CONTENT_PAGE_ENABLED", "false").lower() == "true"
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v"}
+
+if SINGLE_PAGE_ENABLED and CONTENT_PAGE_ENABLED:
+    raise RuntimeError("截图模式互斥：SINGLE_PAGE_ENABLED 与 CONTENT_PAGE_ENABLED 不可同时为 true")

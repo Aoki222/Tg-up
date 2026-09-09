@@ -26,6 +26,7 @@ class UploadWorker:
         logger.info("[%s] 任务已加入队列: %s", self.worker_name, task.get("file_name"))
 
     async def serve_forever(self) -> None:
+        # 分发循环：只取货建后台任务，不等上传完成，靠信号量卡并发
         while self.is_running:
             try:
                 task = await self.task_queue.get()
@@ -76,31 +77,48 @@ class UploadWorker:
                 logger.warning("[%s] %s 个上传任务未做完已取消", self.worker_name, len(pending))
 
     async def process_single_task(self, task: dict) -> None:
+        # 开工重读最新行：调度放行时图已齐，拿到回填后的 page_path
+        task = await self.task_repository.get_task_by_id(task["id"]) or task
         task_id = task["id"]
         file_path = task["file_path"]
+        page_path = task.get("page_path")  # 有则视频+图齐发，无则只发视频；失败回 pending 不重截
+        # 并发上限 + 先落 uploading，崩了也能被超时回收捡回
+        flood_wait_seconds = 0
         async with self.concurrency_limiter:
             await self.task_repository.mark_task_uploading(task_id)
             try:
-                sent_message = await self.telegram_client.send_file(
-                    task["chat_id"], file_path, caption=task.get("caption") or ""
+                files = [file_path, page_path] if page_path and os.path.exists(page_path) else [file_path]
+
+                sent_messages = await self.telegram_client.send_file(
+                    entity=task["chat_id"],
+                    file=files if len(files) > 1 else files[0],
+                    # album = len(files) > 1,
+                    caption=task.get("caption") or ""
                 )
-                await self.task_repository.mark_task_succeeded(task_id, sent_message.id)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+                # 相册回列表，单发回单条：统一取视频（首位）消息 ID
+                video_message = sent_messages[0] if isinstance(sent_messages, list) else sent_messages
+                await self.task_repository.mark_task_succeeded(task_id, video_message.id)
+                for path in files:
+                    if os.path.exists(path):
+                        os.remove(path)
                 logger.info("[%s] 上传成功: %s", self.worker_name, file_path)
             except FloodWaitError as limit_error:
                 await self.handle_upload_failure(task, f"FloodWait {limit_error.seconds}s")
-                await asyncio.sleep(limit_error.seconds)
+                flood_wait_seconds = limit_error.seconds
             except Exception as error:
                 logger.exception("[%s] 上传失败: %s", self.worker_name, file_path)
                 await self.handle_upload_failure(task, str(error))
             finally:
+                # 必做：计数归还 + 唤醒调度补位，异常也不漏
                 self.task_queue.task_done()
                 if self.on_task_finished is not None:
                     try:
                         self.on_task_finished()
                     except Exception:
                         logger.exception("[%s] 唤醒调度器失败", self.worker_name)
+        # 限流等待放信号量外，避免占着并发槽空睡
+        if flood_wait_seconds:
+            await asyncio.sleep(flood_wait_seconds)
 
     async def handle_upload_failure(self, task: dict, error_message: str) -> None:
         next_retry = task.get("retry_count", 0) + 1

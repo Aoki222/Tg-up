@@ -16,12 +16,14 @@ class UploadScheduler:
         self.is_running = True
         self.stop_event = asyncio.Event()
     def request_reschedule(self) -> None:
+        # 快路径唤醒：多次 set 可合并，丢唤醒由 run_forever 的轮询兜底
         self.wakeup_event.set()
 
     def register_worker(self, worker) -> None:
         self.worker_map[worker.worker_name] = worker
 
     async def run_forever(self) -> None:
+        # 事件 + 轮询双保险：有唤醒立刻跑，丢唤醒最多等 poll_interval
         self.request_reschedule()
         self.timeout_task = asyncio.create_task(self.check_timeout_loop())
         try:
@@ -44,6 +46,7 @@ class UploadScheduler:
                 timeout_task.cancel()
                  
     async def stop(self) -> None:
+        # 幂等停止：踢醒等待中的 run_forever，清超时巡检任务
         self.is_running = False
         self.request_reschedule()
         timeout_task = getattr(self, "timeout_task", None)
@@ -55,6 +58,7 @@ class UploadScheduler:
                 pass
 
     async def schedule_once(self) -> None:
+        # 1. 按负载算各 worker 空槽
         available_workers = []
         for worker_name in self.worker_map:
             active = await self.task_repository.count_active_tasks(worker_name)
@@ -63,7 +67,9 @@ class UploadScheduler:
         if not available_workers:
             return
         for worker_name, free_slots in available_workers:
+            # 2. 取小文件优先的待分配任务
             for task in await self.task_repository.fetch_pending_tasks(free_slots):
+                # 3. 原子认领成功才入队列，抢不到说明被别轮抢走
                 if await self.task_repository.claim_task(task["id"], worker_name):
                     await self.worker_map[worker_name].enqueue_task(dict(task))
 

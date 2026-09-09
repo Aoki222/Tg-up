@@ -3,6 +3,8 @@ from pathlib import Path
 from ..logger import get_logger
 from .task_repository import TaskRepository
 from .rescheduler import Rescheduler
+from .ingest_policy import IngestPolicy
+from ..utils.video_preview import FirstFramePreview, GridPreview 
 
 logger = get_logger(__name__)
 
@@ -31,18 +33,36 @@ class FileIngestor:
         self.rescheduler = rescheduler
 
     async def handle_new_file(self, file_path: Path) -> None:
+        # 1. 等写稳，不存在直接忽略
         file_size = await wait_until_file_stable(file_path)
         if file_size is None:
             logger.warning("文件不存在: %s", file_path)
             return
-        await self.task_repository.add_task(
-            file_path=str(file_path),
-            file_name=file_path.name,
-            file_size=file_size,
-            folder_name=file_path.parent.name,
+        # 2. 决议：判需哪种图、发往哪个 topic
+        decision = IngestPolicy().decide(file_path)
+        # 3. 入库：快照落 single/content，有图则 preparing（调度器看不见）
+        task_id = await self.task_repository.add_task(
+            file_path=str(file_path), file_name=file_path.name, file_size=file_size,
+            folder_name=file_path.parent.name, single_page=int(decision.need_single),
+            content_page=int(decision.need_content), chat_id=decision.chat_id,
+            status="pending" if not (decision.need_single or decision.need_content) else "preparing",
         )
-        logger.info("已加入数据库: %s, 大小: %.3f MB", file_path, file_size / (1024 * 1024))
-        try:
+        logger.info("已入库 task=%s: %s", task_id, file_path)
+        # 4. 无图任务直接放行
+        if not decision.need_single and not decision.need_content:
             self.rescheduler.request_reschedule()
-        except Exception:
-            logger.exception("唤醒调度器失败: %s", file_path)
+            return
+        # 5. 有图暂不 notify；to_thread 跑阻塞的 ffmpeg+PIL，不卡主循环
+        single_path = content_path = None
+        try:
+            if decision.need_single:
+                single_path = await FirstFramePreview().extract_first_frame_async(file_path, None)
+            if decision.need_content:
+                content_path = await GridPreview().build_content_page_async(file_path, None)
+            # 6. 成功：主图优先网格，回填并转 pending 放行
+            await self.task_repository.update_preview(task_id, str(content_path or single_path), True)
+        except Exception as error:
+            # 7. 失败/超时：保留快照，page_path 置空/半值，转 pending 只发视频
+            await self.task_repository.update_preview(task_id, None, False, str(error))
+            logger.exception("预览生成失败 task=%s", task_id)
+        self.rescheduler.request_reschedule()

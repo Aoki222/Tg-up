@@ -13,6 +13,7 @@ class WatchdogEventAdapter(FileSystemEventHandler):
         self.handle_new_file = handle_new_file
 
     def on_created(self, event) -> None:
+        # watchdog 线程回调：只转发，不做业务，业务跳回主循环执行
         if not event.is_directory:
             asyncio.run_coroutine_threadsafe(
                 self.handle_new_file(Path(event.src_path)),
@@ -30,16 +31,21 @@ class FolderWatcher:
         self.observer = Observer()
 
     async def run_forever(self) -> None:
+        # 1. 现取主循环，保证转发目标与调度器同 loop
         event_loop = asyncio.get_running_loop()
+        # 2. 启动系统级目录监听
         self.observer.schedule(
             WatchdogEventAdapter(event_loop, self.handle_new_file),
             str(self.watch_path),
             recursive=True,
         )
         self.observer.start()
+        # 3. 常驻等待，stop() 置 stop_event 后退出
         await self.stop_event.wait()
 
     async def stop(self) -> None:
+        # 幂等停止：先放行等待，再停线程，避免二次 join 抛错
         self.stop_event.set()
-        self.observer.stop()
-        await asyncio.to_thread(self.observer.join)
+        if self.observer.is_alive():
+            self.observer.stop()
+            await asyncio.to_thread(self.observer.join)

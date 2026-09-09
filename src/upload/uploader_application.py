@@ -42,6 +42,7 @@ class UploaderApplication:
                 max_concurrent_uploads=UPLOAD_CONCURRENCY,
             ))
         try:
+            # 三常驻并行：目录监听 + 各 worker 消费 + 调度分发，同属一个 TaskGroup 同生共死
             async with asyncio.TaskGroup() as task_group:
                 task_group.create_task(watcher.run_forever())
                 for worker in scheduler.worker_map.values():
@@ -58,6 +59,7 @@ class UploaderApplication:
             logger.info("已优雅退出")
 
     async def shutdown_gracefully(self, watcher, scheduler, clients: dict) -> None:
+        # 关停顺序：断文件源 -> 断分发 -> 排空 worker -> 断 Telegram 连接
         pending = sum(worker.task_queue.qsize() + len(worker.background_tasks)
                       for worker in scheduler.worker_map.values())
         logger.info("正在优雅退出，等待在途任务数=%s", pending)
