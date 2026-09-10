@@ -1,0 +1,26 @@
+# 上传业务配置（可热更新：改完保存即可，不必重启进程）
+# 复制为项目根目录的 upload.toml 后按需修改。
+# 进程身份（API_ID / API_HASH / session）仍在 .env，改那些需要重启。
+
+# 目标群。若省略或填 0，会回退读环境变量 TARGET_CHAT_ID
+chat_id = 0
+
+observer_path = "download"
+page_dir = "page"
+archive_dir = "uploaded"
+
+# off | first_frame | grid
+preview = "first_frame"
+
+topic_creation_enabled = true
+
+# keep | delete | move_to_archive
+after_success = "keep"
+
+concurrency = 3
+max_retries = 3
+upload_timeout_seconds = 1200
+assigned_timeout_seconds = 600
+stable_timeout_seconds = 1800
+
+video_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "m4v"]

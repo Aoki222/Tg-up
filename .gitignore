@@ -13,12 +13,14 @@ wheels/
 
 # Env & secrets - NEVER commit real credentials
 .env
+upload.toml
 sessions/*.session
 sessions/*.session-journal
 
 # Runtime data - large / binary / local only
 data/
 download/
+uploaded/
 logs/
 src/logs/
 page/

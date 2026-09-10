@@ -1,29 +1,37 @@
 import asyncio
+
+from ..domain.settings_hub import SettingsHub
+from ..domain.task import task_from_row
 from ..logger import get_logger
 from .task_repository import TaskRepository
 
 logger = get_logger(__name__)
 
-class UploadScheduler:
-    """职责：DB pending 任务 -> 原子抢占 -> 分给有空槽的 Worker。不自建 Watcher。"""
 
-    def __init__(self, task_repository: TaskRepository, max_tasks_per_worker: int = 3, poll_interval_seconds: int = 5):
+class UploadScheduler:
+    """DB pending -> 原子抢占 -> 有空槽且未在 FloodWait 的 Worker。"""
+
+    def __init__(
+        self,
+        task_repository: TaskRepository,
+        settings_hub: SettingsHub,
+        poll_interval_seconds: int = 5,
+    ):
         self.wakeup_event = asyncio.Event()
         self.task_repository = task_repository
-        self.max_tasks_per_worker = max_tasks_per_worker
+        self.settings_hub = settings_hub
         self.poll_interval_seconds = poll_interval_seconds
         self.worker_map: dict = {}
         self.is_running = True
-        self.stop_event = asyncio.Event()
+        self.timeout_task = None
+
     def request_reschedule(self) -> None:
-        # 快路径唤醒：多次 set 可合并，丢唤醒由 run_forever 的轮询兜底
         self.wakeup_event.set()
 
     def register_worker(self, worker) -> None:
         self.worker_map[worker.worker_name] = worker
 
     async def run_forever(self) -> None:
-        # 事件 + 轮询双保险：有唤醒立刻跑，丢唤醒最多等 poll_interval
         self.request_reschedule()
         self.timeout_task = asyncio.create_task(self.check_timeout_loop())
         try:
@@ -41,15 +49,14 @@ class UploadScheduler:
         except asyncio.CancelledError:
             pass
         finally:
-            timeout_task = getattr(self, "timeout_task", None)
+            timeout_task = self.timeout_task
             if timeout_task is not None:
                 timeout_task.cancel()
-                 
+
     async def stop(self) -> None:
-        # 幂等停止：踢醒等待中的 run_forever，清超时巡检任务
         self.is_running = False
         self.request_reschedule()
-        timeout_task = getattr(self, "timeout_task", None)
+        timeout_task = self.timeout_task
         if timeout_task is not None:
             timeout_task.cancel()
             try:
@@ -58,26 +65,31 @@ class UploadScheduler:
                 pass
 
     async def schedule_once(self) -> None:
-        # 1. 按负载算各 worker 空槽
+        settings = self.settings_hub.get()
         available_workers = []
-        for worker_name in self.worker_map:
+        for worker_name, worker in self.worker_map.items():
+            if not worker.is_accepting():
+                continue
             active = await self.task_repository.count_active_tasks(worker_name)
-            if active < self.max_tasks_per_worker:
-                available_workers.append((worker_name, self.max_tasks_per_worker - active))
+            if active < settings.concurrency:
+                available_workers.append((worker_name, settings.concurrency - active))
         if not available_workers:
             return
         for worker_name, free_slots in available_workers:
-            # 2. 取小文件优先的待分配任务
-            for task in await self.task_repository.fetch_pending_tasks(free_slots):
-                # 3. 原子认领成功才入队列，抢不到说明被别轮抢走
-                if await self.task_repository.claim_task(task["id"], worker_name):
-                    await self.worker_map[worker_name].enqueue_task(dict(task))
+            for row in await self.task_repository.fetch_pending_tasks(free_slots):
+                if await self.task_repository.claim_task(row["id"], worker_name):
+                    policy = self.settings_hub.policy_for_row(row)
+                    await self.worker_map[worker_name].enqueue_task(task_from_row(row, policy))
 
     async def check_timeout_loop(self) -> None:
         try:
             while self.is_running:
                 await asyncio.sleep(60)
-                recovered = await self.task_repository.recover_timed_out_tasks()
+                settings = self.settings_hub.get()
+                recovered = await self.task_repository.recover_timed_out_tasks(
+                    uploading_timeout_seconds=settings.upload_timeout_seconds,
+                    assigned_timeout_seconds=settings.assigned_timeout_seconds,
+                )
                 if recovered:
                     logger.warning("已回收超时任务: %s", recovered)
                 self.request_reschedule()

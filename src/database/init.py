@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     folder_name     TEXT,
     file_size       INTEGER NOT NULL DEFAULT 0,
     chat_id         INTEGER NOT NULL,
+    topic_id        INTEGER,
     caption         TEXT    DEFAULT '',
     
     single_page     INTEGER NOT NULL DEFAULT 0,
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     page_path        TEXT    DEFAULT NULL,
     
     status          TEXT    NOT NULL DEFAULT 'pending',
-    -- pending / assigned / uploading / success / failed / retrying / preparing
+    -- preparing / pending / assigned / uploading / success / failed / retrying
     
     assigned_bot    TEXT,
     retry_count     INTEGER NOT NULL DEFAULT 0,
@@ -40,13 +41,26 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     finished_at     DATETIME,
     deleted         INTEGER NOT NULL DEFAULT 0,
     
-    CHECK(status IN ('pending','assigned','uploading','success','failed','retrying', 'preparing'))
+    CHECK(status IN ('preparing','pending','assigned','uploading','success','failed','retrying'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_status          ON upload_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_status_size     ON upload_tasks(status, file_size);
 CREATE INDEX IF NOT EXISTS idx_assigned_bot    ON upload_tasks(assigned_bot);
 CREATE INDEX IF NOT EXISTS idx_started_at      ON upload_tasks(started_at);
+
+CREATE TABLE IF NOT EXISTS chat_topic (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL,
+    topic_id    INTEGER NOT NULL,
+    topic_path  TEXT    NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, topic_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_topic_chat_path
+    ON chat_topic(chat_id, topic_path);
 """
 
 

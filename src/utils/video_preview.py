@@ -15,10 +15,14 @@ from ..logger import get_logger
 logger = get_logger(__name__)
 
 
-def resolve_page_output(video_path: Path, suffix: str, output_path: Path | None = None) -> Path:
-    """输出路径统一落 D:\\ALL\\uploader\\page：不传即按视频名自动生成，传了也确保父目录存在。"""
+def resolve_page_output(
+    video_path: Path,
+    suffix: str,
+    output_path: Path | None = None,
+    page_dir: Path | None = None,
+) -> Path:
     if output_path is None:
-        output_path = PAGE_DIR / f"{Path(video_path).stem}{suffix}"
+        output_path = (page_dir or PAGE_DIR) / f"{Path(video_path).stem}{suffix}"
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     return output_path
@@ -37,13 +41,14 @@ def run_ffmpeg_command(arguments: list[str], ffmpeg_path: str = "ffmpeg") -> Non
 class FirstFramePreview:
     """职责：截视频第 1 秒画面存为单图，返回落盘路径（page_path 待写库）。"""
 
-    def __init__(self, ffmpeg_path: str = "ffmpeg"):
+    def __init__(self, ffmpeg_path: str = "ffmpeg", page_dir: Path | None = None):
         self.ffmpeg_path = ffmpeg_path
+        self.page_dir = page_dir
 
     def extract_first_frame(self, video_path: Path, output_path: Path | None = None) -> Path:
         # 1. 校验输入，输出默认落 page 目录
         video_path = Path(video_path)
-        output_path = resolve_page_output(video_path, "_single.jpg", output_path)
+        output_path = resolve_page_output(video_path, "_single.jpg", output_path, self.page_dir)
         if not video_path.is_file():
             raise FileNotFoundError(f"视频不存在：{video_path}")
         # 2. 取第 1 秒单帧（-ss 在 -i 前为快速定位）
@@ -71,11 +76,12 @@ class GridPreview:
     CELL_HEIGHT = 180
 
     def __init__(self, ffmpeg_path: str = "ffmpeg", interval_seconds: int = 60,
-                 ffprobe_path: str = "ffprobe", jpeg_quality: int = 70):
+                 ffprobe_path: str = "ffprobe", jpeg_quality: int = 70, page_dir: Path | None = None):
         self.ffmpeg_path = ffmpeg_path
         self.interval_seconds = interval_seconds
         self.ffprobe_path = ffprobe_path
         self.jpeg_quality = jpeg_quality
+        self.page_dir = page_dir
 
     @property
     def frame_count(self) -> int:
@@ -161,7 +167,7 @@ class GridPreview:
     def build_content_page(self, video_path: Path, output_path: Path | None = None) -> Path:
         # 1. 抽帧到临时目录，避免污染输出目录；2. 拼网格图默认落 page 目录
         video_path = Path(video_path)
-        output_path = resolve_page_output(video_path, "_content.jpg", output_path)
+        output_path = resolve_page_output(video_path, "_content.jpg", output_path, self.page_dir)
         with tempfile.TemporaryDirectory(prefix="content_frames_") as temp_directory:
             frame_paths = self.extract_interval_frames(video_path, Path(temp_directory))
             # 2. 拼长图落盘

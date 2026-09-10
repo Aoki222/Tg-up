@@ -1,14 +1,24 @@
 import uuid
+
 from ..database.connection import get_db
-from ..config import TARGET_CHAT_ID
+
 
 class TaskRepository:
-    """所有 upload_tasks 表操作收口在此。"""
+    """upload_tasks 持久化。返回行字典，领域 Task 由调用方装配。"""
 
-    async def add_task(self, file_path: str, file_name: str, file_size: int, folder_name: str, 
-                       single_page: bool = False, content_page: bool = False, chat_id: int = TARGET_CHAT_ID,
-                       status: str = "pending", max_retries: int = 3) -> int:
-        # 快照列建任务：截图需求一次写死，后续只读；有图则 preparing 暂不可见
+    async def add_task(
+        self,
+        file_path: str,
+        file_name: str,
+        file_size: int,
+        folder_name: str,
+        chat_id: int,
+        single_page: bool = False,
+        content_page: bool = False,
+        status: str = "pending",
+        max_retries: int = 3,
+        topic_id: int | None = None,
+    ) -> int:
         async with get_db() as database:
             cursor = await database.execute(
                 """INSERT INTO upload_tasks
@@ -19,6 +29,7 @@ class TaskRepository:
                    folder_name,
                    file_size,
                    chat_id,
+                   topic_id,
                    caption,
                    single_page,
                    content_page,
@@ -26,12 +37,59 @@ class TaskRepository:
                    status,
                    max_retries
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
-                (str(uuid.uuid4()), file_path, file_name, folder_name, file_size, chat_id, "",
-                 int(single_page), int(content_page), status, max_retries),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                (
+                    str(uuid.uuid4()),
+                    file_path,
+                    file_name,
+                    folder_name,
+                    file_size,
+                    chat_id,
+                    topic_id,
+                    "",
+                    int(single_page),
+                    int(content_page),
+                    status,
+                    max_retries,
+                ),
             )
             await database.commit()
-            return cursor.lastrowid
+            task_id = cursor.lastrowid
+            if task_id is None:
+                raise RuntimeError("入库失败：未返回任务 id")
+            return int(task_id)
+
+    async def find_active_by_file_path(self, file_path: str) -> int | None:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT id FROM upload_tasks
+                   WHERE file_path = ? AND status NOT IN ('success', 'failed')
+                   LIMIT 1""",
+                (file_path,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0]) if row else None
+
+    async def get_chat_topic(self, chat_id: int, topic_path: str) -> int | None:
+        async with get_db() as database:
+            async with database.execute(
+                "SELECT topic_id FROM chat_topic WHERE chat_id = ? AND topic_path = ?",
+                (chat_id, topic_path),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0]) if row else None
+
+    async def save_chat_topic(self, chat_id: int, topic_id: int, topic_path: str) -> None:
+        async with get_db() as database:
+            await database.execute(
+                """INSERT INTO chat_topic (chat_id, topic_id, topic_path)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chat_id, topic_path) DO UPDATE SET
+                       topic_id = excluded.topic_id,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (chat_id, topic_id, topic_path),
+            )
+            await database.commit()
 
     async def count_active_tasks(self, worker_name: str) -> int:
         async with get_db() as database:
@@ -53,7 +111,6 @@ class TaskRepository:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def claim_task(self, task_id: int, worker_name: str) -> bool:
-        # 原子抢占：只有 pending/retrying 才能被认领，防多调度器重复分发
         async with get_db() as database:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'assigned', assigned_bot = ?, assigned_at = CURRENT_TIMESTAMP
@@ -66,7 +123,8 @@ class TaskRepository:
     async def mark_task_uploading(self, task_id: int) -> None:
         async with get_db() as database:
             await database.execute(
-                "UPDATE upload_tasks SET status = 'uploading', started_at = CURRENT_TIMESTAMP WHERE id = ?",
+                """UPDATE upload_tasks SET status = 'uploading', started_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'assigned'""",
                 (task_id,),
             )
             await database.commit()
@@ -79,9 +137,8 @@ class TaskRepository:
                 (telegram_message_id, task_id),
             )
             await database.commit()
- 
+
     async def mark_task_failed(self, task_id: int, retry_count: int, max_retries: int, error_message: str) -> None:
-        # 失败回 pending 供下轮重抢，超重试次数才落 failed；清掉归属避免脏占用
         new_status = "failed" if retry_count >= max_retries else "pending"
         async with get_db() as database:
             await database.execute(
@@ -91,20 +148,50 @@ class TaskRepository:
             )
             await database.commit()
 
-    async def recover_timed_out_tasks(self) -> int:
-        # 兜底回收：uploading 超 2 小时视为掉线/被 kill，回 pending 下次重传
+    async def release_task(self, task_id: int, error_message: str) -> None:
+        """不增加重试次数，回到 pending。FloodWait 走这条。"""
+        async with get_db() as database:
+            await database.execute(
+                """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
+                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL WHERE id = ?""",
+                (error_message[:500], task_id),
+            )
+            await database.commit()
+
+    async def reconcile_stale_tasks(self) -> int:
         async with get_db() as database:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
-                   assigned_at = NULL, started_at = NULL, error_msg = 'timeout recovered'
-                   WHERE status = 'uploading' AND started_at < datetime('now', '-2 hours')"""
+                   assigned_at = NULL, started_at = NULL, error_msg = 'recovered on startup'
+                   WHERE status IN ('assigned', 'uploading', 'preparing')"""
             )
             await database.commit()
             return cursor.rowcount
 
-    async def update_preview(self, task_id: int, page_path: str | None,
-                             success: bool, error_message: str = "") -> None:
-        # 唯一放行点：成功写主图转 pending，失败保留快照置空转 pending 只发视频
+    async def recover_timed_out_tasks(
+        self,
+        uploading_timeout_seconds: int = 1200,
+        assigned_timeout_seconds: int = 600,
+    ) -> int:
+        async with get_db() as database:
+            uploading = await database.execute(
+                """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
+                   assigned_at = NULL, started_at = NULL, error_msg = 'timeout recovered'
+                   WHERE status = 'uploading'
+                     AND started_at < datetime('now', ?)""",
+                (f"-{uploading_timeout_seconds} seconds",),
+            )
+            assigned = await database.execute(
+                """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
+                   assigned_at = NULL, started_at = NULL, error_msg = 'assigned timeout recovered'
+                   WHERE status = 'assigned'
+                     AND assigned_at < datetime('now', ?)""",
+                (f"-{assigned_timeout_seconds} seconds",),
+            )
+            await database.commit()
+            return uploading.rowcount + assigned.rowcount
+
+    async def update_preview(self, task_id: int, page_path: str | None, success: bool, error_message: str = "") -> None:
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET page_path = ?, status = 'pending',
@@ -114,7 +201,6 @@ class TaskRepository:
             await database.commit()
 
     async def get_task_by_id(self, task_id: int) -> dict | None:
-        # Worker 开工前重读最新行，拿到回填后的 page_path
         async with get_db() as database:
             async with database.execute(
                 "SELECT * FROM upload_tasks WHERE id = ?", (task_id,)
