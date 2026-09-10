@@ -6,7 +6,6 @@ from pathlib import Path
 
 from ..logger import get_logger
 from .connection import get_db
-from .migrations import migrate_upload_tasks
 
 logger = get_logger(__name__)
 
