@@ -1,7 +1,7 @@
+import os
 import uuid
 
 from .connection import get_db
-from ..config import TARGET_CHAT_ID
 
 async def insert_single_task(
     file_path: str,
@@ -32,7 +32,7 @@ async def insert_single_task(
                 file_name,
                 folder_name,
                 file_size,
-                TARGET_CHAT_ID,
+                int(os.getenv("TARGET_CHAT_ID", "0")),
                 "",
                 max_retries,
             ),

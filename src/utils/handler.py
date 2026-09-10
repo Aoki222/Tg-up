@@ -9,7 +9,7 @@ from ..logger import get_logger
 from ..database.create import insert_single_task
 
 # __main__
-from ..config import OBSERVER_PATH
+from ..config import PROJECT_DIR
 from ..database.init import init_db
 
 logger = get_logger(__name__)
@@ -110,7 +110,7 @@ class FolderWatcher:
 if __name__ == "__main__":
     async def main():
         await init_db()
-        watcher = FolderWatcher(OBSERVER_PATH)
+        watcher = FolderWatcher(PROJECT_DIR / "download")
         await watcher.start()
         try:
             # 让事件循环一直挂起，直到收到 Ctrl+C
