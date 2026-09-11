@@ -1,3 +1,5 @@
+"""可热更新的上传策略。进程身份（API / 数据库路径）不放这里。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

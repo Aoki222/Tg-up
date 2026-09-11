@@ -1,3 +1,5 @@
+"""启动扫盘：watchdog 看不到进程起来之前就已经在目录里的文件。"""
+
 from __future__ import annotations
 
 from pathlib import Path

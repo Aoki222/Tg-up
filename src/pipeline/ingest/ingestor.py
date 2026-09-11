@@ -1,15 +1,25 @@
+"""发现层之后的入库。
+
+顺序：扩展名过滤 → 路径去重 → 等文件写完 → 再建话题 → 入库。
+需要封面时先写成 preparing（调度器看不见），截图完成或失败后再转 pending。
+封面失败不丢视频：page_path 置空，仍然上传。
+
+当前配置会在入库时拷进 Task.policy。之后改 upload.toml 不影响这条已入库任务。
+本阶段串行消费队列，长视频截图会堵住后面的文件。
+"""
+
 import asyncio
 import time
 from pathlib import Path
 
-from ..domain.settings_hub import SettingsHub
-from ..domain.task import TaskStatus
-from ..logger import get_logger
-from ..utils.topic_creactor import TopicCreator
-from ..utils.video_preview import FirstFramePreview, GridPreview
-from .ingest_policy import IngestPolicy
-from .rescheduler import Rescheduler
-from .task_repository import TaskRepository
+from ...adapters.task_store import TaskRepository
+from ...domain.settings_hub import SettingsHub
+from ...domain.task import TaskStatus
+from ...logger import get_logger
+from ...ports.rescheduler import Rescheduler
+from ...utils.topic_creactor import TopicCreator
+from ...utils.video_preview import FirstFramePreview, GridPreview
+from .policy import IngestPolicy
 
 logger = get_logger(__name__)
 
@@ -20,7 +30,10 @@ async def wait_until_file_stable(
     stable_rounds: int = 3,
     timeout_seconds: float = 1800,
 ) -> int | None:
-    """文件大小连续 stable_rounds 次不变才算写完；超时或不存在返回 None。"""
+    """等拷贝/下载结束：连续若干次看到的文件大小不变才返回。
+
+    文件中途消失或总等待超时返回 None，本轮放弃，等下次扫盘或新事件再试。
+    """
     last_size = -1
     stable_hits = 0
     deadline = time.monotonic() + timeout_seconds
@@ -65,6 +78,7 @@ class FileIngestor:
             logger.info("跳过非目标文件: %s", file_path)
             return
 
+        # watchdog 可能对同一文件打多次；未完成任务按路径去重
         if await self.task_repository.find_active_by_file_path(str(file_path)):
             logger.info("已有未完成任务，忽略重复发现: %s", file_path)
             return
@@ -77,6 +91,7 @@ class FileIngestor:
             logger.warning("文件不存在或未写稳: %s", file_path)
             return
 
+        # 写稳期间可能又来一次 created，再查一次避免双插
         if await self.task_repository.find_active_by_file_path(str(file_path)):
             logger.info("已有未完成任务，忽略重复发现: %s", file_path)
             return
@@ -85,6 +100,7 @@ class FileIngestor:
         folder_name = file_path.parent.name
         folder_path = str(file_path.parent.resolve())
         need_preview = decision.need_single or decision.need_content
+        # 策略拍进任务：这条的删文件/重试不随后续热更新改变
         policy = self.settings_hub.policy_for_new_task(need_preview)
 
         topic_id = None
@@ -95,6 +111,7 @@ class FileIngestor:
                 chat_id=decision.chat_id,
             )
 
+        # preparing 调度器看不见，等封面写回才转 pending
         status = TaskStatus.PENDING if not need_preview else TaskStatus.PREPARING
         task_id = await self.task_repository.add_task(
             file_path=str(file_path),
@@ -127,11 +144,13 @@ class FileIngestor:
                 )
             await self.task_repository.update_preview(task_id, str(page_path) if page_path else None, True)
         except Exception as error:
+            # 封面失败仍转 pending，只发视频，不卡死在 preparing
             await self.task_repository.update_preview(task_id, None, False, str(error))
             logger.exception("预览生成失败 task=%s", task_id)
         self.rescheduler.request_reschedule()
 
     async def consume(self, file_queue: asyncio.Queue[Path]) -> None:
+        """串行消费发现队列。单条失败只记日志，不让整条发现链停掉。"""
         while True:
             file_path = await file_queue.get()
             try:

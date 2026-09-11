@@ -32,3 +32,7 @@ page/
 # OS
 .DS_Store
 Thumbs.db
+
+
+# skill
+claude-code/

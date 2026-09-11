@@ -1,3 +1,17 @@
+"""任务是领域对象，不是「一行 SQL 的别名」。
+
+destination / artifacts / policy / runtime 只是代码里的分组，落到 SQLite
+仍是一列一个标量，不要把多个值拼进同一个字段。
+
+状态只允许：
+  preparing → pending → assigned → uploading → success
+                              ↘ 失败未超次数回到 pending
+                              ↘ 超限 → failed
+没有 retrying。库里若还有旧的 retrying，读出来当 pending。
+
+policy 在入库那一刻从 upload.toml 拷贝。之后热更新只影响新任务。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -5,6 +19,8 @@ from enum import StrEnum
 
 
 class TaskStatus(StrEnum):
+    # preparing → pending → assigned → uploading → success | failed
+    # 失败未超次数回到 pending；没有 retrying 这种多余状态
     PREPARING = "preparing"
     PENDING = "pending"
     ASSIGNED = "assigned"
@@ -14,6 +30,7 @@ class TaskStatus(StrEnum):
 
 
 def status_from_row(value: object) -> TaskStatus:
+    """无法识别的旧状态（例如 retrying）一律当成 pending，避免调度崩溃。"""
     try:
         return TaskStatus(str(value))
     except ValueError:
@@ -28,6 +45,7 @@ class AfterSuccess(StrEnum):
 
 @dataclass(frozen=True)
 class TaskDestination:
+    # 论坛话题必须带 topic_id；普通群为 None
     chat_id: int
     topic_id: int | None = None
 
@@ -35,7 +53,7 @@ class TaskDestination:
 @dataclass(frozen=True)
 class TaskArtifacts:
     video_path: str
-    page_path: str | None = None
+    page_path: str | None = None  # 封面；预览失败则为 None，只发视频
 
 
 @dataclass(frozen=True)
@@ -49,6 +67,8 @@ class TaskPolicy:
 
 @dataclass(frozen=True)
 class Task:
+    """领域对象。destination/artifacts/policy 是分组，不是一个数据库字段。"""
+
     id: int
     file_path: str
     file_name: str
@@ -93,6 +113,7 @@ class Task:
 
 
 def task_from_row(row: dict, policy: TaskPolicy) -> Task:
+    """把数据库行装配成 Task。policy 必须由调用方传入（内存快照或当前配置）。"""
     topic_id = row.get("topic_id")
     return Task(
         id=int(row["id"]),

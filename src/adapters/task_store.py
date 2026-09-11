@@ -1,3 +1,10 @@
+"""upload_tasks / chat_topic 的唯一写入口。
+
+返回 dict 行，由调用方装配成领域 Task。
+认领、回 pending、标成功都必须带状态条件或清掉 assigned_bot，
+否则崩溃后会出现「库里占着槽、内存里没任务」的假忙。
+"""
+
 import uuid
 
 from ..database.connection import get_db
@@ -19,6 +26,7 @@ class TaskRepository:
         max_retries: int = 3,
         topic_id: int | None = None,
     ) -> int:
+        """插入一条任务。single_page/content_page 是封面需求快照，后续只读。"""
         async with get_db() as database:
             cursor = await database.execute(
                 """INSERT INTO upload_tasks
@@ -60,6 +68,7 @@ class TaskRepository:
             return int(task_id)
 
     async def find_active_by_file_path(self, file_path: str) -> int | None:
+        """未完成任务按绝对路径去重。success/failed 的同路径允许再来一条。"""
         async with get_db() as database:
             async with database.execute(
                 """SELECT id FROM upload_tasks
@@ -92,6 +101,7 @@ class TaskRepository:
             await database.commit()
 
     async def count_active_tasks(self, worker_name: str) -> int:
+        """assigned + uploading 都占槽。只数内存队列会在崩溃后低估负载。"""
         async with get_db() as database:
             async with database.execute(
                 "SELECT COUNT(*) FROM upload_tasks WHERE assigned_bot = ? AND status IN ('assigned', 'uploading')",
@@ -101,6 +111,7 @@ class TaskRepository:
                 return row[0]
 
     async def fetch_pending_tasks(self, limit: int) -> list[dict]:
+        """小文件优先。含旧数据里可能残留的 retrying。"""
         async with get_db() as database:
             async with database.execute(
                 """SELECT * FROM upload_tasks
@@ -111,6 +122,7 @@ class TaskRepository:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def claim_task(self, task_id: int, worker_name: str) -> bool:
+        # 带 status 条件的 CAS：抢不到说明已被别的调度轮次领走
         async with get_db() as database:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'assigned', assigned_bot = ?, assigned_at = CURRENT_TIMESTAMP
@@ -139,6 +151,7 @@ class TaskRepository:
             await database.commit()
 
     async def mark_task_failed(self, task_id: int, retry_count: int, max_retries: int, error_message: str) -> None:
+        """未超限回 pending 并清空归属，让别的 worker 可以再抢。"""
         new_status = "failed" if retry_count >= max_retries else "pending"
         async with get_db() as database:
             await database.execute(
@@ -149,7 +162,7 @@ class TaskRepository:
             await database.commit()
 
     async def release_task(self, task_id: int, error_message: str) -> None:
-        """不增加重试次数，回到 pending。FloodWait 走这条。"""
+        """回 pending 且不增加 retry_count。FloodWait 走这条。"""
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
@@ -159,6 +172,7 @@ class TaskRepository:
             await database.commit()
 
     async def reconcile_stale_tasks(self) -> int:
+        """进程刚起来时内存队列是空的，这三种状态都是幽灵任务。"""
         async with get_db() as database:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
@@ -173,6 +187,7 @@ class TaskRepository:
         uploading_timeout_seconds: int = 1200,
         assigned_timeout_seconds: int = 600,
     ) -> int:
+        """运行中兜底：uploading / assigned 超时都打回 pending。"""
         async with get_db() as database:
             uploading = await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
@@ -192,6 +207,7 @@ class TaskRepository:
             return uploading.rowcount + assigned.rowcount
 
     async def update_preview(self, task_id: int, page_path: str | None, success: bool, error_message: str = "") -> None:
+        """截图结束的唯一放行点：无论成败都转到 pending，让调度器能看见。"""
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET page_path = ?, status = 'pending',

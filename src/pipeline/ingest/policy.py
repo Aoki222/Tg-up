@@ -1,12 +1,15 @@
+"""入库决议。只读当前 UploadSettings，不写库、不发消息。
+
+preview 是单一枚举（off / first_frame / grid），所以不会同时开两种封面。
+非视频扩展名 allowed=False，发现层仍可能入队，由本决议丢掉。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..domain.upload_settings import PreviewMode, UploadSettings
-from ..logger import get_logger
-
-logger = get_logger(__name__)
+from ...domain.upload_settings import PreviewMode, UploadSettings
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,8 @@ class IngestDecision:
 
 
 class IngestPolicy:
+    """只根据当前 UploadSettings 做一次决议，不写库、不发消息。"""
+
     def decide(self, file_path: Path, settings: UploadSettings) -> IngestDecision:
         suffix = file_path.suffix.lower()
         if suffix not in settings.video_extensions:

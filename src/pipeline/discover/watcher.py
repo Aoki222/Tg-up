@@ -1,3 +1,10 @@
+"""目录监听。只负责发现路径，不写库、不等文件写完。
+
+watchdog 回调跑在后台线程，必须用 run_coroutine_threadsafe 丢回主循环。
+Windows 上剪切/移动往往走 on_moved 而不是 on_created，两个都要接。
+启动时目录里已有的文件不会触发事件，需要 scan.py 补扫。
+"""
+
 import asyncio
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -16,12 +23,14 @@ class WatchdogEventAdapter(FileSystemEventHandler):
 
     def on_created(self, event) -> None:
         if not event.is_directory:
+            # watchdog 在后台线程；业务必须丢回 asyncio 主循环
             asyncio.run_coroutine_threadsafe(
                 self.handle_new_file(Path(event.src_path)),
                 self.event_loop,
             )
 
     def on_moved(self, event) -> None:
+        # Windows 剪切/移动走 moved，不走 created
         if event.is_directory:
             return
         destination = getattr(event, "dest_path", None)
@@ -42,6 +51,7 @@ class FolderWatcher:
         self.observer = Observer()
 
     async def run_forever(self) -> None:
+        """挂上系统级目录监听后一直等到 stop()。"""
         self.watch_path.mkdir(parents=True, exist_ok=True)
         event_loop = asyncio.get_running_loop()
         self.observer.schedule(

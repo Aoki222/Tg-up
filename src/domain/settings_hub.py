@@ -1,3 +1,13 @@
+"""upload.toml 的加载与热更新。
+
+和 .env 分开：.env 是进程身份（API），改完要重启；
+upload.toml 是上传策略，保存后约 2 秒生效。
+
+热更新是整份替换冻结对象。解析失败则保持上一份，避免坏文件把服务弄死。
+已入库任务的 after_success / max_retries 看内存里的 policy 快照；
+进程重启后快照丢失，只能退回当时的当前配置（尚未把这两项写入表）。
+"""
+
 from __future__ import annotations
 
 import os
@@ -45,6 +55,7 @@ def _as_bool(raw: object, default: bool) -> bool:
 
 
 def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings:
+    """读一份 toml。chat_id 为 0 或省略时回退环境变量 TARGET_CHAT_ID。"""
     with config_path.open("rb") as handle:
         data = tomllib.load(handle)
 
@@ -78,6 +89,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
 
 
 def ensure_upload_config(project_dir: Path) -> Path:
+    """没有 upload.toml 时从 example 复制一份，避免首次启动直接报缺文件。"""
     config_path = project_dir / "upload.toml"
     example_path = project_dir / "upload.toml.example"
     if not config_path.exists():
@@ -89,7 +101,11 @@ def ensure_upload_config(project_dir: Path) -> Path:
 
 
 class SettingsHub:
-    """内存中只保留一份冻结配置，文件变更后整体替换。"""
+    """upload.toml 的内存副本：整份替换，解析失败保留旧配置。
+
+    过程参数（并发、超时）立刻用新值。
+    已入库任务的删文件/重试策略看 Task.policy，不跟热更新走。
+    """
 
     def __init__(self, config_path: Path, project_dir: Path):
         self.config_path = config_path
@@ -117,6 +133,7 @@ class SettingsHub:
         stored = self._policies.get(task_id)
         if stored is not None:
             return stored
+        # 重启后内存快照没了，只能退回当前配置；after_success 尚未落库
         need_preview = bool(row.get("single_page") or row.get("content_page"))
         return TaskPolicy(
             need_preview=need_preview,
@@ -125,6 +142,7 @@ class SettingsHub:
         )
 
     def reload_if_changed(self) -> bool:
+        """mtime 变了才重读。返回是否真的换了配置。"""
         try:
             mtime = self.config_path.stat().st_mtime
         except OSError:

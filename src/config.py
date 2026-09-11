@@ -1,4 +1,9 @@
-# 系统配置：进程身份。改这些需要重启。上传策略在 upload.toml。
+"""系统配置（进程身份）。
+
+这里的值在 import 时读一次：API_ID / API_HASH、数据库路径、session 目录。
+改这些必须重启。上传策略（目标群、是否删文件、并发）在 upload.toml，由 SettingsHub 热更新。
+sessions 目录只提供路径，文件列表由 SessionPool 运行中反复扫描。
+"""
 
 import os
 from pathlib import Path
@@ -24,8 +29,3 @@ def get_required_env(name: str) -> str:
 API_ID = int(get_required_env("API_ID"))
 API_HASH = get_required_env("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN") or None
-
-SESSION_FILES = {
-    path.stem: path.with_suffix("")
-    for path in SESSION_DIR.glob("*.session")
-}

@@ -1,3 +1,5 @@
+"""领域模型：任务、状态、上传策略。"""
+
 from .task import AfterSuccess, Task, TaskArtifacts, TaskDestination, TaskPolicy, TaskStatus, task_from_row
 from .upload_settings import PreviewMode, UploadSettings
 

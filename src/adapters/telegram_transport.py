@@ -1,3 +1,10 @@
+"""Telegram 发送实现。
+
+业务层只看 SendOk / SendRetryLater / SendFailed，不要直接 catch Telethon 异常。
+FloodWait 是账号节奏信号：必须等待，不能当成文件失败去累加 retry_count。
+论坛群发送必须带 reply_to=topic_id，否则消息进 General 而不是创建好的话题。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +24,7 @@ class TelegramTransport:
         self.telegram_client = telegram_client
 
     async def send(self, task: Task, timeout_seconds: int) -> SendResult:
+        """有封面则视频+图作为相册；相册时取第一条消息 id 当作视频消息。"""
         video_path = task.artifacts.video_path
         if not video_path:
             return SendFailed("缺少视频路径")
@@ -35,6 +43,7 @@ class TelegramTransport:
         }
         if len(files) > 1:
             send_kwargs["album"] = True
+        # 论坛群不带 reply_to 会进 General，进不了创建好的话题
         if task.destination.topic_id is not None:
             send_kwargs["reply_to"] = task.destination.topic_id
 
@@ -44,6 +53,7 @@ class TelegramTransport:
                 timeout=timeout_seconds,
             )
         except FloodWaitError as flood_error:
+            # 账号被限流，不是这个文件坏了
             return SendRetryLater(flood_error.seconds)
         except TimeoutError:
             return SendFailed(f"上传超时 {timeout_seconds}s")

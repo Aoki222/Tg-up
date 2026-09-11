@@ -1,14 +1,26 @@
+"""单个 Telegram 账号的上传执行器。
+
+调度器只负责把任务塞进本 worker 的内存队列。这里负责：
+- 用信号量限制本账号并发（上限跟 upload.toml 的 concurrency 走）
+- 调 Transport 发送
+- FloodWait：任务回 pending、不增加失败次数，本 worker 暂停接新活
+- 普通失败：retry_count+1，超限才 failed
+- 成功后按任务自己的 policy 做本地收尾（删/留/归档）
+
+serve_forever 只分发、不等上传结束；Queue.join() 等的是 process_single_task 里的 task_done。
+"""
+
 import asyncio
 import time
 from typing import Callable
 
+from ..adapters.task_store import TaskRepository
 from ..domain.concurrency import ConcurrencyGate
 from ..domain.settings_hub import SettingsHub
 from ..domain.task import Task
 from ..logger import get_logger
 from ..ports.after_upload import AfterUpload
 from ..ports.transport import SendFailed, SendOk, SendRetryLater, Transport
-from .task_repository import TaskRepository
 
 logger = get_logger(__name__)
 
@@ -38,13 +50,14 @@ class UploadWorker:
         self.flood_wait_until = 0.0
 
     def is_accepting(self) -> bool:
-        return time.monotonic() >= self.flood_wait_until
+        return self.is_running and time.monotonic() >= self.flood_wait_until
 
     async def enqueue_task(self, task: Task) -> None:
         await self.task_queue.put(task)
         logger.info("[%s] 任务已加入队列: %s", self.worker_name, task.file_name)
 
     async def serve_forever(self) -> None:
+        """一直从队列取任务并后台执行。None 是停止哨兵。"""
         while self.is_running:
             try:
                 await self._wait_if_flooded()
@@ -54,11 +67,17 @@ class UploadWorker:
             if task is None:
                 self.task_queue.task_done()
                 break
+            # 只分发不等待：真正完成时 process_single_task 里 task_done，join() 才准
             child_task = asyncio.create_task(self.process_single_task(task))
             self.background_tasks.add(child_task)
             child_task.add_done_callback(self.background_tasks.discard)
 
     async def stop(self, drain_timeout_seconds: float = 60.0) -> None:
+        """不再取新任务。队列里剩下的尽量做完，超时则取消在途协程。
+
+        若 serve_forever 已被 TaskGroup 取消，哨兵可能没人消费，
+        下面会自己把哨兵 task_done 掉，避免 join() 永远等。
+        """
         self.is_running = False
         try:
             self.task_queue.put_nowait(None)
@@ -91,8 +110,10 @@ class UploadWorker:
                 logger.warning("[%s] %s 个上传任务未做完已取消", self.worker_name, len(pending))
 
     async def process_single_task(self, task: Task) -> None:
+        """处理一条任务。无论成败，finally 里都要 task_done 并唤醒调度器补位。"""
         try:
             await self._wait_if_flooded()
+            # 开工重读：拿到入库后才回填的 page_path，policy 仍用队列里那份快照
             fresh = await self.task_repository.get_task_by_id(task.id)
             if fresh:
                 task = task.merge_row(fresh)
@@ -109,6 +130,7 @@ class UploadWorker:
                     logger.info("[%s] 上传成功: %s", self.worker_name, task.file_path)
                 elif isinstance(result, SendRetryLater):
                     self.flood_wait_until = time.monotonic() + result.seconds
+                    # 回 pending 且不 +retry_count；调度器会跳过 is_accepting()==False 的 worker
                     await self.task_repository.release_task(task.id, f"FloodWait {result.seconds}s")
                     logger.warning(
                         "[%s] FloodWait %ss，任务回队列且不计失败: %s",

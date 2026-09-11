@@ -1,8 +1,4 @@
-"""统一的日志配置。
-
-提供 get_logger() 获取带控制台 + 滚动文件输出的 logger。
-日志文件默认放在 uploader/logs/app.log。
-"""
+"""全局日志。第一次 get_logger 时给根 logger 挂上控制台和滚动文件（logs/app.log）。"""
 
 from __future__ import annotations
 

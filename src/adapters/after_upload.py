@@ -1,3 +1,9 @@
+"""上传成功后的本地收尾。
+
+行为来自 task.policy.after_success（入库快照），不是此刻的 upload.toml。
+keep：不动文件。delete：删视频和封面。move_to_archive：按相对监听目录挪到 uploaded/。
+"""
+
 from __future__ import annotations
 
 import shutil
@@ -15,6 +21,7 @@ class ConfigurableAfterUpload:
         self.settings_hub = settings_hub
 
     async def handle(self, task: Task) -> None:
+        # 用入库时拍下的策略，避免热更新改到一半的任务
         action = task.policy.after_success
         paths = [Path(task.artifacts.video_path)]
         if task.artifacts.page_path:
@@ -39,6 +46,7 @@ class ConfigurableAfterUpload:
 
 
 def _archive_destination(source: Path, observer_path: Path, archive_dir: Path) -> Path:
+    """尽量保留 download/a/b.mp4 → uploaded/a/b.mp4；不在监听根下则只保留文件名。"""
     try:
         relative = source.resolve().relative_to(observer_path.resolve())
     except ValueError:

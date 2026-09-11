@@ -1,4 +1,8 @@
-"""建表逻辑：定义 SQL schema 并初始化数据库。"""
+"""初始化表结构。
+
+CREATE TABLE IF NOT EXISTS 不会给已经存在的旧库加新列。
+当前约定先不跑迁移：新库用这份 schema，旧库缺列时需要人工处理。
+"""
 
 from __future__ import annotations
 
@@ -64,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_topic_chat_path
 
 
 async def init_db() -> None:
-    """初始化数据库，创建必要的表和索引。"""
+    """只 CREATE IF NOT EXISTS，不会给已有表加列。"""
 
     async with get_db() as db:
         await db.executescript(SCHEMA)

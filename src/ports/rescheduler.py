@@ -1,4 +1,7 @@
+"""唤醒调度器。多次调用可合并成一次；实现通常是 set 一个 asyncio.Event。"""
+
 from typing import Protocol
+
 
 class Rescheduler(Protocol):
     def request_reschedule(self) -> None:

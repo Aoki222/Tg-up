@@ -1,4 +1,7 @@
-"""视频封面图生成：单帧截图与间隔截图拼图，只落文件，写库后续再接。"""
+"""封面生成，只落盘，不写数据库。路径回填由 FileIngestor.update_preview 负责。
+
+ffmpeg/PIL 都是阻塞调用，异步方法一律 to_thread，避免卡住事件循环。
+"""
 
 from __future__ import annotations
 
