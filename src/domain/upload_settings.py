@@ -1,4 +1,7 @@
-"""可热更新的上传策略。进程身份（API / 数据库路径）不放这里。"""
+"""可热更新的上传策略。进程身份（API / 数据库路径）不放这里。
+
+监听目录在 observer_paths，可多条，保存后热挂 watchdog。
+"""
 
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ class UploadSettings:
     """可热更新的上传策略。进程身份（API/session/数据库）不在这里。"""
 
     chat_id: int
-    observer_path: Path
+    observer_paths: tuple[Path, ...]
     page_dir: Path
     archive_dir: Path
     preview: PreviewMode

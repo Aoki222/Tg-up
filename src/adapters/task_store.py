@@ -25,6 +25,7 @@ class TaskRepository:
         status: str = "pending",
         max_retries: int = 3,
         topic_id: int | None = None,
+        caption: str = "",
     ) -> int:
         """插入一条任务。single_page/content_page 是封面需求快照，后续只读。"""
         async with get_db() as database:
@@ -54,7 +55,7 @@ class TaskRepository:
                     file_size,
                     chat_id,
                     topic_id,
-                    "",
+                    caption,
                     int(single_page),
                     int(content_page),
                     status,
@@ -80,6 +81,7 @@ class TaskRepository:
                 return int(row[0]) if row else None
 
     async def get_chat_topic(self, chat_id: int, topic_path: str) -> int | None:
+        """topic_path 是目录绝对路径。同一群同一目录复用 topic_id。"""
         async with get_db() as database:
             async with database.execute(
                 "SELECT topic_id FROM chat_topic WHERE chat_id = ? AND topic_path = ?",
@@ -133,6 +135,7 @@ class TaskRepository:
             return cursor.rowcount > 0
 
     async def mark_task_uploading(self, task_id: int) -> None:
+        """只有 assigned 才能进入 uploading，防止对账打回 pending 后还被标成在传。"""
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET status = 'uploading', started_at = CURRENT_TIMESTAMP
@@ -162,14 +165,27 @@ class TaskRepository:
             await database.commit()
 
     async def release_task(self, task_id: int, error_message: str) -> None:
-        """回 pending 且不增加 retry_count。FloodWait 走这条。"""
+        """回 pending 且不增加 retry_count。FloodWait / 禁用 worker 走这条。"""
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
-                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL WHERE id = ?""",
+                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL
+                   WHERE id = ? AND status IN ('assigned', 'uploading')""",
                 (error_message[:500], task_id),
             )
             await database.commit()
+
+    async def release_tasks_for_worker(self, worker_name: str, error_message: str) -> int:
+        """这个号名下还挂着的 assigned/uploading 全部释放，不增加 retry_count。"""
+        async with get_db() as database:
+            cursor = await database.execute(
+                """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
+                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL
+                   WHERE assigned_bot = ? AND status IN ('assigned', 'uploading')""",
+                (error_message[:500], worker_name),
+            )
+            await database.commit()
+            return cursor.rowcount
 
     async def reconcile_stale_tasks(self) -> int:
         """进程刚起来时内存队列是空的，这三种状态都是幽灵任务。"""
@@ -217,6 +233,7 @@ class TaskRepository:
             await database.commit()
 
     async def get_task_by_id(self, task_id: int) -> dict | None:
+        """Worker 开工前重读，主要是拿截图回填的 page_path。"""
         async with get_db() as database:
             async with database.execute(
                 "SELECT * FROM upload_tasks WHERE id = ?", (task_id,)

@@ -13,3 +13,16 @@ def iter_existing_files(root: Path, extensions: frozenset[str]) -> list[Path]:
         for path in root.rglob("*")
         if path.is_file() and path.suffix.lower() in extensions
     ]
+
+
+def iter_existing_files_many(roots: list[Path] | tuple[Path, ...], extensions: frozenset[str]) -> list[Path]:
+    seen: set[str] = set()
+    found: list[Path] = []
+    for root in roots:
+        for path in iter_existing_files(root, extensions):
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(path)
+    return found

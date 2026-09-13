@@ -1,6 +1,6 @@
 """发现层：watchdog 快路径，启动扫盘补漏。"""
 
-from .scan import iter_existing_files
+from .scan import iter_existing_files, iter_existing_files_many
 from .watcher import FolderWatcher
 
-__all__ = ["FolderWatcher", "iter_existing_files"]
+__all__ = ["FolderWatcher", "iter_existing_files", "iter_existing_files_many"]

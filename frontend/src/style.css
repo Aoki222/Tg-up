@@ -1,0 +1,53 @@
+:root {
+  color-scheme: light;
+  --el-color-primary: #2f7cf6;
+  --bg: #eef4fb;
+  --bg-accent: #dceafb;
+  --panel: #ffffff;
+  --border: #d5e4f3;
+  --text: #1c2b3a;
+  --muted: #6b7f96;
+  --accent: #2f7cf6;
+  --accent-soft: #ebf3ff;
+  --ok: #16a34a;
+  --bad: #e11d48;
+  --warn: #d97706;
+  --shadow: 0 12px 32px rgba(47, 124, 246, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #ffffff 0%, transparent 55%),
+    radial-gradient(900px 420px at 100% 0%, #d7e9ff 0%, transparent 50%),
+    var(--bg);
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.el-card {
+  --el-card-border-color: var(--border);
+  --el-card-bg-color: var(--panel);
+  border-radius: 16px !important;
+  box-shadow: var(--shadow);
+}
+
+.el-card__header {
+  font-weight: 650;
+  color: var(--text);
+  border-bottom-color: var(--border) !important;
+}

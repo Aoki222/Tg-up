@@ -5,7 +5,9 @@
 # 目标群。若省略或填 0，会回退读环境变量 TARGET_CHAT_ID
 chat_id = 0
 
-observer_path = "download"
+# 可写多条。相对路径相对进程 cwd 解析成绝对路径；目录必须已存在，程序不会创建。
+# 旧字段 observer_path 仍能读。
+observer_paths = ["download"]
 page_dir = "page"
 archive_dir = "uploaded"
 

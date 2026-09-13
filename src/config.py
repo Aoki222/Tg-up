@@ -1,8 +1,10 @@
-"""系统配置（进程身份）。
+"""系统配置（进程身份），import 时读一次 .env。
 
-这里的值在 import 时读一次：API_ID / API_HASH、数据库路径、session 目录。
-改这些必须重启。上传策略（目标群、是否删文件、并发）在 upload.toml，由 SettingsHub 热更新。
-sessions 目录只提供路径，文件列表由 SessionPool 运行中反复扫描。
+放这里的：API_ID / API_HASH、数据库路径、session 目录、控制台监听地址。
+改这些必须重启进程。
+
+不要放目标群、封面模式、删不删文件——那些在 upload.toml，由 SettingsHub 热更新。
+sessions 目录只提供路径，里面的 *.session 由 SessionPool 运行中反复扫描。
 """
 
 import os
@@ -29,3 +31,10 @@ def get_required_env(name: str) -> str:
 API_ID = int(get_required_env("API_ID"))
 API_HASH = get_required_env("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN") or None
+
+# 进度页 / SSE。Vue 开发时也可跨域打这个地址
+API_HOST = os.getenv("API_HOST", "127.0.0.1")
+API_PORT = int(os.getenv("API_PORT", "8000"))
+# 为空则不校验。多容器同机调用时设置，请求带 Authorization: Bearer <token>
+API_TOKEN = os.getenv("API_TOKEN") or None
+TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY") or None

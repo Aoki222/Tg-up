@@ -24,6 +24,108 @@ logger = get_logger(__name__)
 _DEFAULT_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v")
 
 
+def _rel_path(project_dir: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(project_dir.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _toml_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def render_upload_toml(payload: dict) -> str:
+    extensions = payload.get("video_extensions") or []
+    if isinstance(extensions, str):
+        extensions = [part.strip() for part in extensions.split(",") if part.strip()]
+    cleaned = []
+    for item in extensions:
+        text = str(item).strip().lower().lstrip(".")
+        if text:
+            cleaned.append(text)
+    if not cleaned:
+        cleaned = [ext.lstrip(".") for ext in _DEFAULT_EXTENSIONS]
+    ext_list = ", ".join(_toml_string(item) for item in cleaned)
+    topic = "true" if payload.get("topic_creation_enabled", True) else "false"
+    return (
+        "# 由配置页写入。保存后热加载，不必重启。\n"
+        f"chat_id = {int(payload['chat_id'])}\n"
+        f"observer_paths = [{_path_list(payload)}]\n"
+        f"page_dir = {_toml_string(str(payload.get('page_dir') or 'page'))}\n"
+        f"archive_dir = {_toml_string(str(payload.get('archive_dir') or 'uploaded'))}\n"
+        f"preview = {_toml_string(str(payload.get('preview') or 'off'))}\n"
+        f"topic_creation_enabled = {topic}\n"
+        f"after_success = {_toml_string(str(payload.get('after_success') or 'keep'))}\n"
+        f"concurrency = {max(1, int(payload.get('concurrency', 3)))}\n"
+        f"max_retries = {max(1, int(payload.get('max_retries', 3)))}\n"
+        f"upload_timeout_seconds = {max(1, int(payload.get('upload_timeout_seconds', 1200)))}\n"
+        f"assigned_timeout_seconds = {max(1, int(payload.get('assigned_timeout_seconds', 600)))}\n"
+        f"stable_timeout_seconds = {max(1.0, float(payload.get('stable_timeout_seconds', 1800)))}\n"
+        f"video_extensions = [{ext_list}]\n"
+    )
+
+
+def _path_list(payload: dict) -> str:
+    raw = payload.get("observer_paths")
+    if not raw:
+        single = payload.get("observer_path")
+        raw = [single] if single else []
+    if isinstance(raw, str):
+        raw = [raw]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item).strip()
+        if not text:
+            continue
+        key = str(_resolve_observer_path(text))
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(key)
+    return ", ".join(_toml_string(item) for item in cleaned)
+
+
+def _resolve_observer_path(value: str) -> Path:
+    """相对路径相对进程 cwd，绝对路径原样 resolve。不创建目录。"""
+    path = Path(value.strip().strip('"').strip("'")).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
+
+
+def inspect_observer_path(path: Path) -> dict:
+    text = str(path)
+    if not path.exists():
+        return {"path": text, "ok": False, "error": "目录不存在"}
+    if not path.is_dir():
+        return {"path": text, "ok": False, "error": "不是目录"}
+    return {"path": text, "ok": True, "error": ""}
+
+
+def _as_observer_paths(_project_dir: Path, data: dict) -> tuple[Path, ...]:
+    raw = data.get("observer_paths")
+    if raw is None:
+        single = data.get("observer_path")
+        raw = [single] if single else []
+    if isinstance(raw, str):
+        raw = [raw]
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item).strip() if item is not None else ""
+        if not text:
+            continue
+        path = _resolve_observer_path(text)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return tuple(paths)
+
+
 def _as_path(project_dir: Path, value: str | None, default: str) -> Path:
     path = Path(value if value else default)
     if not path.is_absolute():
@@ -73,7 +175,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
 
     return UploadSettings(
         chat_id=chat_id,
-        observer_path=_as_path(project_dir, data.get("observer_path"), "download"),
+        observer_paths=_as_observer_paths(project_dir, data),
         page_dir=_as_path(project_dir, data.get("page_dir"), "page"),
         archive_dir=_as_path(project_dir, data.get("archive_dir"), "uploaded"),
         preview=preview,
@@ -117,6 +219,49 @@ class SettingsHub:
     def get(self) -> UploadSettings:
         return self._settings
 
+    def public_dict(self) -> dict:
+        """给前端的可编辑字段。监听目录一律返回绝对路径及是否存在。"""
+        settings = self._settings
+        observer_infos = [inspect_observer_path(path) for path in settings.observer_paths]
+        return {
+            "chat_id": settings.chat_id,
+            "observer_paths": [item["path"] for item in observer_infos],
+            "observer_path_infos": observer_infos,
+            "page_dir": _rel_path(self.project_dir, settings.page_dir),
+            "archive_dir": _rel_path(self.project_dir, settings.archive_dir),
+            "preview": settings.preview.value,
+            "topic_creation_enabled": settings.topic_creation_enabled,
+            "after_success": settings.after_success.value,
+            "concurrency": settings.concurrency,
+            "max_retries": settings.max_retries,
+            "upload_timeout_seconds": settings.upload_timeout_seconds,
+            "assigned_timeout_seconds": settings.assigned_timeout_seconds,
+            "stable_timeout_seconds": settings.stable_timeout_seconds,
+            "video_extensions": sorted(ext.lstrip(".") for ext in settings.video_extensions),
+        }
+
+    def save_from_payload(self, payload: dict) -> dict:
+        """校验并写入 upload.toml，立刻替换内存配置。"""
+        text = render_upload_toml(payload)
+        temp_path = self.config_path.with_suffix(".toml.tmp")
+        temp_path.write_text(text, encoding="utf-8")
+        try:
+            loaded = load_upload_settings(temp_path, self.project_dir)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+        temp_path.replace(self.config_path)
+        self._settings = loaded
+        self._mtime = self.config_path.stat().st_mtime
+        logger.info(
+            "已从 API 写入上传配置: chat_id=%s preview=%s after_success=%s concurrency=%s",
+            loaded.chat_id,
+            loaded.preview,
+            loaded.after_success,
+            loaded.concurrency,
+        )
+        return self.public_dict()
+
     def policy_for_new_task(self, need_preview: bool) -> TaskPolicy:
         settings = self._settings
         return TaskPolicy(
@@ -142,7 +287,10 @@ class SettingsHub:
         )
 
     def reload_if_changed(self) -> bool:
-        """mtime 变了才重读。返回是否真的换了配置。"""
+        """mtime 变了才重读。返回是否真的换了配置。
+
+        解析失败保持上一份，避免前端/人工写成坏 toml 把服务弄死。
+        """
         try:
             mtime = self.config_path.stat().st_mtime
         except OSError:

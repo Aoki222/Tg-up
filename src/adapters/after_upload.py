@@ -17,6 +17,8 @@ logger = get_logger(__name__)
 
 
 class ConfigurableAfterUpload:
+    """归档目录用当前 SettingsHub（路径可能热更新）；删不删文件看 task.policy。"""
+
     def __init__(self, settings_hub: SettingsHub):
         self.settings_hub = settings_hub
 
@@ -39,16 +41,19 @@ class ConfigurableAfterUpload:
             for path in paths:
                 if not path.exists():
                     continue
-                destination = _archive_destination(path, settings.observer_path, settings.archive_dir)
+                destination = _archive_destination(path, settings.observer_paths, settings.archive_dir)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(path), str(destination))
             logger.info("已按配置归档: %s -> %s", task.file_path, settings.archive_dir)
 
 
-def _archive_destination(source: Path, observer_path: Path, archive_dir: Path) -> Path:
-    """尽量保留 download/a/b.mp4 → uploaded/a/b.mp4；不在监听根下则只保留文件名。"""
-    try:
-        relative = source.resolve().relative_to(observer_path.resolve())
-    except ValueError:
-        relative = Path(source.name)
-    return archive_dir / relative
+def _archive_destination(source: Path, observer_paths: tuple[Path, ...], archive_dir: Path) -> Path:
+    """尽量保留 download/a/b.mp4 → uploaded/a/b.mp4；对不上任一监听根则只保留文件名。"""
+    resolved = source.resolve()
+    for root in observer_paths:
+        try:
+            relative = resolved.relative_to(root.resolve())
+            return archive_dir / relative
+        except ValueError:
+            continue
+    return archive_dir / source.name

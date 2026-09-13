@@ -1,4 +1,7 @@
-"""全局日志。第一次 get_logger 时给根 logger 挂上控制台和滚动文件（logs/app.log）。"""
+"""全局日志。第一次 get_logger 时给根 logger 挂上控制台和滚动文件（logs/app.log）。
+
+后续 get_logger 只按模块名取 child，不再重复加 handler。
+"""
 
 from __future__ import annotations
 

@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     page_path        TEXT    DEFAULT NULL,
     
     status          TEXT    NOT NULL DEFAULT 'pending',
-    -- preparing / pending / assigned / uploading / success / failed / retrying
+    -- 现行：preparing / pending / assigned / uploading / success / failed
+    -- retrying 仅兼容旧行，调度时当 pending 处理
     
     assigned_bot    TEXT,
     retry_count     INTEGER NOT NULL DEFAULT 0,

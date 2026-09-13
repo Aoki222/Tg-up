@@ -39,9 +39,11 @@ class UploadScheduler:
         self.wakeup_event.set()
 
     def register_worker(self, worker) -> None:
+        """session 加载成功后挂上。worker_name 即 session 文件名。"""
         self.worker_map[worker.worker_name] = worker
 
     def unregister_worker(self, worker_name: str) -> None:
+        """session 文件消失时先摘掉，避免还往已断开的账号派活。"""
         self.worker_map.pop(worker_name, None)
 
     async def run_forever(self) -> None:
@@ -68,6 +70,7 @@ class UploadScheduler:
                 timeout_task.cancel()
 
     async def stop(self) -> None:
+        """唤醒阻塞中的 wait，停掉超时回收循环。"""
         self.is_running = False
         self.request_reschedule()
         timeout_task = self.timeout_task

@@ -24,6 +24,7 @@ class IngestPolicy:
     """只根据当前 UploadSettings 做一次决议，不写库、不发消息。"""
 
     def decide(self, file_path: Path, settings: UploadSettings) -> IngestDecision:
+        """用调用当下的 settings。同一文件稍后热更新了预览模式，已入库的不受影响。"""
         suffix = file_path.suffix.lower()
         if suffix not in settings.video_extensions:
             return IngestDecision(
