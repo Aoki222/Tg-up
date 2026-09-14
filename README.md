@@ -319,3 +319,16 @@ Vite 把 `/api` 代理到 `127.0.0.1:8000`。改界面后：`npm run build` 再�
 | `sessions/` | Telegram session 文件 |
 
 启动：`python -m src.main`（在项目根目录）。进度条打开 http://127.0.0.1:8000/ 。
+
+## Docker
+
+```bash
+cp .env.example .env          # 填 API_ID / API_HASH
+cp upload.toml.example upload.toml
+docker compose up -d --build
+```
+
+控制台：http://localhost:8000/  
+视频放到 `./download`。Session 放 `./sessions`。数据库在 `./data`。
+
+推送到 `main` 后，GitHub Actions 跑 `pytest`，通过后构建镜像并推到 `ghcr.io/<owner>/<repo>`。仓库需允许 GitHub Actions 写 Packages。

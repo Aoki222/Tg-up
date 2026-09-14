@@ -21,4 +21,5 @@ class SettingsPayload(BaseModel):
     upload_timeout_seconds: int = Field(default=1200, ge=30)
     assigned_timeout_seconds: int = Field(default=600, ge=30)
     stable_timeout_seconds: float = Field(default=1800, ge=1)
-    video_extensions: list[str] = Field(default_factory=lambda: ["mp4", "mkv", "avi", "mov", "wmv", "m4v"])
+    watch_extensions: list[str] | None = None
+    video_extensions: list[str] | None = None

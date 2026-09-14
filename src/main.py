@@ -11,5 +11,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(UploaderApplication().run())
     except KeyboardInterrupt:
-        pass
+        raise SystemExit(130) from None
 

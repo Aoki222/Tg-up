@@ -34,4 +34,5 @@ class UploadSettings:
     upload_timeout_seconds: int
     assigned_timeout_seconds: int
     stable_timeout_seconds: float
-    video_extensions: frozenset[str]
+    # 空集合 = 监听任意后缀；非空则只收这些后缀（含点，如 .mp4）
+    watch_extensions: frozenset[str]

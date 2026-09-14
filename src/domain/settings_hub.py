@@ -36,7 +36,10 @@ def _toml_string(value: str) -> str:
 
 
 def render_upload_toml(payload: dict) -> str:
-    extensions = payload.get("video_extensions") or []
+    if payload.get("watch_extensions") is not None:
+        extensions = payload.get("watch_extensions")
+    else:
+        extensions = payload.get("video_extensions") or []
     if isinstance(extensions, str):
         extensions = [part.strip() for part in extensions.split(",") if part.strip()]
     cleaned = []
@@ -44,8 +47,6 @@ def render_upload_toml(payload: dict) -> str:
         text = str(item).strip().lower().lstrip(".")
         if text:
             cleaned.append(text)
-    if not cleaned:
-        cleaned = [ext.lstrip(".") for ext in _DEFAULT_EXTENSIONS]
     ext_list = ", ".join(_toml_string(item) for item in cleaned)
     topic = "true" if payload.get("topic_creation_enabled", True) else "false"
     return (
@@ -62,7 +63,7 @@ def render_upload_toml(payload: dict) -> str:
         f"upload_timeout_seconds = {max(1, int(payload.get('upload_timeout_seconds', 1200)))}\n"
         f"assigned_timeout_seconds = {max(1, int(payload.get('assigned_timeout_seconds', 600)))}\n"
         f"stable_timeout_seconds = {max(1.0, float(payload.get('stable_timeout_seconds', 1800)))}\n"
-        f"video_extensions = [{ext_list}]\n"
+        f"watch_extensions = [{ext_list}]\n"
     )
 
 
@@ -133,9 +134,16 @@ def _as_path(project_dir: Path, value: str | None, default: str) -> Path:
     return path
 
 
-def _as_extensions(raw: object) -> frozenset[str]:
+def _as_watch_extensions(data: dict) -> frozenset[str]:
+    """空列表 = 任意格式。未配置时兼容旧字段 video_extensions。"""
+    if "watch_extensions" in data:
+        raw = data.get("watch_extensions")
+    elif "video_extensions" in data:
+        raw = data.get("video_extensions")
+    else:
+        raw = [ext.lstrip(".") for ext in _DEFAULT_EXTENSIONS]
     if not raw:
-        return frozenset(_DEFAULT_EXTENSIONS)
+        return frozenset()
     items = raw if isinstance(raw, list) else [raw]
     normalized = []
     for item in items:
@@ -145,7 +153,7 @@ def _as_extensions(raw: object) -> frozenset[str]:
         if not text.startswith("."):
             text = f".{text}"
         normalized.append(text)
-    return frozenset(normalized) or frozenset(_DEFAULT_EXTENSIONS)
+    return frozenset(normalized)
 
 
 def _as_bool(raw: object, default: bool) -> bool:
@@ -186,7 +194,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         upload_timeout_seconds=max(1, int(data.get("upload_timeout_seconds", 1200))),
         assigned_timeout_seconds=max(1, int(data.get("assigned_timeout_seconds", 600))),
         stable_timeout_seconds=max(1.0, float(data.get("stable_timeout_seconds", 1800))),
-        video_extensions=_as_extensions(data.get("video_extensions")),
+        watch_extensions=_as_watch_extensions(data),
     )
 
 
@@ -237,7 +245,7 @@ class SettingsHub:
             "upload_timeout_seconds": settings.upload_timeout_seconds,
             "assigned_timeout_seconds": settings.assigned_timeout_seconds,
             "stable_timeout_seconds": settings.stable_timeout_seconds,
-            "video_extensions": sorted(ext.lstrip(".") for ext in settings.video_extensions),
+            "watch_extensions": sorted(ext.lstrip(".") for ext in settings.watch_extensions),
         }
 
     def save_from_payload(self, payload: dict) -> dict:

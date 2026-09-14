@@ -1,0 +1,4 @@
+docker-entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+compose.yml text eol=lf
+.github/workflows/*.yml text eol=lf

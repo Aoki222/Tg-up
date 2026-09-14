@@ -21,14 +21,14 @@ const form = reactive<UploadConfig>({
   upload_timeout_seconds: 1200,
   assigned_timeout_seconds: 600,
   stable_timeout_seconds: 1800,
-  video_extensions: ["mp4", "mkv", "avi", "mov", "wmv", "m4v"],
+  watch_extensions: ["mp4", "mkv", "avi", "mov", "wmv", "m4v"],
 });
 
 function snapshotOf(config: UploadConfig): string {
   return JSON.stringify({
     ...config,
     observer_paths: [...config.observer_paths].map((item) => item.trim()).sort(),
-    video_extensions: [...config.video_extensions].map((item) => item.trim()).sort(),
+    watch_extensions: [...config.watch_extensions].map((item) => item.trim()).sort(),
   });
 }
 
@@ -153,14 +153,14 @@ onMounted(() => {
           <el-input-number v-model="form.stable_timeout_seconds" :min="1" :step="30" />
         </el-form-item>
       </div>
-      <el-form-item label="视频扩展名">
+      <el-form-item label="监听格式">
         <el-select
-          v-model="form.video_extensions"
+          v-model="form.watch_extensions"
           multiple
           filterable
           allow-create
           default-first-option
-          placeholder="mp4 / mkv …"
+          placeholder="留空=任意格式；回车添加 zip / pdf / mp4 …"
           class="grow"
         />
       </el-form-item>

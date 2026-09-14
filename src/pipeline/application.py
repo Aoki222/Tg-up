@@ -73,6 +73,7 @@ class UploaderApplication:
         不把 TaskGroup 取消当作第一退出路径，避免把在途 send_file 直接掐掉。
         """
         logger.info("正在启动")
+        self._install_stop_signals()
         await init_db()
         settings_hub = SettingsHub(ensure_upload_config(PROJECT_DIR), PROJECT_DIR)
         self._settings_hub = settings_hub
@@ -99,12 +100,11 @@ class UploaderApplication:
         self._watcher = watcher
         self._file_queue = file_queue
 
-        for existing in iter_existing_files_many(usable, settings.video_extensions):
+        for existing in iter_existing_files_many(usable, settings.watch_extensions):
             await file_queue.put(existing)
         if file_queue.qsize():
             logger.info("启动扫描已入队文件数=%s", file_queue.qsize())
 
-        self._install_stop_signals()
         try:
             async with asyncio.TaskGroup() as task_group:
                 self._task_group = task_group
@@ -207,7 +207,7 @@ class UploaderApplication:
         if not added:
             return
         queued = 0
-        for path in iter_existing_files_many(added, settings.video_extensions):
+        for path in iter_existing_files_many(added, settings.watch_extensions):
             await self._file_queue.put(path)
             queued += 1
         logger.info("监听目录已更新: %s  新目录扫入 %s 个文件", [str(p) for p in added], queued)

@@ -70,5 +70,5 @@ export interface UploadConfig {
   upload_timeout_seconds: number;
   assigned_timeout_seconds: number;
   stable_timeout_seconds: number;
-  video_extensions: string[];
+  watch_extensions: string[];
 }
