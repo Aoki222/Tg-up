@@ -320,15 +320,21 @@ Vite 把 `/api` 代理到 `127.0.0.1:8000`。改界面后：`npm run build` 再�
 
 启动：`python -m src.main`（在项目根目录）。进度条打开 http://127.0.0.1:8000/ 。
 
-## Docker
+## Docker / VPS
+
+配置文件在 **`data/upload.toml`**（和数据库同一目录挂载）。不要把单个 `upload.toml` 文件 bind-mount 进容器，否则控制台保存会 `EBUSY`。
 
 ```bash
+git clone https://github.com/Aoki222/uploader.git
+cd uploader
 cp .env.example .env          # 填 API_ID / API_HASH
-cp upload.toml.example upload.toml
+mkdir -p download sessions data page uploaded logs
 docker compose up -d --build
 ```
 
-控制台：http://localhost:8000/  
-视频放到 `./download`。Session 放 `./sessions`。数据库在 `./data`。
+控制台：`http://<VPS的IP>:8000/`（需放行 8000 端口）。  
+视频放 `./download`，session 放 `./sessions`。首次启动会把 example 拷到 `./data/upload.toml`。
+
+监听路径在容器内应是 `/app/download`（或相对路径 `download`，cwd 为 `/app`）。
 
 推送到 `main` 后，GitHub Actions 跑 `pytest`，通过后构建镜像并推到 `ghcr.io/<owner>/<repo>`。仓库需允许 GitHub Actions 写 Packages。

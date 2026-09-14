@@ -199,14 +199,25 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
 
 
 def ensure_upload_config(project_dir: Path) -> Path:
-    """没有 upload.toml 时从 example 复制一份，避免首次启动直接报缺文件。"""
-    config_path = project_dir / "upload.toml"
+    """配置放 data/upload.toml，避免 Docker 单文件挂载导致保存 EBUSY。
+
+    若根目录还有旧的 upload.toml 文件，启动时复制进 data/。
+    """
+    data_dir = project_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_path = data_dir / "upload.toml"
     example_path = project_dir / "upload.toml.example"
-    if not config_path.exists():
-        if not example_path.exists():
-            raise RuntimeError(f"缺少上传配置：{config_path} 且没有 {example_path}")
-        shutil.copy(example_path, config_path)
-        logger.info("已复制 upload.toml.example -> upload.toml，请按需修改后热更新即可生效")
+    legacy = project_dir / "upload.toml"
+    if config_path.is_file():
+        return config_path
+    if legacy.is_file():
+        shutil.copy(legacy, config_path)
+        logger.info("已将 upload.toml 迁到 %s", config_path)
+        return config_path
+    if not example_path.exists():
+        raise RuntimeError(f"缺少上传配置：{config_path} 且没有 {example_path}")
+    shutil.copy(example_path, config_path)
+    logger.info("已复制 upload.toml.example -> %s", config_path)
     return config_path
 
 
@@ -258,7 +269,12 @@ class SettingsHub:
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise
-        temp_path.replace(self.config_path)
+        # Docker 把单个文件 bind-mount 时，rename 到挂载点会 EBUSY
+        try:
+            temp_path.replace(self.config_path)
+        except OSError:
+            self.config_path.write_text(temp_path.read_text(encoding="utf-8"), encoding="utf-8")
+            temp_path.unlink(missing_ok=True)
         self._settings = loaded
         self._mtime = self.config_path.stat().st_mtime
         logger.info(

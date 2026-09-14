@@ -1,10 +1,9 @@
-# 使用前：
-#   1. 复制 .env.example 为 .env，填 API_ID / API_HASH
-#   2. 可选：复制 upload.toml.example 为 upload.toml（没有时容器会自动复制一份）
-#   3. docker compose up -d --build
-#
-# 控制台：http://localhost:8000/
-# 把视频放进 ./download（对应容器内 /app/download）
+# VPS / 本机：
+#   1. cp .env.example .env   填 API_ID / API_HASH
+#   2. docker compose up -d --build
+# 控制台：http://<服务器IP>:8000/
+# 视频放到 ./download ；session 放到 ./sessions
+# 上传配置在 ./data/upload.toml（目录挂载，控制台保存不会 EBUSY）
 
 services:
   uploader:
@@ -26,8 +25,6 @@ services:
       - ./page:/app/page
       - ./uploaded:/app/uploaded
       - ./logs:/app/logs
-      # 请先: cp upload.toml.example upload.toml ，否则 Docker 会把这个路径做成目录
-      - ./upload.toml:/app/upload.toml
     healthcheck:
       test:
         [
