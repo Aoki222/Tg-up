@@ -99,7 +99,11 @@ def _resolve_observer_path(value: str) -> Path:
 def inspect_observer_path(path: Path) -> dict:
     text = str(path)
     if not path.exists():
-        return {"path": text, "ok": False, "error": "目录不存在"}
+        return {
+            "path": text,
+            "ok": False,
+            "error": "目录不存在（Docker 里请填容器路径，如 /app/download，不是宿主机的 /home/...）",
+        }
     if not path.is_dir():
         return {"path": text, "ok": False, "error": "不是目录"}
     return {"path": text, "ok": True, "error": ""}

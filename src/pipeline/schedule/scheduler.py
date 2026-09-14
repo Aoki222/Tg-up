@@ -17,6 +17,16 @@ from ...logger import get_logger
 logger = get_logger(__name__)
 
 
+def pick_least_loaded(loads: dict[str, int], concurrency: int, rr: int) -> tuple[str | None, int]:
+    """负载最低的号；并列时按名字排序再轮转，避免永远点名第一个。"""
+    eligible = [(name, load) for name, load in loads.items() if load < concurrency]
+    if not eligible:
+        return None, rr
+    min_load = min(load for _name, load in eligible)
+    tied = sorted(name for name, load in eligible if load == min_load)
+    return tied[rr % len(tied)], rr + 1
+
+
 class UploadScheduler:
     """DB pending -> 原子抢占 -> 有空槽且未在 FloodWait 的 Worker。"""
 
@@ -33,6 +43,7 @@ class UploadScheduler:
         self.worker_map: dict = {}
         self.is_running = True
         self.timeout_task = None
+        self._rr = 0
 
     def request_reschedule(self) -> None:
         # 多次 set 可合并；万一丢掉，轮询最多隔 poll_interval 再跑
@@ -82,26 +93,31 @@ class UploadScheduler:
                 pass
 
     async def schedule_once(self) -> None:
-        """按每个 worker 的空槽取最小文件优先的 pending，抢到才入队。"""
+        """每条 pending 分给当前负载最低的号；并列则轮转，不要先喂饱同一个 bot。"""
         settings = self.settings_hub.get()
-        available_workers = []
+        loads: dict[str, int] = {}
         for worker_name, worker in list(self.worker_map.items()):
             if not worker.is_accepting():
                 continue
             active = await self.task_repository.count_active_tasks(worker_name)
-            if active < settings.concurrency:
-                available_workers.append((worker_name, settings.concurrency - active))
-        if not available_workers:
+            queued = worker.task_queue.qsize()
+            loads[worker_name] = active + queued
+        if not loads:
             return
-        for worker_name, free_slots in available_workers:
-            worker = self.worker_map.get(worker_name)
-            if worker is None:
+        free_total = sum(max(0, settings.concurrency - load) for load in loads.values())
+        if free_total <= 0:
+            return
+        for row in await self.task_repository.fetch_pending_tasks(free_total):
+            chosen, self._rr = pick_least_loaded(loads, settings.concurrency, self._rr)
+            if chosen is None:
+                return
+            worker = self.worker_map.get(chosen)
+            if worker is None or not worker.is_accepting():
                 continue
-            for row in await self.task_repository.fetch_pending_tasks(free_slots):
-                # 只有 CAS 抢到 pending 才入队，防止同一任务发给两个 worker
-                if await self.task_repository.claim_task(row["id"], worker_name):
-                    policy = self.settings_hub.policy_for_row(row)
-                    await worker.enqueue_task(task_from_row(row, policy))
+            if await self.task_repository.claim_task(row["id"], chosen):
+                policy = self.settings_hub.policy_for_row(row)
+                await worker.enqueue_task(task_from_row(row, policy))
+                loads[chosen] = loads.get(chosen, 0) + 1
 
     async def check_timeout_loop(self) -> None:
         """把挂太久的 assigned / uploading 打回 pending，防止槽位被幽灵任务占死。"""

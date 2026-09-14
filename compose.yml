@@ -25,6 +25,9 @@ services:
       - ./page:/app/page
       - ./uploaded:/app/uploaded
       - ./logs:/app/logs
+      # 宿主机其它目录必须挂进来。控制台填【右边】容器路径，不要填宿主机路径。
+      # 例：宿主机 /home/scrapy/data/download → 控制台填 /data/scrapy-download
+      - /home/scrapy/data/download:/data/scrapy-download
     healthcheck:
       test:
         [
