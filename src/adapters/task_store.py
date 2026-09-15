@@ -26,8 +26,9 @@ class TaskRepository:
         max_retries: int = 3,
         topic_id: int | None = None,
         caption: str = "",
+        after_success: str = "keep",
     ) -> int:
-        """插入一条任务。single_page/content_page 是封面需求快照，后续只读。"""
+        """插入一条任务。封面需求和 after_success 入库时拍快照。"""
         async with get_db() as database:
             cursor = await database.execute(
                 """INSERT INTO upload_tasks
@@ -44,9 +45,10 @@ class TaskRepository:
                    content_page,
                    page_path,
                    status,
-                   max_retries
+                   max_retries,
+                   after_success
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -60,6 +62,7 @@ class TaskRepository:
                     int(content_page),
                     status,
                     max_retries,
+                    after_success,
                 ),
             )
             await database.commit()
@@ -193,7 +196,7 @@ class TaskRepository:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
                    assigned_at = NULL, started_at = NULL, error_msg = 'recovered on startup'
-                   WHERE status IN ('assigned', 'uploading', 'preparing')"""
+                   WHERE status IN ('assigned', 'uploading')"""
             )
             await database.commit()
             return cursor.rowcount
@@ -221,6 +224,16 @@ class TaskRepository:
             )
             await database.commit()
             return uploading.rowcount + assigned.rowcount
+
+    async def fetch_preparing_tasks(self) -> list[dict]:
+        """启动时把未做完的封面任务重新丢给预览池。"""
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT * FROM upload_tasks
+                   WHERE status = 'preparing'
+                   ORDER BY id ASC"""
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
 
     async def update_preview(self, task_id: int, page_path: str | None, success: bool, error_message: str = "") -> None:
         """截图结束的唯一放行点：无论成败都转到 pending，让调度器能看见。"""

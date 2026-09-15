@@ -33,7 +33,7 @@ from ..domain.settings_hub import SettingsHub, ensure_upload_config
 from ..logger import get_logger
 from ..utils.topic_creactor import TopicCreator
 from .discover import FolderWatcher, iter_existing_files_many
-from .ingest import FileIngestor
+from .ingest import FileIngestor, PreviewJob, PreviewPool
 from .schedule import UploadScheduler
 from .worker import UploadWorker
 
@@ -60,6 +60,7 @@ class UploaderApplication:
         self._watcher = None
         self._file_queue = None
         self._ingestor = None
+        self._preview_pool = None
         self._uvicorn = None
         self._shutting_down = False
         self._finished = False
@@ -92,7 +93,11 @@ class UploaderApplication:
         self._after_upload = after_upload
         topic_creator = TopicCreator(session_pool.any_client, repository)
         file_queue: asyncio.Queue[Path | None] = asyncio.Queue()
-        ingestor = FileIngestor(repository, scheduler, settings_hub, topic_creator)
+        preview_pool = PreviewPool(repository, scheduler, settings_hub)
+        ingestor = FileIngestor(
+            repository, scheduler, settings_hub, topic_creator, preview_pool=preview_pool
+        )
+        self._preview_pool = preview_pool
         watcher = FolderWatcher(file_queue.put)
         usable = [path for path in settings.observer_paths if path.is_dir()]
         watcher.apply_paths(usable)
@@ -114,7 +119,17 @@ class UploaderApplication:
 
                 spawn(watcher.run_forever(), "watcher")
                 spawn(ingestor.consume(file_queue), "ingest")
+                spawn(preview_pool.run_forever(), "preview")
                 spawn(scheduler.run_forever(), "scheduler")
+                for row in await repository.fetch_preparing_tasks():
+                    preview_pool.submit(
+                        PreviewJob(
+                            task_id=int(row["id"]),
+                            file_path=Path(row["file_path"]),
+                            need_single=bool(row.get("single_page")),
+                            need_content=bool(row.get("content_page")),
+                        )
+                    )
                 spawn(
                     self._runtime_loop(settings_hub, session_pool, scheduler, repository, after_upload),
                     "runtime",
@@ -307,6 +322,8 @@ class UploaderApplication:
             await watcher.stop()
         if ingestor is not None:
             await ingestor.stop()
+        if self._preview_pool is not None:
+            await self._preview_pool.stop()
         if scheduler is not None:
             await scheduler.stop()
             names = list(scheduler.worker_map)

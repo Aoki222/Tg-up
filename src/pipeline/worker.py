@@ -229,17 +229,18 @@ class UploadWorker:
                 client = pool.clients.get(self.worker_name)
                 if client is not None and client.is_connected() and not pool.is_reconnecting(self.worker_name):
                     disconnected = getattr(client, "disconnected", None)
-                    if disconnected is not None:
-                        try:
-                            await asyncio.wait_for(disconnected, timeout=5)
-                        except TimeoutError:
-                            continue
-                    else:
+                    # 旧连接留下的已完成 Future 会立刻返回，不能无 sleep 地 continue
+                    if disconnected is None or disconnected.done():
                         await asyncio.sleep(5)
+                        continue
+                    try:
+                        await asyncio.wait_for(disconnected, timeout=5)
+                    except TimeoutError:
                         continue
                     if not self.is_running:
                         break
                     if client.is_connected():
+                        await asyncio.sleep(1)
                         continue
                     pool.mark_disconnected(self.worker_name, "Telegram 连接已断开")
                     logger.warning("[%s] Telegram 连接已断开，开始重连", self.worker_name)

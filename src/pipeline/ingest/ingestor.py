@@ -1,11 +1,8 @@
 """发现层之后的入库。
 
 顺序：扩展名过滤 → 路径去重 → 等文件写完 → 再建话题 → 入库。
-需要封面时先写成 preparing（调度器看不见），截图完成或失败后再转 pending。
+需要封面时写成 preparing 后立刻返回；截图由 PreviewPool 做完再转 pending。
 封面失败不丢视频：page_path 置空，仍然上传。
-
-当前配置会在入库时拷进 Task.policy。之后改 upload.toml 不影响这条已入库任务。
-本阶段串行消费队列，长视频截图会堵住后面的文件。
 """
 
 import asyncio
@@ -18,8 +15,8 @@ from ...domain.task import TaskStatus
 from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
 from ...utils.topic_creactor import TopicCreator
-from ...utils.video_preview import FirstFramePreview, GridPreview
 from .policy import IngestPolicy
+from .preview import PreviewJob, PreviewPool
 
 logger = get_logger(__name__)
 
@@ -63,11 +60,13 @@ class FileIngestor:
         rescheduler: Rescheduler,
         settings_hub: SettingsHub,
         topic_creator: TopicCreator | None = None,
+        preview_pool: PreviewPool | None = None,
     ):
         self.task_repository = task_repository
         self.rescheduler = rescheduler
         self.settings_hub = settings_hub
         self.topic_creator = topic_creator
+        self.preview_pool = preview_pool
         self.ingest_policy = IngestPolicy()
         self._lock = asyncio.Lock()
         self._running = True
@@ -140,6 +139,7 @@ class FileIngestor:
             status=status.value,
             max_retries=policy.max_retries,
             caption=caption,
+            after_success=policy.after_success.value,
         )
         self.settings_hub.remember_policy(task_id, policy)
         logger.info("已入库 task=%s: %s", task_id, file_path)
@@ -148,25 +148,18 @@ class FileIngestor:
             self.rescheduler.request_reschedule()
             return task_id
 
-        page_path = None
-        try:
-            if decision.need_single:
-                page_path = await FirstFramePreview(page_dir=settings.page_dir).extract_first_frame_async(
-                    file_path, None
-                )
-            if decision.need_content:
-                page_path = await GridPreview(page_dir=settings.page_dir).build_content_page_async(
-                    file_path, None
-                )
-            await self.task_repository.update_preview(task_id, str(page_path) if page_path else None, True)
-        except asyncio.CancelledError:
-            await self.task_repository.update_preview(task_id, None, False, "preview cancelled")
-            raise
-        except Exception as error:
-            # 封面失败仍转 pending，只发视频，不卡死在 preparing
-            await self.task_repository.update_preview(task_id, None, False, str(error))
-            logger.exception("预览生成失败 task=%s", task_id)
-        self.rescheduler.request_reschedule()
+        if self.preview_pool is None:
+            await self.task_repository.update_preview(task_id, None, False, "preview pool missing")
+            self.rescheduler.request_reschedule()
+            return task_id
+        self.preview_pool.submit(
+            PreviewJob(
+                task_id=task_id,
+                file_path=file_path,
+                need_single=decision.need_single,
+                need_content=decision.need_content,
+            )
+        )
         return task_id
 
     async def consume(self, file_queue: asyncio.Queue[Path | None]) -> None:

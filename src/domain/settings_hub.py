@@ -4,8 +4,7 @@
 upload.toml 是上传策略，保存后约 2 秒生效。
 
 热更新是整份替换冻结对象。解析失败则保持上一份，避免坏文件把服务弄死。
-已入库任务的 after_success / max_retries 看内存里的 policy 快照；
-进程重启后快照丢失，只能退回当时的当前配置（尚未把这两项写入表）。
+已入库任务的 after_success 写在 upload_tasks 行上；内存快照只是加速。
 """
 
 from __future__ import annotations
@@ -306,11 +305,15 @@ class SettingsHub:
         stored = self._policies.get(task_id)
         if stored is not None:
             return stored
-        # 重启后内存快照没了，只能退回当前配置；after_success 尚未落库
         need_preview = bool(row.get("single_page") or row.get("content_page"))
+        raw = row.get("after_success")
+        try:
+            after_success = AfterSuccess(str(raw)) if raw else self._settings.after_success
+        except ValueError:
+            after_success = self._settings.after_success
         return TaskPolicy(
             need_preview=need_preview,
-            after_success=self._settings.after_success,
+            after_success=after_success,
             max_retries=int(row.get("max_retries") or self._settings.max_retries),
         )
 

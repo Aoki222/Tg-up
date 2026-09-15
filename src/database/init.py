@@ -1,7 +1,6 @@
 """初始化表结构。
 
-CREATE TABLE IF NOT EXISTS 不会给已经存在的旧库加新列。
-当前约定先不跑迁移：新库用这份 schema，旧库缺列时需要人工处理。
+CREATE TABLE IF NOT EXISTS 不会给已有表加列；init_db 里对 after_success 做 ALTER。
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     assigned_bot    TEXT,
     retry_count     INTEGER NOT NULL DEFAULT 0,
     max_retries     INTEGER NOT NULL DEFAULT 3,
+    after_success   TEXT    NOT NULL DEFAULT 'keep',
     error_msg       TEXT,
     
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -69,12 +69,22 @@ CREATE INDEX IF NOT EXISTS idx_chat_topic_chat_path
 
 
 async def init_db() -> None:
-    """只 CREATE IF NOT EXISTS，不会给已有表加列。"""
-
     async with get_db() as db:
         await db.executescript(SCHEMA)
-        
+        await _ensure_column(
+            db,
+            "upload_tasks",
+            "after_success",
+            "TEXT NOT NULL DEFAULT 'keep'",
+        )
         await db.commit()
-
     logger.info("数据库初始化完成")
+
+
+async def _ensure_column(db, table: str, column: str, ddl: str) -> None:
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+        names = {row[1] for row in await cursor.fetchall()}
+    if column not in names:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        logger.info("已为 %s 增加列 %s", table, column)
     
