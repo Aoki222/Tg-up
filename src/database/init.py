@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..logger import get_logger
-from .connection import get_db
+from .connection import get_db, open_pool
 
 logger = get_logger(__name__)
 
@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
 CREATE INDEX IF NOT EXISTS idx_status          ON upload_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_status_size     ON upload_tasks(status, file_size);
 CREATE INDEX IF NOT EXISTS idx_assigned_bot    ON upload_tasks(assigned_bot);
+CREATE INDEX IF NOT EXISTS idx_assigned_status ON upload_tasks(assigned_bot, status);
+CREATE INDEX IF NOT EXISTS idx_file_path_status ON upload_tasks(file_path, status);
 CREATE INDEX IF NOT EXISTS idx_started_at      ON upload_tasks(started_at);
 
 CREATE TABLE IF NOT EXISTS chat_topic (
@@ -69,6 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_topic_chat_path
 
 
 async def init_db() -> None:
+    await open_pool()
     async with get_db() as db:
         await db.executescript(SCHEMA)
         await _ensure_column(

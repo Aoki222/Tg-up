@@ -28,6 +28,7 @@ from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
 from ..api.workers import snapshot_workers
 from ..config import API_HASH, API_HOST, API_ID, API_PORT, PROJECT_DIR, SESSION_DIR
+from ..database.connection import close_pool
 from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
 from ..logger import get_logger
@@ -342,6 +343,7 @@ class UploaderApplication:
             self._uvicorn.should_exit = True
         if session_pool is not None:
             await session_pool.disconnect_all()
+        await close_pool()
         logger.info("资源已释放")
 
     async def _unload_worker(self, name: str, *, reason: str, in_flight_timeout: float) -> None:

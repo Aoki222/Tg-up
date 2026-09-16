@@ -21,6 +21,20 @@ logger = get_logger(__name__)
 _CREATE_NO_WINDOW = 0x08000000
 
 
+def grid_seek_timestamps(duration: float, count: int) -> list[float]:
+    """把时长均分成 count 段，取每段中点，避开片头片尾。"""
+    if duration <= 0 or count <= 0:
+        return []
+    return [duration * (index + 0.5) / count for index in range(count)]
+
+
+def interval_seek_timestamps(interval_seconds: float, count: int, start: float = 0.5) -> list[float]:
+    """读不到时长时：从 start 起按固定间隔 seek，最多 count 张。"""
+    if interval_seconds <= 0 or count <= 0:
+        return []
+    return [start + index * interval_seconds for index in range(count)]
+
+
 def resolve_page_output(
     video_path: Path,
     suffix: str,
@@ -135,6 +149,28 @@ class GridPreview:
             logger.warning("ffprobe 读时长失败，走间隔抽帧：%s", video_path)
             return None
 
+    async def _seek_one_frame(self, video_path: Path, timestamp: float, output_path: Path) -> Path | None:
+        """-ss 在 -i 前：输入侧随机读，落到时间点之前最近的关键帧。"""
+        try:
+            await run_ffmpeg_command(
+                [
+                    "-ss",
+                    f"{timestamp:.3f}",
+                    "-i",
+                    str(video_path),
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "4",
+                    str(output_path),
+                ],
+                self.ffmpeg_path,
+            )
+        except RuntimeError:
+            logger.warning("关键帧 seek 失败 t=%.3f: %s", timestamp, video_path)
+            return None
+        return output_path if output_path.is_file() else None
+
     async def extract_interval_frames(self, video_path: Path, frame_directory: Path) -> list[Path]:
         video_path = Path(video_path)
         frame_directory = Path(frame_directory)
@@ -143,30 +179,24 @@ class GridPreview:
         frame_directory.mkdir(parents=True, exist_ok=True)
         duration = await self.get_video_duration(video_path)
         if duration and duration > 0:
-            await run_ffmpeg_command(
-                ["-i", str(video_path), "-vf", f"fps={self.frame_count}/{duration}",
-                 str(frame_directory / "frame_%04d.jpg")],
-                self.ffmpeg_path,
-            )
+            timestamps = grid_seek_timestamps(duration, self.frame_count)
         else:
-            await run_ffmpeg_command(
-                ["-i", str(video_path), "-vf", f"fps=1/{self.interval_seconds}",
-                 str(frame_directory / "frame_%04d.jpg")],
-                self.ffmpeg_path,
-            )
-        frame_paths = sorted(frame_directory.glob("frame_*.jpg"))
+            timestamps = interval_seek_timestamps(self.interval_seconds, self.frame_count)
+
+        frame_paths: list[Path] = []
+        for index, timestamp in enumerate(timestamps, start=1):
+            output_path = frame_directory / f"frame_{index:04d}.jpg"
+            grabbed = await self._seek_one_frame(video_path, timestamp, output_path)
+            if grabbed is not None:
+                frame_paths.append(grabbed)
+
         if not frame_paths:
             fallback = frame_directory / "frame_0001.jpg"
-            await run_ffmpeg_command(
-                ["-ss", "1", "-i", str(video_path), "-vframes", "1", str(fallback)],
-                self.ffmpeg_path,
-            )
-            frame_paths = [fallback] if fallback.is_file() else []
+            grabbed = await self._seek_one_frame(video_path, 1.0, fallback)
+            if grabbed is not None:
+                frame_paths = [grabbed]
         if not frame_paths:
             raise RuntimeError(f"未抽到任何帧：{video_path}")
-        if len(frame_paths) > self.frame_count:
-            step = len(frame_paths) / self.frame_count
-            frame_paths = [frame_paths[int(index * step)] for index in range(self.frame_count)]
         logger.info("抽帧完成：%s 共 %s 张", video_path, len(frame_paths))
         return frame_paths
 

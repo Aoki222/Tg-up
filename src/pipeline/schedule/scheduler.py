@@ -16,6 +16,8 @@ from ...logger import get_logger
 
 logger = get_logger(__name__)
 
+COALESCE_SECONDS = 0.05
+
 
 def pick_least_loaded(loads: dict[str, int], concurrency: int, rr: int) -> tuple[str | None, int]:
     """负载最低的号；并列时按名字排序再轮转，避免永远点名第一个。"""
@@ -35,11 +37,13 @@ class UploadScheduler:
         task_repository: TaskRepository,
         settings_hub: SettingsHub,
         poll_interval_seconds: int = 5,
+        coalesce_seconds: float = COALESCE_SECONDS,
     ):
         self.wakeup_event = asyncio.Event()
         self.task_repository = task_repository
         self.settings_hub = settings_hub
         self.poll_interval_seconds = poll_interval_seconds
+        self.coalesce_seconds = max(0.0, coalesce_seconds)
         self.worker_map: dict = {}
         self.is_running = True
         self.timeout_task = None
@@ -68,6 +72,9 @@ class UploadScheduler:
                 except TimeoutError:
                     pass
                 self.wakeup_event.clear()
+                if self.is_running and self.coalesce_seconds > 0:
+                    await asyncio.sleep(self.coalesce_seconds)
+                    self.wakeup_event.clear()
                 try:
                     await self.schedule_once()
                 except Exception as error:
@@ -95,13 +102,12 @@ class UploadScheduler:
     async def schedule_once(self) -> None:
         """每条 pending 分给当前负载最低的号；并列则轮转，不要先喂饱同一个 bot。"""
         settings = self.settings_hub.get()
+        counts = await self.task_repository.count_active_by_workers()
         loads: dict[str, int] = {}
         for worker_name, worker in list(self.worker_map.items()):
             if not worker.is_accepting():
                 continue
-            active = await self.task_repository.count_active_tasks(worker_name)
-            queued = worker.task_queue.qsize()
-            loads[worker_name] = active + queued
+            loads[worker_name] = int(counts.get(worker_name, 0))
         if not loads:
             return
         free_total = sum(max(0, settings.concurrency - load) for load in loads.values())

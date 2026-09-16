@@ -26,6 +26,10 @@
 | Session | 动态扫 `sessions/`；控制台登录；CLI 挪到 `src/adapters/generate_session.py` |
 | 运维 | Worker 禁用/删除；断线退避重连；Ctrl+C 在 Windows 上曾假死，后加强制退出 |
 | 监听 | 多路径、cwd 解析绝对路径、不自动建目录 |
+| 入库并行 | 写稳/建话题移出全局锁，最多 8 个文件同时等写完；INSERT 仍串行去重 |
+| 网格封面 | 按时长均分 15 段，`-ss` 在 `-i` 前 seek 附近关键帧，不再整片 `fps` 解码 |
+| SQLite | 启动打开 4 条长连接小池；`(file_path, status)` / `(assigned_bot, status)` 索引 |
+| 调度 | 负载只看库里 assigned+uploading；唤醒后 50ms 合并 `request_reschedule` |
 
 曾单独 git：先归档 `upload_old` / 旧 handler，再提交新结构，再删旧代码。
 
@@ -34,10 +38,11 @@
 ## 3. 架构（当前）
 
 ```
-发现(watchdog+扫盘) → 入库(写稳/话题/截图) → SQLite
-    → 调度(CAS 抢占) → Worker(send_file) → AfterUpload
-                              ↓
-                         ProgressHub → SSE → 控制台
+发现(watchdog+扫盘) → 入库(并行写稳 / 话题 / INSERT)
+                         ↘ PreviewPool（首帧/网格，不堵入库）
+    → SQLite → 调度(CAS 抢占) → Worker(send_file) → AfterUpload
+                                      ↓
+                                 ProgressHub → SSE → 控制台
 ```
 
 依赖方向：`pipeline` → `domain` + `ports` ← `adapters`。
@@ -51,7 +56,7 @@
 | `src/api` | 控制台 HTTP，不投喂文件 |
 | `frontend/` | Vue；构建到 `frontend/dist` |
 
-SQLite 是任务真相源。内存队列在杀进程后会丢，启动必须对账。
+SQLite 是任务真相源。内存队列在杀进程后会丢，启动必须对账。连接是启动时 4 条长连接，不是每次 SQL 新建。
 
 ---
 
@@ -67,7 +72,7 @@ preparing → pending → assigned → uploading → success
 - 没有 `retrying`（schema 里可能还有旧值，读出来当 pending）
 - `claim_task` 带 `WHERE status IN ('pending','retrying')` 的 CAS
 
-**策略快照：** 入库时把 `after_success` / `max_retries` / 是否封面拷进任务。之后改 toml 不影响已入库任务（快照目前主要在内存，重启后 `after_success` 会退回当前配置）。
+**策略快照：** 入库时把 `after_success` / `max_retries` / 是否封面拷进任务行（`upload_tasks.after_success` 列）。之后改 toml 不影响已入库任务。内存 `_policies` 只是加速，重启后从行上读。
 
 ---
 
@@ -95,12 +100,17 @@ preparing → pending → assigned → uploading → success
 
 - Watchdog：`on_created` + `on_moved`（Windows 剪切）
 - 启动扫盘 + 新加监听目录时补扫
-- 写稳：连续几次文件大小不变；有超时
+- 写稳：第一次 `stat` 算一轮；`mtime` 已经久于剩余观察窗口（默认约 4s）的旧文件立刻过，不必再睡。正在拷贝的仍按「连续几次大小不变」等，有超时
 - 扩展名白名单
-- 未完成任务按绝对 `file_path` 去重
-- 话题：`(chat_id, 目录绝对路径)` 复用；发送必须 `reply_to=topic_id`，否则进 General
+- 未完成任务按绝对 `file_path` 去重；同一路径正在入库时用 `_inflight_paths` 丢掉重复 watchdog 事件
+- **并行：** `INGEST_CONCURRENCY=8` 同时等写稳/建话题。锁只包「再查重 + INSERT」。`consume` 取出后 `create_task`，结束哨兵后等在途任务收尾
+- 话题：`(chat_id, 目录绝对路径)` 复用；按这个键加锁，不同目录可并行 `CreateForumTopic`。库里已有记录时不占锁。发送必须 `reply_to=topic_id`，否则进 General
+- 封面：需要时写成 `preparing` 立刻返回，截图在 `PreviewPool`（默认并发 2）。失败不丢视频：`page_path` 置空转 `pending`
+- 网格封面：ffprobe 时长 → 15 段中点 `t_i = duration * (i+0.5)/15` → 串行 `ffmpeg -ss t_i -i … -frames:v 1`（输入侧 seek，附近关键帧）。读不到时长按 60s 间隔同样 seek，不再 `fps=15/duration` 整片解码。单格失败跳过；一张都没有则回退截第 1 秒
 
-截图仍在 ingest 协程里串行（首帧/网格），长视频会堵住后面入库。这是已知未拆完的结构债。
+SQLite：`init_db()` 打开 4 条长连接（WAL / busy_timeout 只设一次），`get_db()` 借还，退出 `close_pool()`。`find_active_by_file_path` 走 `(file_path, status)` 索引。
+
+调度：负载 = 库里该 worker 的 `assigned+uploading`（一条 `GROUP BY assigned_bot`），**不加**内存队列长度（claim 后任务已是 assigned，再加 `qsize` 会双计，并发 3 时 3 条未开工会被看成 6）。`request_reschedule()` 仍是随时 `Event.set()`；调度循环唤醒后睡 50ms 再 `clear`，一批入库合成一轮 `schedule_once`。`schedule_once` 期间新来的 set 下一圈会立刻再跑（必要）。`stop()` 跳过 50ms。
 
 ---
 
@@ -160,7 +170,7 @@ release：`pending`，清空 `assigned_bot` / `assigned_at` / `started_at`，**�
 
 对策：
 
-- 第一次 Ctrl+C 置停止事件；约 2 秒仍没退完则 `os._exit(1)`
+- 第一次 Ctrl+C 置停止事件；约 10 秒仍没退完则 `os._exit(1)`
 - 再按一次在信号处理函数里直接强制退出
 - `connect()` 超时 8 秒，避免启动同步把退出逻辑堵在门外
 - 首轮 session 同步改到 runtime 循环，不阻塞等待退出信号
@@ -171,21 +181,25 @@ release：`pending`，清空 `assigned_bot` / `assigned_at` / `started_at`，**�
 
 - HTTP 投喂本机路径 + `wait: true` 阻塞到上传结束（7-Zip 式给别的项目调）→ 只保留监听目录
 - 假 SSE 演示进度按钮
-- `src/upload_old`、旧 `handler.py`、`insert_single_task`、失效测试
+- `src/upload_old`、旧 `handler.py`、`insert_single_task`、一度清空的 `tests/`
 - 根目录 `generate_session.py`、`src/upload` 扁平包
-- `tests/`（只剩 pycache）、`web/`（构建改到 `frontend/dist`）
+- 根目录 `web/`（构建改到 `frontend/dist`）
 - SOCKS 依赖
+
+`tests/` 后来加回：入库并行、话题锁、网格 seek、调度负载/合并唤醒、连接池。
 
 ---
 
 ## 12. 已知债
 
-- 截图仍堵在 ingest 串行协程
-- `after_success` 快照未进 SQLite，重启后跟当前 toml
-- 未开 SQLite WAL，高并发可能 `database is locked`
-- 换监听路径已热挂 watchdog；`page_dir` 等仍是项目根相对路径
+- 换监听路径已热挂 watchdog；`page_dir` / 归档目录仍是项目根相对路径（监听目录已改成 cwd）
 - Vue 全量引入 Element Plus，产物偏大
 - 禁用名单与 session 文件两套真相，要靠 `_sync_sessions` 对齐
+- `SettingsHub._policies` 只增不删（重启后从行上读，内存字典长跑会涨）
+- Worker 的 `TelegramClient` 未传 `TELEGRAM_PROXY`（控制台登录会传）
+- AfterUpload 的 `unlink` / `shutil.move` 仍在事件循环线程上跑
+
+已还掉的债：截图拆到 PreviewPool；网格改为关键帧 seek；写稳不再串行堵入库；WAL + 4 连接小池；`after_success` 进了任务行；`file_path` 有索引；调度负载不再双计队列。
 
 ---
 

@@ -1,4 +1,4 @@
-"""入库阶段：决议、写稳、建话题、写库；截图在 PreviewPool。"""
+"""入库阶段：决议、并行写稳、建话题、写库；截图在 PreviewPool。"""
 
 from .ingestor import FileIngestor
 from .policy import IngestPolicy

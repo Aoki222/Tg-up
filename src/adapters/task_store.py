@@ -107,13 +107,19 @@ class TaskRepository:
 
     async def count_active_tasks(self, worker_name: str) -> int:
         """assigned + uploading 都占槽。只数内存队列会在崩溃后低估负载。"""
+        counts = await self.count_active_by_workers()
+        return int(counts.get(worker_name, 0))
+
+    async def count_active_by_workers(self) -> dict[str, int]:
+        """一次查出每个 worker 的 assigned+uploading 数量。"""
         async with get_db() as database:
             async with database.execute(
-                "SELECT COUNT(*) FROM upload_tasks WHERE assigned_bot = ? AND status IN ('assigned', 'uploading')",
-                (worker_name,),
+                """SELECT assigned_bot, COUNT(*) AS n FROM upload_tasks
+                   WHERE status IN ('assigned', 'uploading') AND assigned_bot IS NOT NULL
+                   GROUP BY assigned_bot"""
             ) as cursor:
-                row = await cursor.fetchone()
-                return row[0]
+                rows = await cursor.fetchall()
+                return {str(row[0]): int(row[1]) for row in rows}
 
     async def fetch_pending_tasks(self, limit: int) -> list[dict]:
         """小文件优先。含旧数据里可能残留的 retrying。"""
