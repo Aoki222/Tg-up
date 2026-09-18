@@ -5,14 +5,16 @@
  *
  * 核心架构：
  * 1. 【顶层系统遥测带 (Telemetry Ribbon)】：实时聚合计算当前总吞吐、传输中任务数、在线 Worker 比率与待发队列积压；
- * 2. 【主工作区双列异步布局】：左侧 340px Worker 管理列 + 右侧 Flex-1 宽幅传输通道，消除文件名截断痛点；
+ * 2. 【主工作区】：左侧 Worker 列 + 右侧四列任务看板；
  * 3. 【Session 授权弹窗宿主】：通过 Teleport 挂载全局毛玻璃模态窗，解耦业务交互。
  */
 
 import { computed, ref, watch } from "vue";
 import WorkerPanel from "../components/WorkerPanel.vue";
-import ProgressPanel from "../components/ProgressPanel.vue";
+import TaskBoard from "../components/TaskBoard.vue";
 import SessionPanel from "../components/SessionPanel.vue";
+import { useTaskBoard } from "../composables/useTaskBoard";
+import { formatSpeed } from "../format";
 import type { WorkerSnapshot } from "../types";
 
 // ── 响应式状态定义 ─────────────────────────────────────────────
@@ -23,8 +25,7 @@ const showSessionForm = ref(false);
 /** 由子组件 WorkerPanel 派发的最新 Worker 快照数组 */
 const workers = ref<WorkerSnapshot[]>([]);
 
-/** 由子组件 ProgressPanel 派发的实时进度聚合统计（当前总速度、在传任务数） */
-const progressSummary = ref({ totalSpeed: 0, inFlightCount: 0 });
+const { items: boardItems, totalSpeed, inFlightCount, queueCount } = useTaskBoard();
 
 // ── 弹窗交互控制 ───────────────────────────────────────────────
 
@@ -43,11 +44,6 @@ function onUpdateWorkers(list: WorkerSnapshot[]): void {
   workers.value = list;
 }
 
-/** 接收进度统计更新，用于顶部遥测卡片展示全局吞吐速率 */
-function onUpdateProgress(summary: { totalSpeed: number; inFlightCount: number }): void {
-  progressSummary.value = summary;
-}
-
 // ── 遥测指标计算衍生量 (Computed Telemetry) ────────────────────
 
 /** 当前就绪且正接受任务的活跃 Worker 数量 */
@@ -57,23 +53,6 @@ const activeWorkersCount = computed(() =>
 
 /** 已挂载的 Worker 节点总数 */
 const totalWorkersCount = computed(() => workers.value.length);
-
-/** 所有 Worker 节点内部队列等待分配的文件总数 */
-const totalQueueCount = computed(() =>
-  workers.value.reduce((acc, w) => acc + (w.queue_size || 0), 0),
-);
-
-/**
- * 格式化传输速率为人类可读字符串
- * @param bytesPerSec 字节/秒
- */
-function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec <= 0) return "0 B/s";
-  if (bytesPerSec < 1024) return `${Math.round(bytesPerSec)} B/s`;
-  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-  if (bytesPerSec < 1024 * 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-  return `${(bytesPerSec / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
-}
 
 // 弹窗展开时锁定 body 滚动条，防止页面背景滚动穿透
 watch(showSessionForm, (open) => {
@@ -94,8 +73,8 @@ watch(showSessionForm, (open) => {
         </div>
         <div class="cell-data">
           <span class="cell-label">实时总吞吐</span>
-          <span class="cell-value" :class="{ 'highlight-speed': progressSummary.totalSpeed > 0 }">
-            {{ formatSpeed(progressSummary.totalSpeed) }}
+          <span class="cell-value" :class="{ 'highlight-speed': totalSpeed > 0 }">
+            {{ formatSpeed(totalSpeed) }}
           </span>
         </div>
       </div>
@@ -111,8 +90,8 @@ watch(showSessionForm, (open) => {
         </div>
         <div class="cell-data">
           <span class="cell-label">正在传输</span>
-          <span class="cell-value" :class="{ 'highlight-task': progressSummary.inFlightCount > 0 }">
-            {{ progressSummary.inFlightCount }} <span class="cell-unit">任务</span>
+          <span class="cell-value" :class="{ 'highlight-task': inFlightCount > 0 }">
+            {{ inFlightCount }} <span class="cell-unit">任务</span>
           </span>
         </div>
       </div>
@@ -147,8 +126,8 @@ watch(showSessionForm, (open) => {
         </div>
         <div class="cell-data">
           <span class="cell-label">队列积压</span>
-          <span class="cell-value" :class="{ 'warn-queue': totalQueueCount > 0 }">
-            {{ totalQueueCount }} <span class="cell-unit">待传</span>
+          <span class="cell-value" :class="{ 'warn-queue': queueCount > 0 }">
+            {{ queueCount }} <span class="cell-unit">待处理</span>
           </span>
         </div>
       </div>
@@ -161,9 +140,8 @@ watch(showSessionForm, (open) => {
         <WorkerPanel @add="openSessionForm" @update-workers="onUpdateWorkers" />
       </aside>
 
-      <!-- 右栏：实时文件进度瀑布流 -->
       <section class="progress-column">
-        <ProgressPanel @update-summary="onUpdateProgress" />
+        <TaskBoard :items="boardItems" />
       </section>
     </main>
   </div>
@@ -292,16 +270,17 @@ watch(showSessionForm, (open) => {
 }
 
 .worker-column {
-  width: 340px;
+  width: 280px;
   flex-shrink: 0;
 }
 
 .progress-column {
   flex: 1;
   min-width: 0;
+  overflow-x: auto;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1100px) {
   .telemetry-ribbon {
     display: grid;
     grid-template-columns: 1fr 1fr;

@@ -289,6 +289,7 @@ class UploaderApplication:
             disable_worker=self.disable_worker,
             enable_worker=self.enable_worker,
             delete_worker=self.delete_worker,
+            task_repository=self._repository,
         )
         config = uvicorn.Config(
             api,

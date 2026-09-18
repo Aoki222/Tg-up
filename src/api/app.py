@@ -44,6 +44,7 @@ def create_api(
     disable_worker=None,
     enable_worker=None,
     delete_worker=None,
+    task_repository=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
     app = FastAPI(title="uploader", version="0.1.0")
@@ -53,6 +54,7 @@ def create_api(
     app.state.disable_worker = disable_worker
     app.state.enable_worker = enable_worker
     app.state.delete_worker = delete_worker
+    app.state.task_repository = task_repository
     app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
     app.add_middleware(
         CORSMiddleware,
@@ -177,6 +179,19 @@ def create_api(
         except Exception as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+    @app.get("/api/tasks")
+    async def list_tasks() -> dict:
+        """看板快照：SQLite 任务行叠上 ProgressHub 的实时字节/速度。"""
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        hub: ProgressHub = app.state.progress_hub
+        rows = await repo.list_board_tasks()
+        counts = await repo.count_board_statuses()
+        latest = {item.task_id: item for item in hub.snapshot()}
+        items = [_board_item(row, latest.get(int(row["id"]))) for row in rows]
+        return {"items": items, "counts": counts}
+
     @app.get("/api/progress")
     async def progress_snapshot() -> dict:
         hub: ProgressHub = app.state.progress_hub
@@ -235,3 +250,40 @@ def create_api(
 
 def _sse(progress: UploadProgress) -> str:
     return f"event: progress\ndata: {json.dumps(progress.to_dict(), ensure_ascii=False)}\n\n"
+
+
+def _board_item(row: dict, progress: UploadProgress | None) -> dict:
+    status = str(row.get("status") or "pending")
+    if status == "retrying":
+        status = "pending"
+    item = {
+        "id": int(row["id"]),
+        "file_name": row.get("file_name") or "",
+        "file_size": int(row.get("file_size") or 0),
+        "folder_name": row.get("folder_name"),
+        "status": status,
+        "assigned_worker": row.get("assigned_bot"),
+        "retry_count": int(row.get("retry_count") or 0),
+        "max_retries": int(row.get("max_retries") or 3),
+        "error": row.get("error_msg"),
+        "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"),
+        "percent": 0.0,
+        "current": 0.0,
+        "total": float(row.get("file_size") or 0),
+        "speed_bps": 0.0,
+        "eta_seconds": -1.0,
+        "stage": None,
+        "message": "",
+    }
+    if progress is not None:
+        item["percent"] = progress.percent
+        item["current"] = progress.current
+        item["total"] = progress.total
+        item["speed_bps"] = progress.speed_bps
+        item["eta_seconds"] = progress.eta_seconds
+        item["stage"] = progress.stage
+        item["message"] = progress.message
+        if progress.worker_name and not item["assigned_worker"]:
+            item["assigned_worker"] = progress.worker_name
+    return item

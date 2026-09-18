@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from dataclasses import replace
 
-from ..domain.progress import UploadProgress
+from ..domain.progress import UploadProgress, is_album_units
 from ..logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,6 +24,8 @@ class ProgressHub:
         self._latest: dict[int, UploadProgress] = {}
         self._queues: list[asyncio.Queue[UploadProgress]] = []
         self._last_emit: dict[int, tuple[float, float]] = {}
+        # task_id -> (time, current, total, ema_speed)
+        self._speed_state: dict[int, tuple[float, float, float, float]] = {}
 
     def snapshot(self) -> list[UploadProgress]:
         """当前仍在 uploading 的进度，给 SSE 连上时的第一批快照。"""
@@ -41,6 +44,7 @@ class ProgressHub:
 
     def report(self, progress: UploadProgress) -> None:
         """同步接口，可从 Telethon 回调里调用。队列满则丢掉最旧的一条。"""
+        progress = self._with_speed(progress)
         if not self._should_emit(progress):
             self._latest[progress.task_id] = progress
             return
@@ -49,7 +53,35 @@ class ProgressHub:
         if progress.stage in {"success", "failed"}:
             self._latest.pop(progress.task_id, None)
             self._last_emit.pop(progress.task_id, None)
+            self._speed_state.pop(progress.task_id, None)
         self._broadcast(progress)
+
+    def _with_speed(self, progress: UploadProgress) -> UploadProgress:
+        """在节流之前用单调时钟算 EMA 速度。相册单位不算字节速度。"""
+        if progress.stage != "uploading":
+            self._speed_state.pop(progress.task_id, None)
+            return replace(progress, speed_bps=0.0, eta_seconds=-1.0)
+
+        now = time.monotonic()
+        previous = self._speed_state.get(progress.task_id)
+        speed = 0.0
+        if previous is not None:
+            last_t, last_current, last_total, last_speed = previous
+            if last_total != progress.total or is_album_units(progress.current, progress.total):
+                speed = 0.0
+            else:
+                dt = now - last_t
+                db = progress.current - last_current
+                if dt >= 0.2 and db > 0:
+                    instant = db / dt
+                    speed = instant if last_speed <= 0 else (0.55 * last_speed + 0.45 * instant)
+                else:
+                    speed = last_speed
+
+        self._speed_state[progress.task_id] = (now, progress.current, progress.total, speed)
+        remaining = max(0.0, progress.total - progress.current)
+        eta = remaining / speed if speed > 0 else -1.0
+        return replace(progress, speed_bps=round(speed, 1), eta_seconds=eta)
 
     def _should_emit(self, progress: UploadProgress) -> bool:
         """uploading 约 1% 或 0.4 秒才推一次；非 uploading 立刻推。"""
@@ -144,7 +176,7 @@ def _render_bar(percent: float, width: int) -> str:
 
 def _render_size(current: float, total: float) -> str:
     # 相册回调里 total 可能是文件个数而不是字节
-    if total <= 32 and total > 0 and current <= total:
+    if is_album_units(current, total):
         return f"{current:.1f}/{total:.0f} files"
     return f"{_fmt_bytes(current)}/{_fmt_bytes(total)}"
 

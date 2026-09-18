@@ -328,6 +328,20 @@ async function onDelete(name: string): Promise<void> {
   gap: 10px;
 }
 
+@media (max-width: 1100px) {
+  .list {
+    flex-direction: row;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-bottom: 4px;
+  }
+
+  .item {
+    min-width: 260px;
+    scroll-snap-align: start;
+  }
+}
+
 .item {
   padding: 12px 14px;
   border: 1px solid var(--border);

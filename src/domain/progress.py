@@ -19,9 +19,16 @@ class UploadProgress:
     percent: float
     stage: str  # uploading / success / failed / flood_wait
     message: str = ""
+    speed_bps: float = 0.0
+    eta_seconds: float = -1.0
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def is_album_units(current: float, total: float) -> bool:
+    """相册回调里 total 是文件个数（通常很小），不是字节。"""
+    return 0 < total <= 32 and current <= total
 
 
 def make_progress(
@@ -33,6 +40,8 @@ def make_progress(
     total: float,
     stage: str,
     message: str = "",
+    speed_bps: float = 0.0,
+    eta_seconds: float = -1.0,
 ) -> UploadProgress:
     percent = 0.0
     if total > 0:
@@ -48,4 +57,6 @@ def make_progress(
         percent=round(percent, 1),
         stage=stage,
         message=message,
+        speed_bps=speed_bps,
+        eta_seconds=eta_seconds,
     )

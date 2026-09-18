@@ -27,14 +27,48 @@ export interface UploadProgress {
   stage: ProgressStage;
   /** 附加消息（如异常错误原因、限流倒计时等） */
   message: string;
+  /** 服务端 EMA 速度（字节/秒）。相册或未知为 0 */
+  speed_bps: number;
+  /** 剩余秒数。未知为 -1 */
+  eta_seconds: number;
 }
 
-/** 前端运行时通过时序差值动态计算的遥测统计指标 */
-export interface ProgressStats {
-  /** 当前瞬时/滑动平滑速度（单位：字节/秒，即 Bytes/s） */
-  speed: number;
-  /** 预估剩余完成时间（单位：秒，若无法估算则为 -1） */
-  eta: number;
+/** 后端任务生命周期。看板四列：preparing / pending / assigned+uploading / failed */
+export type BoardStatus = "preparing" | "pending" | "assigned" | "uploading" | "success" | "failed";
+
+/** GET /api/tasks 返回的看板行，上传中会叠 ProgressHub 的字节与速度 */
+export interface BoardTask {
+  id: number;
+  file_name: string;
+  file_size: number;
+  folder_name: string | null;
+  status: BoardStatus;
+  assigned_worker: string | null;
+  retry_count: number;
+  max_retries: number;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  percent: number;
+  current: number;
+  total: number;
+  speed_bps: number;
+  eta_seconds: number;
+  stage: ProgressStage | null;
+  message: string;
+}
+
+export interface BoardCounts {
+  preparing: number;
+  pending: number;
+  assigned: number;
+  uploading: number;
+  failed: number;
+}
+
+export interface BoardSnapshot {
+  items: BoardTask[];
+  counts: BoardCounts;
 }
 
 // ── Worker 节点相关类型 ─────────────────────────────────────────

@@ -182,7 +182,7 @@
 /* ── 居中大画幅主视口 ── */
 .main-viewport {
   width: 100%;
-  max-width: 1360px;
+  max-width: 1520px;
   margin: 0 auto;
   padding: 10px 24px 60px;
   flex: 1;

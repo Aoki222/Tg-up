@@ -12,6 +12,7 @@
 import axios, { type AxiosError } from "axios";
 import { ElMessage } from "element-plus";
 import type {
+  BoardSnapshot,
   ObserverPathInfo,
   SessionLoginResult,
   SessionMeta,
@@ -201,6 +202,24 @@ export async function submitSessionPassword(
     password,
   });
   return res.data;
+}
+
+// ── 任务看板 ───────────────────────────────────────────────────
+
+/**
+ * 拉取看板任务快照（进行中全量 + 最近失败），上传中叠实时进度
+ */
+export async function fetchBoardTasks(): Promise<BoardSnapshot> {
+  const res = await apiClient.get<BoardSnapshot>("/api/tasks");
+  return res.data;
+}
+
+/**
+ * 拉取当前仍在 uploading 的进度快照（含服务端速度）
+ */
+export async function fetchProgressSnapshot(): Promise<UploadProgress[]> {
+  const res = await apiClient.get<{ items: UploadProgress[] }>("/api/progress");
+  return res.data.items;
 }
 
 // ── SSE 实时进度长连接 ─────────────────────────────────────────

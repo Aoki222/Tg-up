@@ -259,3 +259,46 @@ class TaskRepository:
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
+
+    async def list_board_tasks(self, failed_limit: int = 80) -> list[dict]:
+        """看板：进行中全量 + 最近失败。旧 retrying 一并带上，调用方当 pending。"""
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT * FROM upload_tasks
+                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading')
+                   ORDER BY id ASC"""
+            ) as cursor:
+                active = [dict(row) for row in await cursor.fetchall()]
+            async with database.execute(
+                """SELECT * FROM upload_tasks
+                   WHERE status = 'failed'
+                   ORDER BY id DESC LIMIT ?""",
+                (failed_limit,),
+            ) as cursor:
+                failed = [dict(row) for row in await cursor.fetchall()]
+        return active + failed
+
+    async def count_board_statuses(self) -> dict[str, int]:
+        """看板列计数。retrying 计入 pending。"""
+        counts = {
+            "preparing": 0,
+            "pending": 0,
+            "assigned": 0,
+            "uploading": 0,
+            "failed": 0,
+        }
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT status, COUNT(*) AS n FROM upload_tasks
+                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'failed')
+                   GROUP BY status"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+        for row in rows:
+            status = str(row[0])
+            n = int(row[1])
+            if status == "retrying":
+                counts["pending"] += n
+            elif status in counts:
+                counts[status] = n
+        return counts
