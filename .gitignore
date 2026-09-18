@@ -36,6 +36,7 @@ Thumbs.db
 
 # skill
 claude-code/
+.agents/
 
 # Frontend
 frontend/node_modules/

@@ -219,9 +219,16 @@ def create_api(
         if assets.is_dir():
             app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
+        index_html = DIST_DIR / "index.html"
+
         @app.get("/")
         async def index() -> FileResponse:
-            return FileResponse(DIST_DIR / "index.html")
+            return FileResponse(index_html)
+
+        @app.get("/{path:path}")
+        async def spa_fallback(path: str) -> FileResponse:
+            """SPA fallback：非 /api 的路由都返回 index.html。"""
+            return FileResponse(index_html)
 
     return app
 
