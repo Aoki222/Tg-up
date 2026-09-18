@@ -41,6 +41,7 @@ claude-code/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 docs/
 
