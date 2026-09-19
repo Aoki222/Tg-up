@@ -45,6 +45,7 @@ def create_api(
     enable_worker=None,
     delete_worker=None,
     task_repository=None,
+    reschedule=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
     app = FastAPI(title="uploader", version="0.1.0")
@@ -55,6 +56,7 @@ def create_api(
     app.state.enable_worker = enable_worker
     app.state.delete_worker = delete_worker
     app.state.task_repository = task_repository
+    app.state.reschedule = reschedule
     app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
     app.add_middleware(
         CORSMiddleware,
@@ -191,6 +193,36 @@ def create_api(
         latest = {item.task_id: item for item in hub.snapshot()}
         items = [_board_item(row, latest.get(int(row["id"]))) for row in rows]
         return {"items": items, "counts": counts}
+
+    def _wake_scheduler() -> None:
+        wake = app.state.reschedule
+        if wake is not None:
+            wake()
+
+    @app.post("/api/tasks/retry-failed", dependencies=[Depends(require_token)])
+    async def retry_all_failed() -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        retried, skipped = await repo.requeue_all_failed()
+        if retried:
+            _wake_scheduler()
+        return {"ok": True, "retried": retried, "skipped": skipped}
+
+    @app.post("/api/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
+    async def retry_task(task_id: int) -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        result = await repo.requeue_failed(task_id)
+        if result == "not_found":
+            raise HTTPException(status_code=404, detail="找不到任务")
+        if result == "not_failed":
+            raise HTTPException(status_code=409, detail="只能重试失败任务")
+        if result == "missing_file":
+            raise HTTPException(status_code=409, detail="文件不存在")
+        _wake_scheduler()
+        return {"ok": True, "id": task_id, "status": "pending", "retry_count": 0}
 
     @app.get("/api/progress")
     async def progress_snapshot() -> dict:

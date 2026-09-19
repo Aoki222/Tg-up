@@ -113,11 +113,14 @@ function clearToken(): void {
 <style scoped>
 .settings {
   max-width: 960px;
+  width: 100%;
   margin: 0 auto;
   padding: 8px 0 48px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .page-header {

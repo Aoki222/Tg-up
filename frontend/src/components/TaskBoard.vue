@@ -4,6 +4,8 @@
  * 列可收起：收起的列进左侧 48px 轨，展开列均分剩余宽度。
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { ElMessage } from "element-plus";
+import { retryAllFailedTasks, retryBoardTask } from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
 
@@ -24,6 +26,8 @@ const props = defineProps<{ items: BoardTask[] }>();
 
 const isNarrow = ref(false);
 const collapsed = ref<Set<ColumnKey>>(loadCollapsed());
+const retryingId = ref<number | null>(null);
+const retryingAll = ref(false);
 
 const buckets = computed(() => {
   const preparing: BoardTask[] = [];
@@ -79,6 +83,40 @@ function expand(key: ColumnKey): void {
   persist();
 }
 
+async function onRetry(id: number): Promise<void> {
+  if (retryingId.value !== null || retryingAll.value) return;
+  retryingId.value = id;
+  try {
+    await retryBoardTask(id);
+    ElMessage.success("已重新排队");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "重试失败");
+  } finally {
+    retryingId.value = null;
+  }
+}
+
+async function onRetryAll(): Promise<void> {
+  if (retryingAll.value || retryingId.value !== null || buckets.value.failed.length === 0) return;
+  retryingAll.value = true;
+  try {
+    const result = await retryAllFailedTasks();
+    if (result.retried === 0 && result.skipped === 0) {
+      ElMessage.info("没有可重试的任务");
+    } else if (result.retried === 0) {
+      ElMessage.warning(`文件不存在，已跳过 ${result.skipped} 个`);
+    } else if (result.skipped > 0) {
+      ElMessage.success(`已重新排队 ${result.retried} 个，跳过 ${result.skipped} 个`);
+    } else {
+      ElMessage.success(`已重新排队 ${result.retried} 个`);
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "全部重试失败");
+  } finally {
+    retryingAll.value = false;
+  }
+}
+
 onMounted(() => {
   const media = window.matchMedia("(max-width: 768px)");
   const apply = () => {
@@ -116,6 +154,15 @@ onMounted(() => {
         <header class="well-head">
           <span class="well-title">{{ column.title }}</span>
           <div class="well-actions">
+            <button
+              v-if="column.key === 'failed'"
+              type="button"
+              class="retry-all-btn"
+              :disabled="retryingAll || buckets.failed.length === 0"
+              @click="onRetryAll"
+            >
+              {{ retryingAll ? "重试中" : "全部重试" }}
+            </button>
             <span class="well-count">{{ buckets[column.key].length }}</span>
             <button
               v-if="!isNarrow"
@@ -139,7 +186,13 @@ onMounted(() => {
         </header>
         <div class="well-body">
           <TransitionGroup name="kanban" tag="div" class="card-stack">
-            <TaskCard v-for="task in buckets[column.key]" :key="task.id" :task="task" />
+            <TaskCard
+              v-for="task in buckets[column.key]"
+              :key="task.id"
+              :task="task"
+              :retrying="retryingId === task.id || retryingAll"
+              @retry="onRetry"
+            />
           </TransitionGroup>
           <p v-if="buckets[column.key].length === 0" class="empty">{{ column.empty }}</p>
         </div>
@@ -153,6 +206,8 @@ onMounted(() => {
   display: flex;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   align-items: stretch;
 }
 
@@ -160,8 +215,11 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  align-self: stretch;
   gap: 8px;
   width: 48px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .rail-tab {
@@ -218,6 +276,8 @@ onMounted(() => {
   flex: 1;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 
 .well {
@@ -225,8 +285,8 @@ onMounted(() => {
   flex: 1;
   flex-direction: column;
   min-width: 220px;
-  min-height: 280px;
-  max-height: calc(100dvh - 280px);
+  min-height: 0;
+  height: 100%;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -253,6 +313,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
   gap: 8px;
   margin-bottom: 10px;
   padding: 0 2px;
@@ -287,6 +348,35 @@ onMounted(() => {
 .rail-tab.failed .well-count {
   background: #fdecee;
   color: var(--bad);
+}
+
+.retry-all-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.15s cubic-bezier(0.32, 0.72, 0, 1),
+    border-color 0.15s cubic-bezier(0.32, 0.72, 0, 1),
+    transform 0.15s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.retry-all-btn:hover:not(:disabled) {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: var(--hover);
+}
+
+.retry-all-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.retry-all-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .collapse-btn {
@@ -413,18 +503,19 @@ onMounted(() => {
   .board {
     display: flex;
     overflow-x: auto;
+    overflow-y: hidden;
     scroll-snap-type: x mandatory;
-    padding-bottom: 8px;
   }
 
   .open-pane {
     display: flex;
     overflow: visible;
+    height: 100%;
   }
 
   .well {
     flex: 0 0 calc(100vw - 32px);
-    max-height: none;
+    height: 100%;
     scroll-snap-align: start;
   }
 }

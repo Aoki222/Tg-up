@@ -144,3 +144,94 @@ async def test_tasks_endpoint_overlays_speed(tmp_path: Path) -> None:
         assert item["assigned_worker"] == "bot"
     finally:
         await close_pool()
+
+
+async def test_requeue_failed_resets_count_and_status(tmp_path: Path) -> None:
+    try:
+        repo = await _prepare(tmp_path)
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"x")
+        task_id = await repo.add_task(
+            file_path=str(video),
+            file_name="clip.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+            max_retries=2,
+        )
+        await repo.mark_task_failed(task_id, 2, 2, "boom")
+        assert await repo.requeue_failed(task_id) == "ok"
+        row = await repo.get_task_by_id(task_id)
+        assert row is not None
+        assert row["status"] == "pending"
+        assert int(row["retry_count"]) == 0
+        assert row["error_msg"] == "manual retry"
+        assert row["assigned_bot"] is None
+    finally:
+        await close_pool()
+
+
+async def test_requeue_failed_rejects_non_failed_and_missing_file(tmp_path: Path) -> None:
+    try:
+        repo = await _prepare(tmp_path)
+        pending_id = await repo.add_task(
+            file_path=str(tmp_path / "p.mp4"),
+            file_name="p.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+        )
+        assert await repo.requeue_failed(pending_id) == "not_failed"
+        assert await repo.requeue_failed(99999) == "not_found"
+
+        missing_id = await repo.add_task(
+            file_path=str(tmp_path / "gone.mp4"),
+            file_name="gone.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+            max_retries=0,
+        )
+        await repo.mark_task_failed(missing_id, 0, 0, "x")
+        assert await repo.requeue_failed(missing_id) == "missing_file"
+    finally:
+        await close_pool()
+
+
+async def test_requeue_all_failed_skips_missing_files(tmp_path: Path) -> None:
+    try:
+        repo = await _prepare(tmp_path)
+        video = tmp_path / "ok.mp4"
+        video.write_bytes(b"x")
+        ok_id = await repo.add_task(
+            file_path=str(video),
+            file_name="ok.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+            max_retries=0,
+        )
+        gone_id = await repo.add_task(
+            file_path=str(tmp_path / "gone.mp4"),
+            file_name="gone.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+            max_retries=0,
+        )
+        await repo.mark_task_failed(ok_id, 0, 0, "x")
+        await repo.mark_task_failed(gone_id, 0, 0, "x")
+        retried, skipped = await repo.requeue_all_failed()
+        assert retried == 1
+        assert skipped == 1
+        ok_row = await repo.get_task_by_id(ok_id)
+        gone_row = await repo.get_task_by_id(gone_id)
+        assert ok_row is not None and ok_row["status"] == "pending"
+        assert gone_row is not None and gone_row["status"] == "failed"
+    finally:
+        await close_pool()

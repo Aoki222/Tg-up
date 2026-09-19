@@ -63,19 +63,19 @@
 
 <style scoped>
 .app-shell {
-  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 /* ── 顶部吸顶悬浮灵动岛 ── */
 .island-wrapper {
-  position: sticky;
-  top: 14px;
+  flex-shrink: 0;
   z-index: 1000;
   display: flex;
   justify-content: center;
-  padding: 0 16px;
+  padding: 14px 16px 0;
   pointer-events: none; /* 穿透空白处点击 */
 }
 
@@ -184,8 +184,12 @@
   width: 100%;
   max-width: 1520px;
   margin: 0 auto;
-  padding: 10px 24px 60px;
+  padding: 10px 24px 16px;
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 @media (max-width: 640px) {
@@ -197,7 +201,7 @@
     display: none;
   }
   .main-viewport {
-    padding: 12px 14px 40px;
+    padding: 12px 14px 12px;
   }
 }
 </style>

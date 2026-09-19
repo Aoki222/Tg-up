@@ -11,12 +11,17 @@ import {
   isAlbumProgress,
 } from "../format";
 
-const { task } = defineProps<{ task: BoardTask }>();
+const { task, retrying } = defineProps<{ task: BoardTask; retrying?: boolean }>();
+
+const emit = defineEmits<{
+  retry: [id: number];
+}>();
 
 function pendingHint(item: BoardTask): string | null {
   const text = item.message || item.error || "";
   if (!text) return null;
   const lower = text.toLowerCase();
+  if (lower.includes("manual retry")) return "手动重试";
   if (
     lower.includes("flood") ||
     lower.includes("disconnect") ||
@@ -78,7 +83,17 @@ function speedLabel(item: BoardTask): string {
 
     <div v-else class="body">
       <p v-if="task.error || task.message" class="fail">{{ task.error || task.message }}</p>
-      <p class="retry">重试 {{ task.retry_count }}/{{ task.max_retries }}</p>
+      <div class="fail-row">
+        <p class="retry">重试 {{ task.retry_count }}/{{ task.max_retries }}</p>
+        <button
+          type="button"
+          class="retry-btn"
+          :disabled="retrying"
+          @click="emit('retry', task.id)"
+        >
+          {{ retrying ? "重试中" : "重试" }}
+        </button>
+      </div>
     </div>
   </article>
 </template>
@@ -148,11 +163,49 @@ function speedLabel(item: BoardTask): string {
   word-break: break-all;
 }
 
+.fail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
 .retry {
-  margin: 6px 0 0;
+  margin: 0;
   font-size: 11px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+.retry-btn {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.15s cubic-bezier(0.32, 0.72, 0, 1),
+    border-color 0.15s cubic-bezier(0.32, 0.72, 0, 1),
+    transform 0.15s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.retry-btn:hover:not(:disabled) {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: var(--hover);
+}
+
+.retry-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.retry-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .stats {

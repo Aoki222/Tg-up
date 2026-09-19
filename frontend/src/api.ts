@@ -222,6 +222,17 @@ export async function fetchProgressSnapshot(): Promise<UploadProgress[]> {
   return res.data.items;
 }
 
+export async function retryBoardTask(taskId: number): Promise<void> {
+  await apiClient.post(`/api/tasks/${taskId}/retry`);
+}
+
+export async function retryAllFailedTasks(): Promise<{ retried: number; skipped: number }> {
+  const res = await apiClient.post<{ ok: boolean; retried: number; skipped: number }>(
+    "/api/tasks/retry-failed",
+  );
+  return { retried: res.data.retried, skipped: res.data.skipped };
+}
+
 // ── SSE 实时进度长连接 ─────────────────────────────────────────
 
 /**

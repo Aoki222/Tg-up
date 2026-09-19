@@ -7,6 +7,8 @@
 
 import uuid
 
+from pathlib import Path
+
 from ..database.connection import get_db
 
 
@@ -302,3 +304,62 @@ class TaskRepository:
             elif status in counts:
                 counts[status] = n
         return counts
+
+    async def requeue_failed(self, task_id: int) -> str:
+        """手动重试一条 failed：次数归零并回 pending。CAS，非 failed 不动。
+
+        返回 ok / not_found / not_failed / missing_file。
+        """
+        row = await self.get_task_by_id(task_id)
+        if row is None:
+            return "not_found"
+        if str(row.get("status")) != "failed":
+            return "not_failed"
+        file_path = str(row.get("file_path") or "")
+        if not file_path or not Path(file_path).exists():
+            return "missing_file"
+        async with get_db() as database:
+            cursor = await database.execute(
+                """UPDATE upload_tasks SET status = 'pending', retry_count = 0,
+                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL,
+                   finished_at = NULL, error_msg = 'manual retry'
+                   WHERE id = ? AND status = 'failed'""",
+                (task_id,),
+            )
+            await database.commit()
+            if cursor.rowcount == 0:
+                return "not_failed"
+        return "ok"
+
+    async def requeue_all_failed(self) -> tuple[int, int]:
+        """重置库里全部 failed。缺文件的跳过。返回 (retried, skipped)。"""
+        async with get_db() as database:
+            async with database.execute(
+                "SELECT id, file_path FROM upload_tasks WHERE status = 'failed'"
+            ) as cursor:
+                rows = await cursor.fetchall()
+        ready: list[int] = []
+        skipped = 0
+        for row in rows:
+            file_path = str(row[1] or "")
+            if file_path and Path(file_path).exists():
+                ready.append(int(row[0]))
+            else:
+                skipped += 1
+        if not ready:
+            return 0, skipped
+        retried = 0
+        async with get_db() as database:
+            for offset in range(0, len(ready), 400):
+                chunk = ready[offset : offset + 400]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = await database.execute(
+                    f"""UPDATE upload_tasks SET status = 'pending', retry_count = 0,
+                        assigned_bot = NULL, assigned_at = NULL, started_at = NULL,
+                        finished_at = NULL, error_msg = 'manual retry'
+                        WHERE status = 'failed' AND id IN ({placeholders})""",
+                    chunk,
+                )
+                retried += cursor.rowcount
+            await database.commit()
+        return retried, skipped

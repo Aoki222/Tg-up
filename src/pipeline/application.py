@@ -290,6 +290,7 @@ class UploaderApplication:
             enable_worker=self.enable_worker,
             delete_worker=self.delete_worker,
             task_repository=self._repository,
+            reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
         )
         config = uvicorn.Config(
             api,

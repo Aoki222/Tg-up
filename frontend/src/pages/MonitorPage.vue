@@ -165,13 +165,18 @@ watch(showSessionForm, (open) => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 8px 0 40px;
+  padding: 8px 0 0;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 /* ── 一体式系统遥测带 (Integrated Telemetry Ribbon) ── */
 .telemetry-ribbon {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -266,18 +271,35 @@ watch(showSessionForm, (open) => {
 .workspace-layout {
   display: flex;
   gap: 18px;
-  align-items: flex-start;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 
 .worker-column {
   width: 280px;
   flex-shrink: 0;
+  height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .progress-column {
   flex: 1;
   min-width: 0;
-  overflow-x: auto;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.progress-column > * {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
 }
 
 @media (max-width: 1100px) {
@@ -295,6 +317,13 @@ watch(showSessionForm, (open) => {
   }
   .worker-column {
     width: 100%;
+    flex: 0 0 36vh;
+    max-height: 36vh;
+    height: auto;
+  }
+  .progress-column {
+    flex: 1;
+    min-height: 0;
   }
 }
 
