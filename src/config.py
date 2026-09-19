@@ -18,7 +18,8 @@ SESSION_DIR = PROJECT_DIR / "sessions"
 DATABASE_PATH = PROJECT_DIR / "data" / "app.db"
 PAGE_DIR = PROJECT_DIR / "page"
 
-load_dotenv()
+ENV_PATH = PROJECT_DIR / ".env"
+load_dotenv(ENV_PATH)
 
 
 def get_required_env(name: str) -> str:
@@ -30,7 +31,6 @@ def get_required_env(name: str) -> str:
 
 API_ID = int(get_required_env("API_ID"))
 API_HASH = get_required_env("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN") or None
 
 # 进度页 / SSE。Vue 开发时也可跨域打这个地址
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
@@ -38,3 +38,40 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 # 为空则不校验。多容器同机调用时设置，请求带 Authorization: Bearer <token>
 API_TOKEN = os.getenv("API_TOKEN") or None
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY") or None
+
+
+def mask_api_hash(value: str) -> str:
+    text = (value or "").strip()
+    if len(text) <= 6:
+        return "••••"
+    return f"{text[:4]}••••{text[-2:]}"
+
+
+def upsert_dotenv(updates: dict[str, str], path: Path | None = None) -> None:
+    """只改给定键，其它行和注释原样保留。"""
+    target = path or ENV_PATH
+    lines: list[str] = []
+    if target.exists():
+        lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    seen: set[str] = set()
+    rewritten: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            rewritten.append(line)
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in updates:
+            ending = "\n" if line.endswith("\n") else ""
+            rewritten.append(f"{key}={updates[key]}{ending}")
+            seen.add(key)
+        else:
+            rewritten.append(line)
+
+    if rewritten and not rewritten[-1].endswith("\n"):
+        rewritten.append("\n")
+    for key, value in updates.items():
+        if key not in seen:
+            rewritten.append(f"{key}={value}\n")
+    target.write_text("".join(rewritten), encoding="utf-8")

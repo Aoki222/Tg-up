@@ -13,17 +13,33 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..adapters.progress import ProgressHub
 from ..adapters.session_login import SessionLoginService
-from ..config import API_HASH, API_ID, API_TOKEN, SESSION_DIR, TELEGRAM_PROXY
+from ..config import API_HASH, API_ID, API_TOKEN, SESSION_DIR, TELEGRAM_PROXY, mask_api_hash, upsert_dotenv
 from ..domain.progress import UploadProgress
 from ..domain.settings_hub import SettingsHub
 from .sessions import SessionCodeBody, SessionPasswordBody, SessionStartBody, login_payload
 from .settings import SettingsPayload
+
+
+class FailedIdsBody(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+
+
+class IdentityPayload(BaseModel):
+    api_id: int = Field(ge=1)
+    api_hash: str = ""
+
+    @field_validator("api_hash")
+    @classmethod
+    def normalize_hash(cls, value: str) -> str:
+        return (value or "").strip()
+
 
 DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
@@ -46,6 +62,7 @@ def create_api(
     delete_worker=None,
     task_repository=None,
     reschedule=None,
+    restart_process=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
     app = FastAPI(title="uploader", version="0.1.0")
@@ -57,6 +74,7 @@ def create_api(
     app.state.delete_worker = delete_worker
     app.state.task_repository = task_repository
     app.state.reschedule = reschedule
+    app.state.restart_process = restart_process
     app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
     app.add_middleware(
         CORSMiddleware,
@@ -164,6 +182,33 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return login_payload(result)
 
+    @app.get("/api/identity")
+    async def get_identity() -> dict:
+        return {
+            "api_id": API_ID,
+            "api_hash_masked": mask_api_hash(API_HASH),
+            "configured": bool(API_ID and API_HASH),
+        }
+
+    @app.put("/api/identity", dependencies=[Depends(require_token)])
+    async def put_identity(payload: IdentityPayload) -> dict:
+        updates = {"API_ID": str(payload.api_id)}
+        if payload.api_hash:
+            hashed = payload.api_hash
+            if len(hashed) < 16:
+                raise HTTPException(status_code=400, detail="API_HASH 长度不足")
+            updates["API_HASH"] = hashed
+        upsert_dotenv(updates)
+        return {"ok": True, "restart_required": True}
+
+    @app.post("/api/process/restart", dependencies=[Depends(require_token)])
+    async def restart_process() -> dict:
+        op = app.state.restart_process
+        if op is None:
+            raise HTTPException(status_code=503, detail="重启未就绪")
+        op()
+        return {"ok": True}
+
     @app.get("/api/settings")
     async def get_settings() -> dict:
         hub: SettingsHub | None = app.state.settings_hub
@@ -223,6 +268,34 @@ def create_api(
             raise HTTPException(status_code=409, detail="文件不存在")
         _wake_scheduler()
         return {"ok": True, "id": task_id, "status": "pending", "retry_count": 0}
+
+    @app.delete("/api/tasks/failed", dependencies=[Depends(require_token)])
+    async def delete_all_failed() -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        deleted = await repo.delete_all_failed()
+        return {"ok": True, "deleted": deleted}
+
+    @app.post("/api/tasks/failed/delete", dependencies=[Depends(require_token)])
+    async def delete_selected_failed(payload: FailedIdsBody) -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        deleted = await repo.delete_failed_ids(payload.ids)
+        return {"ok": True, "deleted": deleted}
+
+    @app.delete("/api/tasks/{task_id}", dependencies=[Depends(require_token)])
+    async def delete_task(task_id: int) -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        result = await repo.delete_failed(task_id)
+        if result == "not_found":
+            raise HTTPException(status_code=404, detail="找不到任务")
+        if result == "not_failed":
+            raise HTTPException(status_code=409, detail="只能清除失败任务")
+        return {"ok": True, "id": task_id, "deleted": True}
 
     @app.get("/api/progress")
     async def progress_snapshot() -> dict:

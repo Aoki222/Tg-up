@@ -4,8 +4,14 @@
  * 列可收起：收起的列进左侧 48px 轨，展开列均分剩余宽度。
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ElMessage } from "element-plus";
-import { retryAllFailedTasks, retryBoardTask } from "../api";
+import { ElMessage, ElMessageBox } from "element-plus";
+import {
+  deleteAllFailedTasks,
+  deleteFailedTask,
+  deleteSelectedFailedTasks,
+  retryAllFailedTasks,
+  retryBoardTask,
+} from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
 
@@ -28,6 +34,8 @@ const isNarrow = ref(false);
 const collapsed = ref<Set<ColumnKey>>(loadCollapsed());
 const retryingId = ref<number | null>(null);
 const retryingAll = ref(false);
+const clearing = ref(false);
+const selectedIds = ref<Set<number>>(new Set());
 
 const buckets = computed(() => {
   const preparing: BoardTask[] = [];
@@ -117,6 +125,77 @@ async function onRetryAll(): Promise<void> {
   }
 }
 
+const selectedCount = computed(() => selectedIds.value.size);
+const failedBusy = computed(
+  () => retryingAll.value || retryingId.value !== null || clearing.value,
+);
+
+function toggleSelect(id: number): void {
+  const next = new Set(selectedIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selectedIds.value = next;
+}
+
+function forgetSelected(ids: number[]): void {
+  const next = new Set(selectedIds.value);
+  for (const id of ids) next.delete(id);
+  selectedIds.value = next;
+}
+
+async function onRemove(id: number): Promise<void> {
+  if (failedBusy.value) return;
+  clearing.value = true;
+  try {
+    await deleteFailedTask(id);
+    forgetSelected([id]);
+    ElMessage.success("已清除");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+  } finally {
+    clearing.value = false;
+  }
+}
+
+async function onRemoveSelected(): Promise<void> {
+  const ids = [...selectedIds.value];
+  if (failedBusy.value || ids.length === 0) return;
+  clearing.value = true;
+  try {
+    const deleted = await deleteSelectedFailedTasks(ids);
+    selectedIds.value = new Set();
+    ElMessage.success(deleted ? `已清除 ${deleted} 条` : "没有可清除的任务");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+  } finally {
+    clearing.value = false;
+  }
+}
+
+async function onRemoveAll(): Promise<void> {
+  if (failedBusy.value || buckets.value.failed.length === 0) return;
+  try {
+    await ElMessageBox.confirm("将从数据库删除全部失败记录，本地文件不会动。", "全部清除", {
+      type: "warning",
+      confirmButtonText: "清除",
+      cancelButtonText: "取消",
+      confirmButtonClass: "el-button--danger",
+    });
+  } catch {
+    return;
+  }
+  clearing.value = true;
+  try {
+    const deleted = await deleteAllFailedTasks();
+    selectedIds.value = new Set();
+    ElMessage.success(deleted ? `已清除 ${deleted} 条` : "没有可清除的任务");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+  } finally {
+    clearing.value = false;
+  }
+}
+
 onMounted(() => {
   const media = window.matchMedia("(max-width: 768px)");
   const apply = () => {
@@ -154,15 +233,32 @@ onMounted(() => {
         <header class="well-head">
           <span class="well-title">{{ column.title }}</span>
           <div class="well-actions">
-            <button
-              v-if="column.key === 'failed'"
-              type="button"
-              class="retry-all-btn"
-              :disabled="retryingAll || buckets.failed.length === 0"
-              @click="onRetryAll"
-            >
-              {{ retryingAll ? "重试中" : "全部重试" }}
-            </button>
+            <template v-if="column.key === 'failed'">
+              <button
+                type="button"
+                class="retry-all-btn"
+                :disabled="failedBusy || buckets.failed.length === 0"
+                @click="onRetryAll"
+              >
+                {{ retryingAll ? "重试中" : "全部重试" }}
+              </button>
+              <button
+                type="button"
+                class="retry-all-btn"
+                :disabled="failedBusy || selectedCount === 0"
+                @click="onRemoveSelected"
+              >
+                清除选中
+              </button>
+              <button
+                type="button"
+                class="retry-all-btn danger"
+                :disabled="failedBusy || buckets.failed.length === 0"
+                @click="onRemoveAll"
+              >
+                全部清除
+              </button>
+            </template>
             <span class="well-count">{{ buckets[column.key].length }}</span>
             <button
               v-if="!isNarrow"
@@ -190,8 +286,12 @@ onMounted(() => {
               v-for="task in buckets[column.key]"
               :key="task.id"
               :task="task"
-              :retrying="retryingId === task.id || retryingAll"
+              :retrying="retryingId === task.id || retryingAll || clearing"
+              :selectable="column.key === 'failed'"
+              :selected="selectedIds.has(task.id)"
               @retry="onRetry"
+              @remove="onRemove"
+              @toggle="toggleSelect"
             />
           </TransitionGroup>
           <p v-if="buckets[column.key].length === 0" class="empty">{{ column.empty }}</p>
@@ -377,6 +477,20 @@ onMounted(() => {
 .retry-all-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.retry-all-btn.danger {
+  color: var(--bad);
+}
+
+.well.failed .well-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.well.failed .well-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .collapse-btn {

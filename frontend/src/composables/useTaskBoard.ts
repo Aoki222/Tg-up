@@ -3,7 +3,6 @@
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { fetchBoardTasks, fetchProgressSnapshot, openProgressStream } from "../api";
-import { isAlbumProgress } from "../format";
 import type { BoardCounts, BoardTask, UploadProgress } from "../types";
 
 const EMPTY_COUNTS: BoardCounts = {
@@ -12,6 +11,7 @@ const EMPTY_COUNTS: BoardCounts = {
   assigned: 0,
   uploading: 0,
   failed: 0,
+  success: 0,
 };
 
 export function useTaskBoard() {
@@ -23,16 +23,6 @@ export function useTaskBoard() {
   let ghostTimer = 0;
   let source: EventSource | null = null;
 
-  const totalSpeed = computed(() => {
-    let speed = 0;
-    for (const item of items.value) {
-      if (item.status !== "uploading" || item.stage === "success") continue;
-      if (isAlbumProgress(item.current, item.total)) continue;
-      speed += item.speed_bps || 0;
-    }
-    return speed;
-  });
-
   const inFlightCount = computed(
     () =>
       items.value.filter(
@@ -42,6 +32,7 @@ export function useTaskBoard() {
   );
 
   const queueCount = computed(() => counts.value.preparing + counts.value.pending);
+  const successCount = computed(() => counts.value.success);
 
   function upsert(task: BoardTask): void {
     const index = items.value.findIndex((item) => item.id === task.id);
@@ -153,7 +144,7 @@ export function useTaskBoard() {
         }
       }
       items.value = [...byId.values()];
-      counts.value = data.counts;
+      counts.value = { ...EMPTY_COUNTS, ...data.counts };
     } catch {
       // 保留上一帧，避免轮询闪断清空看板
     }
@@ -195,5 +186,5 @@ export function useTaskBoard() {
     window.clearTimeout(ghostTimer);
   });
 
-  return { items, counts, totalSpeed, inFlightCount, queueCount };
+  return { items, counts, inFlightCount, queueCount, successCount };
 }

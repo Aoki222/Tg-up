@@ -71,6 +71,7 @@ async def test_list_board_tasks_excludes_success(tmp_path: Path) -> None:
         assert counts["failed"] == 1
         assert counts["uploading"] == 0
         assert counts["assigned"] == 0
+        assert counts["success"] == 1
     finally:
         await close_pool()
 
@@ -97,6 +98,7 @@ async def test_failed_board_is_capped(tmp_path: Path) -> None:
             "assigned": 0,
             "uploading": 0,
             "failed": 5,
+            "success": 0,
         }
     finally:
         await close_pool()
@@ -233,5 +235,63 @@ async def test_requeue_all_failed_skips_missing_files(tmp_path: Path) -> None:
         gone_row = await repo.get_task_by_id(gone_id)
         assert ok_row is not None and ok_row["status"] == "pending"
         assert gone_row is not None and gone_row["status"] == "failed"
+    finally:
+        await close_pool()
+
+
+async def test_delete_failed_rows(tmp_path: Path) -> None:
+    try:
+        repo = await _prepare(tmp_path)
+        pending_id = await repo.add_task(
+            file_path=str(tmp_path / "p.mp4"),
+            file_name="p.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+        )
+        failed_a = await repo.add_task(
+            file_path=str(tmp_path / "a.mp4"),
+            file_name="a.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+            max_retries=0,
+        )
+        failed_b = await repo.add_task(
+            file_path=str(tmp_path / "b.mp4"),
+            file_name="b.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+            max_retries=0,
+        )
+        await repo.mark_task_failed(failed_a, 0, 0, "x")
+        await repo.mark_task_failed(failed_b, 0, 0, "x")
+
+        assert await repo.delete_failed(pending_id) == "not_failed"
+        assert await repo.delete_failed(99999) == "not_found"
+        assert await repo.delete_failed(failed_a) == "ok"
+        assert await repo.get_task_by_id(failed_a) is None
+
+        assert await repo.delete_failed_ids([failed_b, pending_id]) == 1
+        assert await repo.get_task_by_id(failed_b) is None
+        assert await repo.get_task_by_id(pending_id) is not None
+
+        extra = await repo.add_task(
+            file_path=str(tmp_path / "c.mp4"),
+            file_name="c.mp4",
+            file_size=1,
+            folder_name="d",
+            chat_id=-100,
+            status="pending",
+            max_retries=0,
+        )
+        await repo.mark_task_failed(extra, 0, 0, "x")
+        assert await repo.delete_all_failed() == 1
+        counts = await repo.count_board_statuses()
+        assert counts["failed"] == 0
     finally:
         await close_pool()

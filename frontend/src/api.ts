@@ -157,6 +157,25 @@ export async function saveSettings(payload: UploadConfig): Promise<UploadConfig>
   return normalizeSettings(res.data);
 }
 
+export interface IdentityInfo {
+  api_id: number;
+  api_hash_masked: string;
+  configured: boolean;
+}
+
+export async function fetchIdentity(): Promise<IdentityInfo> {
+  const res = await apiClient.get<IdentityInfo>("/api/identity");
+  return res.data;
+}
+
+export async function saveIdentity(payload: { api_id: number; api_hash: string }): Promise<void> {
+  await apiClient.put("/api/identity", payload);
+}
+
+export async function restartProcess(): Promise<void> {
+  await apiClient.post("/api/process/restart");
+}
+
 // ── Session 授权登录流程 API ───────────────────────────────────
 
 /**
@@ -231,6 +250,22 @@ export async function retryAllFailedTasks(): Promise<{ retried: number; skipped:
     "/api/tasks/retry-failed",
   );
   return { retried: res.data.retried, skipped: res.data.skipped };
+}
+
+export async function deleteFailedTask(taskId: number): Promise<void> {
+  await apiClient.delete(`/api/tasks/${taskId}`);
+}
+
+export async function deleteSelectedFailedTasks(ids: number[]): Promise<number> {
+  const res = await apiClient.post<{ ok: boolean; deleted: number }>("/api/tasks/failed/delete", {
+    ids,
+  });
+  return res.data.deleted;
+}
+
+export async function deleteAllFailedTasks(): Promise<number> {
+  const res = await apiClient.delete<{ ok: boolean; deleted: number }>("/api/tasks/failed");
+  return res.data.deleted;
 }
 
 // ── SSE 实时进度长连接 ─────────────────────────────────────────

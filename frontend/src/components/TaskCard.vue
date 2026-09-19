@@ -11,10 +11,17 @@ import {
   isAlbumProgress,
 } from "../format";
 
-const { task, retrying } = defineProps<{ task: BoardTask; retrying?: boolean }>();
+const { task, retrying, selected, selectable } = defineProps<{
+  task: BoardTask;
+  retrying?: boolean;
+  selected?: boolean;
+  selectable?: boolean;
+}>();
 
 const emit = defineEmits<{
   retry: [id: number];
+  remove: [id: number];
+  toggle: [id: number];
 }>();
 
 function pendingHint(item: BoardTask): string | null {
@@ -41,8 +48,13 @@ function speedLabel(item: BoardTask): string {
 </script>
 
 <template>
-  <article class="card" :class="task.status">
-    <div class="name" :title="task.file_name">{{ task.file_name }}</div>
+  <article class="card" :class="[task.status, { selected: selected }]">
+    <div class="card-top">
+      <label v-if="selectable" class="pick" @click.stop>
+        <input type="checkbox" :checked="selected" @change="emit('toggle', task.id)" />
+      </label>
+      <div class="name" :title="task.file_name">{{ task.file_name }}</div>
+    </div>
     <div class="meta">
       <span v-if="task.file_size > 0">{{ formatBytes(task.file_size) }}</span>
       <span v-if="task.folder_name">{{ task.folder_name }}</span>
@@ -85,14 +97,24 @@ function speedLabel(item: BoardTask): string {
       <p v-if="task.error || task.message" class="fail">{{ task.error || task.message }}</p>
       <div class="fail-row">
         <p class="retry">重试 {{ task.retry_count }}/{{ task.max_retries }}</p>
-        <button
-          type="button"
-          class="retry-btn"
-          :disabled="retrying"
-          @click="emit('retry', task.id)"
-        >
-          {{ retrying ? "重试中" : "重试" }}
-        </button>
+        <div class="fail-actions">
+          <button
+            type="button"
+            class="retry-btn"
+            :disabled="retrying"
+            @click="emit('retry', task.id)"
+          >
+            {{ retrying ? "重试中" : "重试" }}
+          </button>
+          <button
+            type="button"
+            class="retry-btn danger"
+            :disabled="retrying"
+            @click="emit('remove', task.id)"
+          >
+            清除
+          </button>
+        </div>
       </div>
     </div>
   </article>
@@ -111,6 +133,31 @@ function speedLabel(item: BoardTask): string {
   border-color: rgba(0, 0, 0, 0.12);
 }
 
+.card.selected {
+  border-color: rgba(40, 153, 90, 0.35);
+  background: var(--accent-soft);
+}
+
+.card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pick {
+  display: inline-flex;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.pick input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -118,6 +165,8 @@ function speedLabel(item: BoardTask): string {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
+  min-width: 0;
+  flex: 1;
 }
 
 .meta {
@@ -206,6 +255,16 @@ function speedLabel(item: BoardTask): string {
 .retry-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.fail-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.retry-btn.danger {
+  color: var(--bad);
 }
 
 .stats {

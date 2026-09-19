@@ -64,6 +64,7 @@ export interface BoardCounts {
   assigned: number;
   uploading: number;
   failed: number;
+  success: number;
 }
 
 export interface BoardSnapshot {

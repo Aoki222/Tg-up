@@ -14,6 +14,8 @@ TaskGroup 里任一子任务非取消异常会带崩整组，各循环内部应�
 import asyncio
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -291,6 +293,7 @@ class UploaderApplication:
             delete_worker=self.delete_worker,
             task_repository=self._repository,
             reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
+            restart_process=self.request_restart,
         )
         config = uvicorn.Config(
             api,
@@ -303,6 +306,20 @@ class UploaderApplication:
         server.install_signal_handlers = False
         self._uvicorn = server
         await server.serve()
+
+    def request_restart(self) -> None:
+        """HTTP 先返回，稍后再拉起新进程并退出当前进程。"""
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.35, self._spawn_and_exit)
+
+    def _spawn_and_exit(self) -> None:
+        argv = list(getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv])
+        kwargs: dict = {"cwd": str(PROJECT_DIR)}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+        logger.info("即将重启进程: %s", argv)
+        subprocess.Popen(argv, **kwargs)
+        os._exit(0)
 
     async def _shutdown_gracefully(self) -> None:
         """先停入口，再停分发，排空在途上传，最后关 HTTP 和 Telegram。"""

@@ -288,11 +288,12 @@ class TaskRepository:
             "assigned": 0,
             "uploading": 0,
             "failed": 0,
+            "success": 0,
         }
         async with get_db() as database:
             async with database.execute(
                 """SELECT status, COUNT(*) AS n FROM upload_tasks
-                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'failed')
+                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'failed', 'success')
                    GROUP BY status"""
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -363,3 +364,45 @@ class TaskRepository:
                 retried += cursor.rowcount
             await database.commit()
         return retried, skipped
+
+    async def delete_failed(self, task_id: int) -> str:
+        """物理删除一条 failed 行。返回 ok / not_found / not_failed。"""
+        row = await self.get_task_by_id(task_id)
+        if row is None:
+            return "not_found"
+        if str(row.get("status")) != "failed":
+            return "not_failed"
+        async with get_db() as database:
+            cursor = await database.execute(
+                "DELETE FROM upload_tasks WHERE id = ? AND status = 'failed'",
+                (task_id,),
+            )
+            await database.commit()
+            if cursor.rowcount == 0:
+                return "not_failed"
+        return "ok"
+
+    async def delete_failed_ids(self, task_ids: list[int]) -> int:
+        """删除指定 failed 行。非 failed / 不存在的跳过。"""
+        ids = [int(task_id) for task_id in task_ids if int(task_id) > 0]
+        if not ids:
+            return 0
+        deleted = 0
+        async with get_db() as database:
+            for offset in range(0, len(ids), 400):
+                chunk = ids[offset : offset + 400]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = await database.execute(
+                    f"DELETE FROM upload_tasks WHERE status = 'failed' AND id IN ({placeholders})",
+                    chunk,
+                )
+                deleted += cursor.rowcount
+            await database.commit()
+        return deleted
+
+    async def delete_all_failed(self) -> int:
+        """删除库里全部 failed 行。"""
+        async with get_db() as database:
+            cursor = await database.execute("DELETE FROM upload_tasks WHERE status = 'failed'")
+            await database.commit()
+            return cursor.rowcount

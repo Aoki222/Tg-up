@@ -4,7 +4,7 @@
  * @description 监控控制台主页 (Monitor Dashboard)
  *
  * 核心架构：
- * 1. 【顶层系统遥测带 (Telemetry Ribbon)】：实时聚合计算当前总吞吐、传输中任务数、在线 Worker 比率与待发队列积压；
+ * 1. 【顶层系统遥测带 (Telemetry Ribbon)】：成功数、传输中任务数、在线 Worker 比率与待发队列积压；
  * 2. 【主工作区】：左侧 Worker 列 + 右侧四列任务看板；
  * 3. 【Session 授权弹窗宿主】：通过 Teleport 挂载全局毛玻璃模态窗，解耦业务交互。
  */
@@ -14,7 +14,6 @@ import WorkerPanel from "../components/WorkerPanel.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import SessionPanel from "../components/SessionPanel.vue";
 import { useTaskBoard } from "../composables/useTaskBoard";
-import { formatSpeed } from "../format";
 import type { WorkerSnapshot } from "../types";
 
 // ── 响应式状态定义 ─────────────────────────────────────────────
@@ -25,7 +24,7 @@ const showSessionForm = ref(false);
 /** 由子组件 WorkerPanel 派发的最新 Worker 快照数组 */
 const workers = ref<WorkerSnapshot[]>([]);
 
-const { items: boardItems, totalSpeed, inFlightCount, queueCount } = useTaskBoard();
+const { items: boardItems, inFlightCount, queueCount, successCount } = useTaskBoard();
 
 // ── 弹窗交互控制 ───────────────────────────────────────────────
 
@@ -64,17 +63,17 @@ watch(showSessionForm, (open) => {
   <div class="monitor-container">
     <!-- ── 顶部一体化系统遥测带 (Integrated Telemetry Ribbon) ── -->
     <section class="telemetry-ribbon">
-      <!-- 实时总吞吐 -->
       <div class="telemetry-cell">
-        <div class="cell-icon speed-icon">
+        <div class="cell-icon success-icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17">
-            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" stroke-linecap="round" stroke-linejoin="round"/>
+            <polyline points="22 4 12 14.01 9 11.01" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </div>
         <div class="cell-data">
-          <span class="cell-label">实时总吞吐</span>
-          <span class="cell-value" :class="{ 'highlight-speed': totalSpeed > 0 }">
-            {{ formatSpeed(totalSpeed) }}
+          <span class="cell-label">上传成功</span>
+          <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
+            {{ successCount }} <span class="cell-unit">条</span>
           </span>
         </div>
       </div>
@@ -209,9 +208,9 @@ watch(showSessionForm, (open) => {
   flex-shrink: 0;
 }
 
-.speed-icon {
+.success-icon {
   background: #ebf6f0;
-  color: var(--accent);
+  color: var(--ok);
 }
 
 .task-icon {
@@ -253,10 +252,6 @@ watch(showSessionForm, (open) => {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
-}
-
-.highlight-speed {
-  color: var(--accent);
 }
 
 .highlight-task {

@@ -124,92 +124,99 @@ onMounted(() => {
     />
 
     <el-form label-position="top" class="form">
-      <!-- 基础目标与处理策略 -->
-      <div class="cols">
-        <el-form-item label="目标群 chat_id">
-          <el-input-number v-model="form.chat_id" :controls="false" class="grow" />
-        </el-form-item>
-        <el-form-item label="封面模式">
-          <el-select v-model="form.preview" class="grow">
-            <el-option label="关闭" value="off" />
-            <el-option label="首帧截图" value="first_frame" />
-            <el-option label="网格缩略图" value="grid" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="上传成功后">
-          <el-select v-model="form.after_success" class="grow">
-            <el-option label="保留本地文件" value="keep" />
-            <el-option label="删除本地文件" value="delete" />
-            <el-option label="归档到 uploaded/" value="move_to_archive" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="创建论坛话题">
-          <el-switch v-model="form.topic_creation_enabled" />
-        </el-form-item>
-      </div>
+      <section class="section">
+        <h3 class="section-title">投递目标</h3>
+        <div class="cols">
+          <el-form-item label="目标群 chat_id">
+            <el-input-number v-model="form.chat_id" :controls="false" class="grow" />
+          </el-form-item>
+          <el-form-item label="创建论坛话题">
+            <el-switch v-model="form.topic_creation_enabled" />
+          </el-form-item>
+        </div>
+      </section>
 
-      <!-- 监听目录配置 -->
-      <el-form-item label="监听目录（可配置多条路径）">
-        <el-select
-          v-model="form.observer_paths"
-          multiple
-          filterable
-          allow-create
-          default-first-option
-          placeholder="相对或绝对路径，回车添加"
-          class="grow"
-        />
-        <!-- 目录可用性健康诊断提示 -->
-        <ul v-if="form.observer_path_infos.length" class="path-hints">
-          <li v-for="item in form.observer_path_infos" :key="item.path">
-            <span>{{ item.path }}</span>
-            <span v-if="item.ok" class="ok">可用</span>
-            <span v-else class="bad">{{ item.error || "目录不存在" }}</span>
-          </li>
-        </ul>
-      </el-form-item>
+      <section class="section">
+        <h3 class="section-title">监听</h3>
+        <el-form-item label="监听目录（可配置多条路径）">
+          <el-select
+            v-model="form.observer_paths"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="相对或绝对路径，回车添加"
+            class="grow"
+          />
+          <ul v-if="form.observer_path_infos.length" class="path-hints">
+            <li v-for="item in form.observer_path_infos" :key="item.path">
+              <span>{{ item.path }}</span>
+              <span v-if="item.ok" class="ok">可用</span>
+              <span v-else class="bad">{{ item.error || "目录不存在" }}</span>
+            </li>
+          </ul>
+        </el-form-item>
+        <div class="cols">
+          <el-form-item label="监听文件格式">
+            <el-select
+              v-model="form.watch_extensions"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              placeholder="留空表示任意格式；回车添加"
+              class="grow"
+            />
+          </el-form-item>
+          <el-form-item label="写稳等待（秒）">
+            <el-input-number v-model="form.stable_timeout_seconds" :min="1" :step="30" />
+          </el-form-item>
+        </div>
+      </section>
 
-      <!-- 目录与并发 -->
-      <div class="cols">
-        <el-form-item label="封面临时目录">
-          <el-input v-model="form.page_dir" />
-        </el-form-item>
-        <el-form-item label="归档目录">
-          <el-input v-model="form.archive_dir" />
-        </el-form-item>
-        <el-form-item label="每账号并发流数">
-          <el-input-number v-model="form.concurrency" :min="1" :max="32" />
-        </el-form-item>
-      </div>
+      <section class="section">
+        <h3 class="section-title">封面与收尾</h3>
+        <div class="cols">
+          <el-form-item label="封面模式">
+            <el-select v-model="form.preview" class="grow">
+              <el-option label="关闭" value="off" />
+              <el-option label="首帧截图" value="first_frame" />
+              <el-option label="网格缩略图" value="grid" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="封面临时目录">
+            <el-input v-model="form.page_dir" />
+          </el-form-item>
+          <el-form-item label="上传成功后">
+            <el-select v-model="form.after_success" class="grow">
+              <el-option label="保留本地文件" value="keep" />
+              <el-option label="删除本地文件" value="delete" />
+              <el-option label="归档到 uploaded/" value="move_to_archive" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="归档目录">
+            <el-input v-model="form.archive_dir" />
+          </el-form-item>
+        </div>
+      </section>
 
-      <!-- 超时与重试容错 -->
-      <div class="cols">
-        <el-form-item label="最大重试次数">
-          <el-input-number v-model="form.max_retries" :min="1" :max="20" />
-        </el-form-item>
-        <el-form-item label="上传超时（秒）">
-          <el-input-number v-model="form.upload_timeout_seconds" :min="30" :step="30" />
-        </el-form-item>
-        <el-form-item label="抢占超时（秒）">
-          <el-input-number v-model="form.assigned_timeout_seconds" :min="30" :step="30" />
-        </el-form-item>
-        <el-form-item label="写稳等待（秒）">
-          <el-input-number v-model="form.stable_timeout_seconds" :min="1" :step="30" />
-        </el-form-item>
-      </div>
-
-      <!-- 扩展名后缀过滤 -->
-      <el-form-item label="监听文件格式">
-        <el-select
-          v-model="form.watch_extensions"
-          multiple
-          filterable
-          allow-create
-          default-first-option
-          placeholder="留空表示任意格式；输入如 mp4, mkv, zip 后回车添加"
-          class="grow"
-        />
-      </el-form-item>
+      <section class="section">
+        <h3 class="section-title">并发与容错</h3>
+        <div class="cols">
+          <el-form-item label="每账号并发流数">
+            <el-input-number v-model="form.concurrency" :min="1" :max="32" />
+          </el-form-item>
+          <el-form-item label="最大重试次数">
+            <el-input-number v-model="form.max_retries" :min="1" :max="20" />
+          </el-form-item>
+          <el-form-item label="上传超时（秒）">
+            <el-input-number v-model="form.upload_timeout_seconds" :min="30" :step="30" />
+          </el-form-item>
+          <el-form-item label="抢占超时（秒）">
+            <el-input-number v-model="form.assigned_timeout_seconds" :min="30" :step="30" />
+          </el-form-item>
+        </div>
+      </section>
     </el-form>
   </el-card>
 </template>
@@ -230,9 +237,22 @@ onMounted(() => {
   width: 100%;
 }
 
+.section + .section {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-light);
+}
+
+.section-title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .cols {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: 1fr 1fr;
   gap: 0 16px;
 }
 
