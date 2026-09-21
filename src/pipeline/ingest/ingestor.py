@@ -153,7 +153,7 @@ class FileIngestor:
         policy = self.settings_hub.policy_for_new_task(need_preview)
 
         topic_id = None
-        if settings.topic_creation_enabled and self.topic_creator is not None:
+        if decision.topic_enabled and self.topic_creator is not None:
             topic_id = await self.topic_creator.get_or_create_topic(
                 fold_path=folder_path,
                 folder_name=folder_name,

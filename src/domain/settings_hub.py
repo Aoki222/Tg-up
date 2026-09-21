@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..logger import get_logger
 from .task import AfterSuccess, TaskPolicy
-from .upload_settings import PreviewMode, UploadSettings
+from .upload_settings import ChatAlias, FolderRoute, PreviewMode, UploadSettings
 
 logger = get_logger(__name__)
 
@@ -63,7 +63,76 @@ def render_upload_toml(payload: dict) -> str:
         f"assigned_timeout_seconds = {max(1, int(payload.get('assigned_timeout_seconds', 600)))}\n"
         f"stable_timeout_seconds = {max(1.0, float(payload.get('stable_timeout_seconds', 1800)))}\n"
         f"watch_extensions = [{ext_list}]\n"
+        f"{_render_chats(payload)}"
+        f"{_render_routes(payload)}"
     )
+
+
+def _render_routes(payload: dict) -> str:
+    raw = payload.get("routes") or []
+    if not isinstance(raw, list) or not raw:
+        return ""
+    chunks: list[str] = ["\n# 目录路由：未命中时用上面的 chat_id。topic_enabled 省略则跟随全局。\n"]
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path_text = str(item.get("path") or "").strip()
+        if not path_text:
+            continue
+        try:
+            chat_id = int(item.get("chat_id"))
+        except (TypeError, ValueError):
+            continue
+        if chat_id == 0:
+            continue
+        name = str(item.get("name") or "")
+        block = (
+            "[[routes]]\n"
+            f"name = {_toml_string(name)}\n"
+            f"path = {_toml_string(str(_resolve_observer_path(path_text)))}\n"
+            f"chat_id = {chat_id}\n"
+        )
+        topic = item.get("topic_enabled", None)
+        if topic is True:
+            block += "topic_enabled = true\n"
+        elif topic is False:
+            block += "topic_enabled = false\n"
+        enabled = item.get("enabled", True)
+        if enabled is False:
+            block += "enabled = false\n"
+        chunks.append(block)
+    if len(chunks) == 1:
+        return ""
+    return "".join(chunks)
+
+
+def _render_chats(payload: dict) -> str:
+    raw = payload.get("chats") or []
+    if not isinstance(raw, list) or not raw:
+        return ""
+    chunks: list[str] = ["\n# 群/频道自定义名，空 alias 表示用 Telegram 官方标题。\n"]
+    seen: set[int] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            chat_id = int(item.get("chat_id") or item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if chat_id == 0 or chat_id in seen:
+            continue
+        alias = str(item.get("alias") or "").strip()
+        if not alias:
+            continue
+        seen.add(chat_id)
+        chunks.append(
+            "[[chats]]\n"
+            f"chat_id = {chat_id}\n"
+            f"alias = {_toml_string(alias)}\n"
+        )
+    if len(chunks) == 1:
+        return ""
+    return "".join(chunks)
 
 
 def _path_list(payload: dict) -> str:
@@ -159,6 +228,67 @@ def _as_watch_extensions(data: dict) -> frozenset[str]:
     return frozenset(normalized)
 
 
+def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
+    raw = data.get("routes") or []
+    if not isinstance(raw, list):
+        return ()
+    routes: list[FolderRoute] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path_text = str(item.get("path") or "").strip()
+        if not path_text:
+            continue
+        try:
+            chat_id = int(item.get("chat_id"))
+        except (TypeError, ValueError):
+            logger.warning("跳过无效路由: %s", item)
+            continue
+        if chat_id == 0:
+            logger.warning("跳过 chat_id=0 的路由: %s", path_text)
+            continue
+        path = _resolve_observer_path(path_text)
+        key = str(path)
+        if key in seen:
+            logger.warning("重复路由路径，后者覆盖: %s", path)
+        seen.add(key)
+        topic_raw = item.get("topic_enabled", None)
+        topic_enabled = None if topic_raw is None else _as_bool(topic_raw, True)
+        enabled_raw = item.get("enabled", True)
+        enabled = True if enabled_raw is None else _as_bool(enabled_raw, True)
+        routes.append(
+            FolderRoute(
+                path=path,
+                chat_id=chat_id,
+                name=str(item.get("name") or ""),
+                topic_enabled=topic_enabled,
+                enabled=enabled,
+            )
+        )
+    return tuple(routes)
+
+
+def _as_chats(data: dict) -> tuple[ChatAlias, ...]:
+    raw = data.get("chats") or []
+    if not isinstance(raw, list):
+        return ()
+    chats: list[ChatAlias] = []
+    seen: set[int] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            chat_id = int(item.get("chat_id") or item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if chat_id == 0 or chat_id in seen:
+            continue
+        seen.add(chat_id)
+        chats.append(ChatAlias(chat_id=chat_id, alias=str(item.get("alias") or "").strip()))
+    return tuple(chats)
+
+
 def _as_bool(raw: object, default: bool) -> bool:
     if raw is None:
         return default
@@ -198,6 +328,8 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         assigned_timeout_seconds=max(1, int(data.get("assigned_timeout_seconds", 600))),
         stable_timeout_seconds=max(1.0, float(data.get("stable_timeout_seconds", 1800))),
         watch_extensions=_as_watch_extensions(data),
+        routes=_as_routes(data),
+        chats=_as_chats(data),
     )
 
 
@@ -260,6 +392,20 @@ class SettingsHub:
             "assigned_timeout_seconds": settings.assigned_timeout_seconds,
             "stable_timeout_seconds": settings.stable_timeout_seconds,
             "watch_extensions": sorted(ext.lstrip(".") for ext in settings.watch_extensions),
+            "routes": [
+                {
+                    "name": route.name,
+                    "path": str(route.path),
+                    "chat_id": route.chat_id,
+                    "topic_enabled": route.topic_enabled,
+                    "enabled": route.enabled,
+                }
+                for route in settings.routes
+            ],
+            "chats": [
+                {"chat_id": chat.chat_id, "alias": chat.alias}
+                for chat in settings.chats
+            ],
         }
 
     def save_from_payload(self, payload: dict) -> dict:

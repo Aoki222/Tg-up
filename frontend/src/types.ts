@@ -113,6 +113,26 @@ export type PreviewMode = "off" | "first_frame" | "grid";
 /** 上传成功后本地原视频文件的处理策略：保留 | 直接删除 | 移动到归档目录 */
 export type AfterSuccess = "keep" | "delete" | "move_to_archive";
 
+/** 分目录上传目标。topic_enabled 为 null 时跟随全局话题开关 */
+export interface ChatAliasItem {
+  chat_id: number;
+  alias: string;
+}
+
+export interface TelegramChat {
+  id: number;
+  title: string;
+  alias: string;
+}
+
+export interface FolderRouteItem {
+  name: string;
+  path: string;
+  chat_id: number;
+  topic_enabled: boolean | null;
+  enabled: boolean;
+}
+
 /** 监听目录健康诊断信息 */
 export interface ObserverPathInfo {
   /** 目录绝对或相对路径 */
@@ -153,6 +173,9 @@ export interface UploadConfig {
   stable_timeout_seconds: number;
   /** 监听的文件后缀扩展名（如 mp4, mkv 等，留空表示不限制） */
   watch_extensions: string[];
+  /** 目录 → 群/频道路由，未命中则用 chat_id */
+  routes: FolderRouteItem[];
+  chats: ChatAliasItem[];
 }
 
 // ── Session 授权登录交互类型 ───────────────────────────────────

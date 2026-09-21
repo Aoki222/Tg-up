@@ -27,3 +27,15 @@ stable_timeout_seconds = 1800
 
 # 监听格式，不含点。空列表 [] 表示任意后缀。旧字段 video_extensions 仍能读。
 watch_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "m4v"]
+
+# 可选。按文件夹分流到不同群/频道；未命中用上面的 chat_id。
+# 子目录自动匹配最近的父目录规则。省略 topic_enabled 则跟随全局。
+# [[chats]]
+# chat_id = -1001111111111
+# alias = "电影频道"
+
+# [[routes]]
+# path = "D:\\ALL\\uploader\\download\\movies"
+# chat_id = -1001111111111
+# topic_enabled = false
+# enabled = true

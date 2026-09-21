@@ -4,7 +4,42 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+class ChatAliasPayload(BaseModel):
+    chat_id: int
+    alias: str = ""
+
+    @field_validator("chat_id")
+    @classmethod
+    def chat_id_nonzero(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("chat_id 不能为 0")
+        return value
+
+
+class FolderRoutePayload(BaseModel):
+    path: str
+    chat_id: int
+    name: str = ""
+    topic_enabled: bool | None = None
+    enabled: bool = True
+
+    @field_validator("path")
+    @classmethod
+    def path_not_empty(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("路由路径不能为空")
+        return text
+
+    @field_validator("chat_id")
+    @classmethod
+    def chat_id_nonzero(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("路由 chat_id 不能为 0")
+        return value
 
 
 class SettingsPayload(BaseModel):
@@ -23,3 +58,5 @@ class SettingsPayload(BaseModel):
     stable_timeout_seconds: float = Field(default=1800, ge=1)
     watch_extensions: list[str] | None = None
     video_extensions: list[str] | None = None
+    routes: list[FolderRoutePayload] = Field(default_factory=list)
+    chats: list[ChatAliasPayload] = Field(default_factory=list)

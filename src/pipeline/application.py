@@ -25,6 +25,7 @@ from ..adapters.disabled_workers import DisabledWorkers
 from ..adapters.progress import FanoutReporter, LogProgressBar, ProgressHub
 from ..adapters.session_login import unlink_session
 from ..adapters.sessions import SessionPool
+from ..adapters.telegram_chats import list_dialog_chats
 from ..adapters.task_store import TaskRepository
 from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
@@ -275,6 +276,27 @@ class UploaderApplication:
                 await self._unload_worker(name, reason=reason, in_flight_timeout=0)
                 logger.info("已卸载 worker: %s", name)
 
+    async def _list_chats(self) -> list[dict]:
+        pool = self._session_pool
+        scheduler = self._scheduler
+        if pool is None or not pool.clients:
+            return []
+        client = None
+        if scheduler is not None:
+            for name, worker in scheduler.worker_map.items():
+                if worker.is_accepting() and name in pool.clients:
+                    client = pool.clients[name]
+                    break
+        if client is None:
+            client = next(iter(pool.clients.values()), None)
+        if client is None:
+            return []
+        try:
+            return await list_dialog_chats(client)
+        except Exception:
+            logger.exception("拉取群/频道列表失败")
+            return []
+
     async def _serve_api(self) -> None:
         """和流水线同进程提供 SSE，Vue 以后只对接这个 HTTP 服务。"""
         import uvicorn
@@ -294,6 +316,7 @@ class UploaderApplication:
             task_repository=self._repository,
             reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
             restart_process=self.request_restart,
+            chats_provider=self._list_chats,
         )
         config = uvicorn.Config(
             api,

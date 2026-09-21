@@ -17,6 +17,7 @@ import type {
   SessionLoginResult,
   SessionMeta,
   SessionMode,
+  TelegramChat,
   UploadConfig,
   UploadProgress,
   WorkerSnapshot,
@@ -134,7 +135,18 @@ export async function deleteWorker(name: string): Promise<void> {
 function normalizeSettings(data: UploadConfig): UploadConfig {
   const infos: ObserverPathInfo[] = data.observer_path_infos ?? [];
   const paths = infos.length ? infos.map((item) => item.path) : data.observer_paths;
-  return { ...data, observer_paths: paths, observer_path_infos: infos };
+  return {
+    ...data,
+    observer_paths: paths,
+    observer_path_infos: infos,
+    routes: (data.routes ?? []).map((item) => ({ ...item, enabled: item.enabled !== false })),
+    chats: data.chats ?? [],
+  };
+}
+
+export async function fetchChats(): Promise<{ items: TelegramChat[]; online: boolean }> {
+  const res = await apiClient.get<{ items: TelegramChat[]; online: boolean }>("/api/chats");
+  return res.data;
 }
 
 /**

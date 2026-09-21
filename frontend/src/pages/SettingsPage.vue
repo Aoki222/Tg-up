@@ -13,10 +13,23 @@
  *    - 约束在 960px 舒适视距内，避免宽屏下拉伸失调。
  */
 
-import { ref, onMounted } from "vue";
+import { computed, ref, onMounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { fetchIdentity, getApiToken, restartProcess, saveIdentity, setApiToken } from "../api";
 import ConfigPanel from "../components/ConfigPanel.vue";
+
+type SettingsTab = "delivery" | "watch" | "process" | "account";
+
+const tabs: { id: SettingsTab; label: string }[] = [
+  { id: "delivery", label: "投递" },
+  { id: "watch", label: "监听" },
+  { id: "process", label: "处理" },
+  { id: "account", label: "账号" },
+];
+
+const tab = ref<SettingsTab>("delivery");
+const tomlDirty = ref(false);
+const configPanelId = computed(() => (tab.value === "account" ? "delivery" : tab.value));
 
 // ── 响应式状态 ─────────────────────────────────────────────────
 
@@ -109,13 +122,31 @@ function clearToken(): void {
     <!-- 页面标题与导读 -->
     <div class="page-header">
       <h2 class="page-title">系统配置</h2>
-      <p class="page-desc">上传策略写入 upload.toml，保存即生效。Telegram 凭据写入 .env，需重启进程。</p>
+      <p class="page-desc">投递、监听、处理写入 upload.toml。账号写入 .env 或本机 Token。</p>
     </div>
 
-    <el-card shadow="never" class="settings-board">
-      <ConfigPanel />
+    <nav class="tabs" aria-label="设置分段">
+      <button
+        v-for="item in tabs"
+        :key="item.id"
+        type="button"
+        class="tab"
+        :class="{ active: tab === item.id }"
+        @click="tab = item.id"
+      >
+        {{ item.label }}
+        <span v-if="item.id !== 'account' && tomlDirty" class="tab-dot" aria-hidden="true"></span>
+      </button>
+    </nav>
 
-      <section class="block">
+    <el-card shadow="never" class="settings-board">
+      <ConfigPanel
+        v-show="tab !== 'account'"
+        :panel="configPanelId"
+        @update:dirty="tomlDirty = $event"
+      />
+
+      <section v-if="tab === 'account'" class="block first">
       <h3 class="block-title">Telegram 凭据 (.env)</h3>
       <p class="hint">
         来自 <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a>。
@@ -150,7 +181,7 @@ function clearToken(): void {
       <el-button type="primary" :loading="identitySaving" @click="saveCredentials">保存凭据</el-button>
       </section>
 
-      <section class="block">
+      <section v-if="tab === 'account'" class="block">
       <h3 class="block-title">控制台鉴权</h3>
       <p class="hint">
         用于访问受保护的 API 端点。与后端 <code>API_TOKEN</code> 环境变量保持一致，留空表示不鉴权。
@@ -223,6 +254,49 @@ function clearToken(): void {
   margin: 0;
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: fit-content;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--accent);
+}
+
+.block.first {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 
 .settings-board {

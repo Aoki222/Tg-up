@@ -73,6 +73,7 @@ def create_api(
     task_repository=None,
     reschedule=None,
     restart_process=None,
+    chats_provider=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
     app = FastAPI(title="uploader", version="0.1.0")
@@ -85,6 +86,7 @@ def create_api(
     app.state.task_repository = task_repository
     app.state.reschedule = reschedule
     app.state.restart_process = restart_process
+    app.state.chats_provider = chats_provider
     app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
     app.add_middleware(
         CORSMiddleware,
@@ -237,6 +239,40 @@ def create_api(
             raise HTTPException(status_code=503, detail="重启未就绪")
         op()
         return {"ok": True}
+
+    @app.get("/api/chats")
+    async def list_chats() -> dict:
+        """Session 里的群/频道 + 配置里出现过的 id，带上别名。"""
+        provider = app.state.chats_provider
+        live: list[dict] = []
+        if provider is not None:
+            live = await provider()
+        settings_hub: SettingsHub | None = app.state.settings_hub
+        aliases: dict[int, str] = {}
+        configured: list[int] = []
+        if settings_hub is not None:
+            current = settings_hub.get()
+            aliases = {chat.chat_id: chat.alias for chat in current.chats}
+            configured.append(current.chat_id)
+            configured.extend(route.chat_id for route in current.routes)
+        merged: dict[int, dict] = {}
+        for item in live:
+            chat_id = int(item["id"])
+            merged[chat_id] = {
+                "id": chat_id,
+                "title": item.get("title") or "",
+                "alias": aliases.get(chat_id, ""),
+            }
+        for chat_id in configured:
+            if chat_id and chat_id not in merged:
+                merged[chat_id] = {
+                    "id": chat_id,
+                    "title": "",
+                    "alias": aliases.get(chat_id, ""),
+                }
+            elif chat_id in merged and not merged[chat_id]["alias"]:
+                merged[chat_id]["alias"] = aliases.get(chat_id, "")
+        return {"items": list(merged.values()), "online": bool(live)}
 
     @app.get("/api/settings")
     async def get_settings() -> dict:
