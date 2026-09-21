@@ -308,9 +308,27 @@ class UploaderApplication:
         await server.serve()
 
     def request_restart(self) -> None:
-        """HTTP 先返回，稍后再拉起新进程并退出当前进程。"""
-        loop = asyncio.get_running_loop()
-        loop.call_later(0.35, self._spawn_and_exit)
+        """HTTP 先返回；先停发现/调度再拉起新进程，避免入口还在进文件。"""
+        asyncio.get_running_loop().create_task(self._restart_soon())
+
+    async def _restart_soon(self) -> None:
+        await asyncio.sleep(0.35)
+        logger.info("重启前停止发现与调度")
+        try:
+            if self._watcher is not None:
+                await self._watcher.stop()
+            if self._ingestor is not None:
+                await self._ingestor.stop()
+            if self._preview_pool is not None:
+                await self._preview_pool.stop()
+            if self._scheduler is not None:
+                await self._scheduler.stop()
+            if self._uvicorn is not None:
+                self._uvicorn.should_exit = True
+            await close_pool()
+        except Exception:
+            logger.exception("重启前停机失败，仍将拉起新进程")
+        self._spawn_and_exit()
 
     def _spawn_and_exit(self) -> None:
         argv = list(getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv])

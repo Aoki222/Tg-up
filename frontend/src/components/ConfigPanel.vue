@@ -105,15 +105,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <el-card v-loading="loading" shadow="never" class="config-card">
-    <template #header>
-      <div class="head">
-        <span>上传配置 (upload.toml)</span>
-        <el-button type="primary" :loading="saving" :disabled="!dirty" @click="submit">
-          保存到 upload.toml
-        </el-button>
-      </div>
-    </template>
+  <div v-loading="loading" class="config-block">
+    <div class="head">
+      <span>上传配置 (upload.toml)</span>
+      <el-button type="primary" :loading="saving" :disabled="!dirty" @click="submit">
+        保存到 upload.toml
+      </el-button>
+    </div>
 
     <el-alert
       title="这里改的是 upload.toml，保存后热加载。监听目录可填相对或绝对路径，相对路径相对进程工作目录解析；不存在的目录不会自动创建，也不会开始监听。"
@@ -218,15 +216,23 @@ onMounted(() => {
         </div>
       </section>
     </el-form>
-  </el-card>
+  </div>
 </template>
 
 <style scoped>
+.config-block {
+  min-width: 0;
+}
+
 .head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .hint {

@@ -153,12 +153,15 @@ release：`pending`，清空 `assigned_bot` / `assigned_at` / `started_at`，**�
 - `GET /api/workers` 含禁用、重连字段
 - `POST .../disable` `POST .../enable` `DELETE /api/workers/{name}`
 - `GET/PUT /api/settings`
+- `GET /api/tasks` 看板；`POST /api/tasks/{id}/retry`、`POST /api/tasks/retry-failed`
+- `DELETE /api/tasks/{id}`、`POST /api/tasks/failed/delete`、`DELETE /api/tasks/failed`
 - `GET /api/progress` + `GET /api/progress/stream`（SSE，事件名 `progress`）
+- `GET/PUT /api/identity`（写 `.env` 的 API_ID/HASH）；`POST /api/process/restart`
 - 登录相关 `/api/sessions/*`
 
 已删除：`POST /api/tasks`（投喂/wait）、演示进度 `/api/debug/fake-progress`。
 
-`API_TOKEN` 为空不校验；设置后改配置、改 worker 需要 Bearer。
+`API_TOKEN` 为空则 `/api/*` 全放行（本机单用）。设置后除 `GET /api/health` 外都要令牌：Axios 走 `Authorization: Bearer`；SSE 的 `EventSource` 不能自定义头，用 `?access_token=`。查询参数勿写入应用日志。静态页 `/`、`/assets` 不鉴权。
 
 ---
 

@@ -12,6 +12,7 @@ const EMPTY_COUNTS: BoardCounts = {
   uploading: 0,
   failed: 0,
   success: 0,
+  success_today: 0,
 };
 
 export function useTaskBoard() {
@@ -32,7 +33,8 @@ export function useTaskBoard() {
   );
 
   const queueCount = computed(() => counts.value.preparing + counts.value.pending);
-  const successCount = computed(() => counts.value.success);
+  const successToday = computed(() => counts.value.success_today);
+  const successTotal = computed(() => counts.value.success);
 
   function upsert(task: BoardTask): void {
     const index = items.value.findIndex((item) => item.id === task.id);
@@ -186,5 +188,5 @@ export function useTaskBoard() {
     window.clearTimeout(ghostTimer);
   });
 
-  return { items, counts, inFlightCount, queueCount, successCount };
+  return { items, counts, inFlightCount, queueCount, successToday, successTotal };
 }

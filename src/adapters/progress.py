@@ -85,7 +85,6 @@ class ProgressHub:
 
     def _should_emit(self, progress: UploadProgress) -> bool:
         """uploading 约 1% 或 0.4 秒才推一次；非 uploading 立刻推。"""
-        """uploading 约 1% 或 0.4 秒才推一次；非 uploading 立刻推。"""
         if progress.stage != "uploading":
             return True
         previous = self._last_emit.get(progress.task_id)

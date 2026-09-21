@@ -24,7 +24,22 @@ const showSessionForm = ref(false);
 /** 由子组件 WorkerPanel 派发的最新 Worker 快照数组 */
 const workers = ref<WorkerSnapshot[]>([]);
 
-const { items: boardItems, inFlightCount, queueCount, successCount } = useTaskBoard();
+const { items: boardItems, inFlightCount, queueCount, successToday, successTotal } = useTaskBoard();
+
+const SUCCESS_SCOPE_KEY = "uploader.success-scope";
+const successScope = ref<"today" | "all">(loadSuccessScope());
+const successCount = computed(() =>
+  successScope.value === "today" ? successToday.value : successTotal.value,
+);
+
+function loadSuccessScope(): "today" | "all" {
+  return localStorage.getItem(SUCCESS_SCOPE_KEY) === "all" ? "all" : "today";
+}
+
+function toggleSuccessScope(): void {
+  successScope.value = successScope.value === "today" ? "all" : "today";
+  localStorage.setItem(SUCCESS_SCOPE_KEY, successScope.value);
+}
 
 // ── 弹窗交互控制 ───────────────────────────────────────────────
 
@@ -71,7 +86,14 @@ watch(showSessionForm, (open) => {
           </svg>
         </div>
         <div class="cell-data">
-          <span class="cell-label">上传成功</span>
+          <button
+            type="button"
+            class="cell-label scope-toggle"
+            :title="successScope === 'today' ? '点击查看累计成功' : '点击查看今日成功'"
+            @click="toggleSuccessScope"
+          >
+            {{ successScope === "today" ? "今日成功" : "累计成功" }}
+          </button>
           <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
             {{ successCount }} <span class="cell-unit">条</span>
           </span>
@@ -238,6 +260,20 @@ watch(showSessionForm, (open) => {
   color: var(--text-secondary);
   font-weight: 500;
   margin-bottom: 2px;
+}
+
+.scope-toggle {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.scope-toggle:hover {
+  color: var(--text);
 }
 
 .cell-value {

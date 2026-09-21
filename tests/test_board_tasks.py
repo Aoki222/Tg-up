@@ -72,6 +72,7 @@ async def test_list_board_tasks_excludes_success(tmp_path: Path) -> None:
         assert counts["uploading"] == 0
         assert counts["assigned"] == 0
         assert counts["success"] == 1
+        assert counts["success_today"] == 1
     finally:
         await close_pool()
 
@@ -99,6 +100,7 @@ async def test_failed_board_is_capped(tmp_path: Path) -> None:
             "uploading": 0,
             "failed": 5,
             "success": 0,
+            "success_today": 0,
         }
     finally:
         await close_pool()

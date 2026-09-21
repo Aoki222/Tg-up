@@ -112,10 +112,11 @@ function clearToken(): void {
       <p class="page-desc">上传策略写入 upload.toml，保存即生效。Telegram 凭据写入 .env，需重启进程。</p>
     </div>
 
-    <ConfigPanel />
+    <el-card shadow="never" class="settings-board">
+      <ConfigPanel />
 
-    <el-card shadow="never" class="token-card">
-      <template #header>Telegram 凭据 (.env)</template>
+      <section class="block">
+      <h3 class="block-title">Telegram 凭据 (.env)</h3>
       <p class="hint">
         来自 <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a>。
         保存后写入项目根目录 <code>.env</code>，不热更新。不改 API_HASH 请留空。
@@ -130,7 +131,6 @@ function clearToken(): void {
             :type="showHash ? 'text' : 'password'"
             :placeholder="apiHashMasked || '留空则不修改'"
             class="token-input"
-            @wheel.prevent
           >
             <template #suffix>
               <span class="toggle-eye" @click="showHash = !showHash">
@@ -148,16 +148,15 @@ function clearToken(): void {
         </el-form-item>
       </div>
       <el-button type="primary" :loading="identitySaving" @click="saveCredentials">保存凭据</el-button>
-    </el-card>
+      </section>
 
-    <!-- ── API Token 鉴权卡片 ── -->
-    <el-card shadow="never" class="token-card">
-      <template #header>API Token</template>
+      <section class="block">
+      <h3 class="block-title">控制台鉴权</h3>
       <p class="hint">
         用于访问受保护的 API 端点。与后端 <code>API_TOKEN</code> 环境变量保持一致，留空表示不鉴权。
       </p>
 
-      <div class="token-row" @wheel.prevent>
+      <div class="token-row">
         <el-input
           v-model="tokenInput"
           :type="showToken ? 'text' : 'password'"
@@ -187,6 +186,7 @@ function clearToken(): void {
       <transition name="fade">
         <p v-if="saved" class="saved-hint">✓ 已保存生效</p>
       </transition>
+      </section>
     </el-card>
 
   </div>
@@ -225,14 +225,38 @@ function clearToken(): void {
   color: var(--text-secondary);
 }
 
-.token-card .hint {
+.settings-board {
+  overflow: visible;
+}
+
+.settings-board :deep(.el-card__body) {
+  overflow: visible;
+  padding: 20px 22px 24px;
+}
+
+.block {
+  margin-top: 8px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-light);
+}
+
+.block-title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.token-card .hint,
+.block .hint,
+.settings-board .hint {
   margin: 0 0 14px;
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.6;
 }
 
-.token-card .hint code {
+.hint code {
   padding: 2px 6px;
   background: var(--accent-soft);
   border-radius: 5px;

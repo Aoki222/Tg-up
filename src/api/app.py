@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..adapters.progress import ProgressHub
@@ -44,13 +44,23 @@ class IdentityPayload(BaseModel):
 DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
-async def require_token(authorization: str | None = Header(default=None)) -> None:
-    """API_TOKEN 为空则放行（本机单用）。设置后 PUT /api/settings 必须带 Bearer。"""
+def api_token_ok(authorization: str | None, access_token: str | None) -> bool:
+    """API_TOKEN 为空则放行。否则 Bearer 头或 access_token 查询参数任一匹配即可。"""
     if not API_TOKEN:
+        return True
+    if authorization == f"Bearer {API_TOKEN}":
+        return True
+    return bool(access_token) and access_token == API_TOKEN
+
+
+async def require_token(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> None:
+    """写接口依赖。读接口由下面的中间件统一拦。"""
+    if api_token_ok(authorization, request.query_params.get("access_token")):
         return
-    expected = f"Bearer {API_TOKEN}"
-    if authorization != expected:
-        raise HTTPException(status_code=401, detail="需要 Authorization: Bearer <API_TOKEN>")
+    raise HTTPException(status_code=401, detail="需要 Authorization: Bearer <API_TOKEN>")
 
 
 def create_api(
@@ -82,6 +92,25 @@ def create_api(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def protect_api(request: Request, call_next):
+        """除 /api/health 外，/api/* 在配置了 API_TOKEN 时都要令牌。OPTIONS 放行给 CORS。"""
+        path = request.url.path
+        if (
+            request.method != "OPTIONS"
+            and path.startswith("/api/")
+            and path != "/api/health"
+            and not api_token_ok(
+                request.headers.get("authorization"),
+                request.query_params.get("access_token"),
+            )
+        ):
+            return JSONResponse(
+                {"detail": "需要 Authorization: Bearer <API_TOKEN>"},
+                status_code=401,
+            )
+        return await call_next(request)
 
     @app.get("/api/health")
     async def health() -> dict:

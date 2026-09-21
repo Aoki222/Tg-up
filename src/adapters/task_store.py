@@ -289,6 +289,7 @@ class TaskRepository:
             "uploading": 0,
             "failed": 0,
             "success": 0,
+            "success_today": 0,
         }
         async with get_db() as database:
             async with database.execute(
@@ -297,6 +298,13 @@ class TaskRepository:
                    GROUP BY status"""
             ) as cursor:
                 rows = await cursor.fetchall()
+            async with database.execute(
+                """SELECT COUNT(*) FROM upload_tasks
+                   WHERE status = 'success'
+                     AND date(finished_at, 'localtime') = date('now', 'localtime')"""
+            ) as cursor:
+                today = await cursor.fetchone()
+                counts["success_today"] = int(today[0] if today else 0)
         for row in rows:
             status = str(row[0])
             n = int(row[1])

@@ -6,7 +6,7 @@
  * 1. 基于 Axios 统一封装网络客户端实例 `apiClient`，预置 15 秒请求超时；
  * 2. 请求拦截器：自动读取 localStorage 中的 API Token 并注入 `Authorization: Bearer <token>`；
  * 3. 响应拦截器：全局捕获 401 Unauthorized 状态码并弹出精准提示；自动解包 FastAPI 的 `detail` 错误文本；
- * 4. SSE 进度流：对于流式长连接 `/api/progress/stream`，遵循标准采用浏览器原生 `EventSource`。
+ * 4. SSE：`EventSource` 不能带头，有 Token 时走 `/api/progress/stream?access_token=`。
  */
 
 import axios, { type AxiosError } from "axios";
@@ -280,7 +280,11 @@ export function openProgressStream(
   onEvent: (progress: UploadProgress) => void,
   onError?: () => void,
 ): EventSource {
-  const source = new EventSource("/api/progress/stream");
+  const token = getApiToken();
+  const url = token
+    ? `/api/progress/stream?access_token=${encodeURIComponent(token)}`
+    : "/api/progress/stream";
+  const source = new EventSource(url);
 
   source.addEventListener("progress", (event: Event) => {
     const message = event as MessageEvent<string>;

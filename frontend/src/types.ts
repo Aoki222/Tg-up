@@ -65,6 +65,7 @@ export interface BoardCounts {
   uploading: number;
   failed: number;
   success: number;
+  success_today: number;
 }
 
 export interface BoardSnapshot {
