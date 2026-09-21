@@ -36,9 +36,9 @@ function loadSuccessScope(): "today" | "all" {
   return localStorage.getItem(SUCCESS_SCOPE_KEY) === "all" ? "all" : "today";
 }
 
-function toggleSuccessScope(): void {
-  successScope.value = successScope.value === "today" ? "all" : "today";
-  localStorage.setItem(SUCCESS_SCOPE_KEY, successScope.value);
+function onSuccessScopeChange(value: "today" | "all"): void {
+  successScope.value = value;
+  localStorage.setItem(SUCCESS_SCOPE_KEY, value);
 }
 
 // ── 弹窗交互控制 ───────────────────────────────────────────────
@@ -86,14 +86,15 @@ watch(showSessionForm, (open) => {
           </svg>
         </div>
         <div class="cell-data">
-          <button
-            type="button"
-            class="cell-label scope-toggle"
-            :title="successScope === 'today' ? '点击查看累计成功' : '点击查看今日成功'"
-            @click="toggleSuccessScope"
+          <el-select
+            :model-value="successScope"
+            class="scope-select"
+            size="small"
+            @change="onSuccessScopeChange"
           >
-            {{ successScope === "today" ? "今日成功" : "累计成功" }}
-          </button>
+            <el-option label="今日成功" value="today" />
+            <el-option label="累计成功" value="all" />
+          </el-select>
           <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
             {{ successCount }} <span class="cell-unit">条</span>
           </span>
@@ -262,18 +263,21 @@ watch(showSessionForm, (open) => {
   margin-bottom: 2px;
 }
 
-.scope-toggle {
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: inherit;
+.scope-select {
+  width: 108px;
 }
 
-.scope-toggle:hover {
-  color: var(--text);
+.scope-select :deep(.el-select__wrapper) {
+  padding: 0 8px;
+  min-height: 22px;
+  box-shadow: none;
+  background: transparent;
+}
+
+.scope-select :deep(.el-select__selected-item) {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
 }
 
 .cell-value {

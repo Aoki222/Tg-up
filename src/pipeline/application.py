@@ -25,7 +25,7 @@ from ..adapters.disabled_workers import DisabledWorkers
 from ..adapters.progress import FanoutReporter, LogProgressBar, ProgressHub
 from ..adapters.session_login import unlink_session
 from ..adapters.sessions import SessionPool
-from ..adapters.telegram_chats import list_dialog_chats
+from ..adapters.telegram_chats import list_dialog_chats, resolve_chat_title
 from ..adapters.task_store import TaskRepository
 from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
@@ -297,6 +297,15 @@ class UploaderApplication:
             logger.exception("拉取群/频道列表失败")
             return []
 
+    async def _resolve_chat_title(self, chat_id: int) -> str:
+        pool = self._session_pool
+        if pool is None or not pool.clients:
+            return ""
+        client = next(iter(pool.clients.values()), None)
+        if client is None:
+            return ""
+        return await resolve_chat_title(client, chat_id)
+
     async def _serve_api(self) -> None:
         """和流水线同进程提供 SSE，Vue 以后只对接这个 HTTP 服务。"""
         import uvicorn
@@ -317,6 +326,7 @@ class UploaderApplication:
             reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
             restart_process=self.request_restart,
             chats_provider=self._list_chats,
+            chat_resolver=self._resolve_chat_title,
         )
         config = uvicorn.Config(
             api,

@@ -31,6 +31,10 @@ class FailedIdsBody(BaseModel):
     ids: list[int] = Field(default_factory=list)
 
 
+class ChatIdBody(BaseModel):
+    chat_id: int
+
+
 class IdentityPayload(BaseModel):
     api_id: int = Field(ge=1)
     api_hash: str = ""
@@ -74,6 +78,7 @@ def create_api(
     reschedule=None,
     restart_process=None,
     chats_provider=None,
+    chat_resolver=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
     app = FastAPI(title="uploader", version="0.1.0")
@@ -87,6 +92,7 @@ def create_api(
     app.state.reschedule = reschedule
     app.state.restart_process = restart_process
     app.state.chats_provider = chats_provider
+    app.state.chat_resolver = chat_resolver
     app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
     app.add_middleware(
         CORSMiddleware,
@@ -273,6 +279,17 @@ def create_api(
             elif chat_id in merged and not merged[chat_id]["alias"]:
                 merged[chat_id]["alias"] = aliases.get(chat_id, "")
         return {"items": list(merged.values()), "online": bool(live)}
+
+    @app.post("/api/chats/resolve")
+    async def resolve_chat(payload: ChatIdBody) -> dict:
+        resolver = app.state.chat_resolver
+        title = ""
+        if resolver is not None:
+            try:
+                title = await resolver(int(payload.chat_id))
+            except Exception as error:
+                raise HTTPException(status_code=400, detail=f"找不到该群或频道: {error}") from error
+        return {"id": int(payload.chat_id), "title": title or ""}
 
     @app.get("/api/settings")
     async def get_settings() -> dict:

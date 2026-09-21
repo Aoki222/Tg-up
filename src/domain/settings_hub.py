@@ -122,14 +122,16 @@ def _render_chats(payload: dict) -> str:
         if chat_id == 0 or chat_id in seen:
             continue
         alias = str(item.get("alias") or "").strip()
-        if not alias:
-            continue
+        title = str(item.get("title") or "").strip()
         seen.add(chat_id)
-        chunks.append(
+        block = (
             "[[chats]]\n"
             f"chat_id = {chat_id}\n"
             f"alias = {_toml_string(alias)}\n"
         )
+        if title:
+            block += f"title = {_toml_string(title)}\n"
+        chunks.append(block)
     if len(chunks) == 1:
         return ""
     return "".join(chunks)
@@ -285,7 +287,13 @@ def _as_chats(data: dict) -> tuple[ChatAlias, ...]:
         if chat_id == 0 or chat_id in seen:
             continue
         seen.add(chat_id)
-        chats.append(ChatAlias(chat_id=chat_id, alias=str(item.get("alias") or "").strip()))
+        chats.append(
+            ChatAlias(
+                chat_id=chat_id,
+                alias=str(item.get("alias") or "").strip(),
+                title=str(item.get("title") or "").strip(),
+            )
+        )
     return tuple(chats)
 
 
@@ -403,7 +411,7 @@ class SettingsHub:
                 for route in settings.routes
             ],
             "chats": [
-                {"chat_id": chat.chat_id, "alias": chat.alias}
+                {"chat_id": chat.chat_id, "alias": chat.alias, "title": chat.title}
                 for chat in settings.chats
             ],
         }

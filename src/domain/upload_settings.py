@@ -14,10 +14,11 @@ from .task import AfterSuccess
 
 @dataclass(frozen=True)
 class ChatAlias:
-    """chat_id 上的自定义名。空 alias 表示用 Telegram 官方标题。"""
+    """用户添加的群/频道。alias 空则显示 title（官方名）。"""
 
     chat_id: int
     alias: str = ""
+    title: str = ""
 
 
 @dataclass(frozen=True)

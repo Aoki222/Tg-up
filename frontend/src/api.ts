@@ -17,7 +17,6 @@ import type {
   SessionLoginResult,
   SessionMeta,
   SessionMode,
-  TelegramChat,
   UploadConfig,
   UploadProgress,
   WorkerSnapshot,
@@ -140,12 +139,18 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
     observer_paths: paths,
     observer_path_infos: infos,
     routes: (data.routes ?? []).map((item) => ({ ...item, enabled: item.enabled !== false })),
-    chats: data.chats ?? [],
+    chats: (data.chats ?? []).map((item) => ({
+      chat_id: item.chat_id,
+      alias: item.alias ?? "",
+      title: item.title ?? "",
+    })),
   };
 }
 
-export async function fetchChats(): Promise<{ items: TelegramChat[]; online: boolean }> {
-  const res = await apiClient.get<{ items: TelegramChat[]; online: boolean }>("/api/chats");
+export async function resolveChat(chatId: number): Promise<{ id: number; title: string }> {
+  const res = await apiClient.post<{ id: number; title: string }>("/api/chats/resolve", {
+    chat_id: chatId,
+  });
   return res.data;
 }
 

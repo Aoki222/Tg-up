@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 class ChatAliasPayload(BaseModel):
     chat_id: int
     alias: str = ""
+    title: str = ""
 
     @field_validator("chat_id")
     @classmethod

@@ -117,12 +117,7 @@ export type AfterSuccess = "keep" | "delete" | "move_to_archive";
 export interface ChatAliasItem {
   chat_id: number;
   alias: string;
-}
-
-export interface TelegramChat {
-  id: number;
   title: string;
-  alias: string;
 }
 
 export interface FolderRouteItem {

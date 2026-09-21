@@ -13,8 +13,8 @@
 
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { fetchChats, fetchSettings, saveSettings } from "../api";
-import type { FolderRouteItem, TelegramChat, UploadConfig } from "../types";
+import { fetchSettings, resolveChat, saveSettings } from "../api";
+import type { UploadConfig } from "../types";
 
 const { panel } = defineProps<{
   panel: "delivery" | "watch" | "process";
@@ -75,7 +75,11 @@ function snapshotOf(config: UploadConfig): string {
       }))
       .sort((left, right) => left.path.localeCompare(right.path)),
     chats: [...(config.chats ?? [])]
-      .map((item) => ({ chat_id: item.chat_id, alias: item.alias.trim() }))
+      .map((item) => ({
+        chat_id: item.chat_id,
+        alias: item.alias.trim(),
+        title: item.title?.trim() ?? "",
+      }))
       .sort((left, right) => left.chat_id - right.chat_id),
   });
 }
@@ -88,133 +92,91 @@ function applyServer(data: UploadConfig): void {
   savedSnapshot.value = snapshotOf({ ...form });
 }
 
-const selectedRoute = ref<number | null>(null);
-const editorOpen = ref(false);
-const liveChats = ref<TelegramChat[]>([]);
-const chatsOnline = ref(false);
-const chatsLoading = ref(false);
+const showAddChat = ref(false);
+const newChatId = ref<number | undefined>(undefined);
+const newChatName = ref("");
+const addingChat = ref(false);
+const editingPath = ref("");
 
-function addRoute(): void {
-  form.routes.push({
-    name: "",
-    path: form.observer_paths[0] ?? "",
-    chat_id: form.chat_id,
-    topic_enabled: null,
-    enabled: true,
-  });
-  selectedRoute.value = form.routes.length - 1;
-  editorOpen.value = true;
+function samePath(left: string, right: string): boolean {
+  return left.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === right.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
-
-function removeRoute(index: number): void {
-  form.routes.splice(index, 1);
-  if (selectedRoute.value === index) {
-    selectedRoute.value = null;
-    editorOpen.value = false;
-  } else if (selectedRoute.value !== null && selectedRoute.value > index) {
-    selectedRoute.value -= 1;
-  }
-}
-
-function selectRoute(index: number): void {
-  selectedRoute.value = index;
-  editorOpen.value = true;
-}
-
-function pathGlob(path: string): string {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "").trim();
-  return normalized ? `${normalized}/**` : "未填写路径";
-}
-
-function routeTitle(item: FolderRouteItem): string {
-  const named = item.name.trim();
-  if (named) return named;
-  const parts = item.path.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts[parts.length - 1] || "未命名规则";
-}
-
-function topicChip(item: FolderRouteItem): string {
-  if (item.topic_enabled === true) return "话题开";
-  if (item.topic_enabled === false) return "话题关";
-  return "话题跟随";
-}
-
-const editingRoute = computed(() => {
-  if (selectedRoute.value === null) return null;
-  return form.routes[selectedRoute.value] ?? null;
-});
-
-const catalog = computed(() => {
-  const map = new Map<number, TelegramChat>();
-  for (const item of liveChats.value) {
-    map.set(item.id, { id: item.id, title: item.title, alias: item.alias || "" });
-  }
-  for (const chat of form.chats) {
-    const previous = map.get(chat.chat_id) ?? { id: chat.chat_id, title: "", alias: "" };
-    previous.alias = chat.alias;
-    map.set(chat.chat_id, previous);
-  }
-  if (form.chat_id && !map.has(form.chat_id)) {
-    map.set(form.chat_id, { id: form.chat_id, title: "", alias: "" });
-  }
-  for (const route of form.routes) {
-    if (route.chat_id && !map.has(route.chat_id)) {
-      map.set(route.chat_id, { id: route.chat_id, title: "", alias: "" });
-    }
-  }
-  return [...map.values()].sort((left, right) => left.id - right.id);
-});
 
 function chatLabel(chatId: number): string {
-  const item = catalog.value.find((entry) => entry.id === chatId);
+  if (!chatId) return "默认群";
+  const item = form.chats.find((entry) => entry.chat_id === chatId);
   if (!item) return String(chatId);
-  return item.alias.trim() || item.title || String(chatId);
+  return item.alias.trim() || item.title.trim() || String(chatId);
 }
 
-function setAlias(chatId: number, alias: string): void {
-  const trimmed = alias.trim();
-  const index = form.chats.findIndex((item) => item.chat_id === chatId);
-  if (!trimmed) {
-    if (index >= 0) form.chats.splice(index, 1);
+function pathChatId(path: string): number {
+  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
+  return route?.chat_id ?? 0;
+}
+
+function setPathChat(path: string, chatId: number): void {
+  const index = form.routes.findIndex((item) => samePath(item.path, path));
+  if (!chatId) {
+    if (index >= 0) form.routes.splice(index, 1);
+    editingPath.value = "";
     return;
   }
-  if (index >= 0) form.chats[index].alias = trimmed;
-  else form.chats.push({ chat_id: chatId, alias: trimmed });
+  if (index >= 0) {
+    form.routes[index].chat_id = chatId;
+    form.routes[index].enabled = true;
+  } else {
+    form.routes.push({
+      name: "",
+      path,
+      chat_id: chatId,
+      topic_enabled: null,
+      enabled: true,
+    });
+  }
+  editingPath.value = "";
 }
 
-function toggleRouteEnabled(index: number): void {
-  const item = form.routes[index];
-  if (item) item.enabled = !item.enabled;
+function openAddChat(): void {
+  newChatId.value = undefined;
+  newChatName.value = "";
+  showAddChat.value = true;
 }
 
-async function loadChats(): Promise<void> {
-  chatsLoading.value = true;
+async function confirmAddChat(): Promise<void> {
+  const chatId = Number(newChatId.value);
+  if (!chatId) {
+    ElMessage.error("请填写 chat_id");
+    return;
+  }
+  if (form.chats.some((item) => item.chat_id === chatId)) {
+    ElMessage.error("该群已在看板中");
+    return;
+  }
+  addingChat.value = true;
   try {
-    const data = await fetchChats();
-    liveChats.value = data.items;
-    chatsOnline.value = data.online;
-  } catch {
-    liveChats.value = [];
-    chatsOnline.value = false;
+    let title = "";
+    try {
+      title = (await resolveChat(chatId)).title || "";
+    } catch {
+      title = "";
+    }
+    form.chats.push({
+      chat_id: chatId,
+      alias: newChatName.value.trim(),
+      title,
+    });
+    showAddChat.value = false;
+    if (!newChatName.value.trim() && !title) {
+      ElMessage.warning("未取到官方名称，名称留空");
+    }
   } finally {
-    chatsLoading.value = false;
+    addingChat.value = false;
   }
 }
 
-function topicMode(item: FolderRouteItem): "inherit" | "on" | "off" {
-  if (item.topic_enabled === true) return "on";
-  if (item.topic_enabled === false) return "off";
-  return "inherit";
-}
-
-function setTopicMode(item: FolderRouteItem, mode: "inherit" | "on" | "off"): void {
-  item.topic_enabled = mode === "inherit" ? null : mode === "on";
-}
-
-function setEditingTopic(mode: string): void {
-  const item = editingRoute.value;
-  if (!item) return;
-  setTopicMode(item, mode as "inherit" | "on" | "off");
+function removeChat(chatId: number): void {
+  form.chats = form.chats.filter((item) => item.chat_id !== chatId);
+  form.routes = form.routes.filter((item) => item.chat_id !== chatId);
 }
 
 /** 当前表单是否有未保存的变更 */
@@ -254,7 +216,6 @@ async function submit(): Promise<void> {
 
 onMounted(() => {
   void load();
-  void loadChats();
 });
 
 defineExpose({ dirty });
@@ -282,102 +243,49 @@ defineExpose({ dirty });
 
         <div class="route-head">
           <span class="section-title">群与频道</span>
-          <el-button size="small" :loading="chatsLoading" @click="loadChats">同步</el-button>
+          <el-button size="small" @click="openAddChat">添加</el-button>
         </div>
-        <p v-if="!chatsOnline" class="route-hint">没有在线账号时只显示配置里的 id。点同步可从 Session 拉取官方名称。</p>
-        <div v-if="catalog.length === 0" class="route-empty">还没有群。保存默认 chat_id 或同步 Session。</div>
-        <div v-for="item in catalog" :key="item.id" class="map-card fallback">
-          <div class="map-name">{{ item.alias.trim() || item.title || item.id }}</div>
-          <div v-if="item.title && item.alias" class="map-path">官方名 {{ item.title }}</div>
+        <p class="route-hint">手动添加要投递的群或频道。名称为空时使用 Telegram 官方标题。</p>
+        <div v-if="form.chats.length === 0" class="route-empty">还没有群。点右上角添加。</div>
+        <div v-for="item in form.chats" :key="item.chat_id" class="map-card fallback">
+          <div class="map-name">{{ item.alias.trim() || item.title.trim() || "未命名" }}</div>
+          <div v-if="item.alias.trim() && item.title.trim()" class="map-path">官方名 {{ item.title }}</div>
           <div class="map-dest">
-            <span class="map-id">{{ item.id }}</span>
+            <span class="map-id">{{ item.chat_id }}</span>
+            <el-button size="small" text type="danger" @click="removeChat(item.chat_id)">删除</el-button>
           </div>
-          <el-input
-            class="alias-input"
-            :model-value="item.alias"
-            placeholder="自定义名称，留空用官方名"
-            @change="(value: string) => setAlias(item.id, value)"
-          />
         </div>
 
         <div class="route-head">
           <span class="section-title">路径到群</span>
-          <el-button size="small" @click="addRoute">添加规则</el-button>
         </div>
-        <p class="route-hint">路径和目标从监听目录、上面的群列表里选。禁用或删除后该路径走默认群。</p>
-
-        <div v-if="form.routes.length === 0" class="route-empty">没有路由规则，监听目录全部发到默认群。</div>
-        <div
-          v-for="(item, index) in form.routes"
-          :key="index"
-          class="map-card"
-          :class="{ active: editorOpen && selectedRoute === index, muted: !item.enabled }"
-          @click="selectRoute(index)"
-        >
-          <div class="map-name">{{ routeTitle(item) }}</div>
-          <div class="map-path">{{ pathGlob(item.path) }}</div>
-          <div class="map-dest">
-            <span class="map-id">{{ chatLabel(item.chat_id) }}</span>
-            <span class="map-chip">{{ item.enabled ? topicChip(item) : "已禁用 · 走默认群" }}</span>
-            <el-button size="small" text @click.stop="toggleRouteEnabled(index)">
-              {{ item.enabled ? "禁用" : "启用" }}
-            </el-button>
-            <el-button size="small" text type="danger" @click.stop="removeRoute(index)">删除</el-button>
-          </div>
-        </div>
-        <div class="map-card fallback">
-          <div class="map-name">默认（未匹配）</div>
-          <div class="map-path">其余监听路径</div>
-          <div class="map-dest">
-            <span class="map-id">{{ chatLabel(form.chat_id) }}</span>
-            <span class="map-chip">{{ form.topic_creation_enabled ? "话题开" : "话题关" }}</span>
-          </div>
-        </div>
-
-        <template v-if="editorOpen && editingRoute">
-          <div class="route-head">
-            <span class="section-title">编辑规则</span>
-          </div>
-          <div class="route-row">
-            <el-form-item label="备注">
-              <el-input v-model="editingRoute.name" placeholder="例如 电影频道" />
-            </el-form-item>
-            <el-form-item label="文件夹路径">
-              <el-select v-model="editingRoute.path" filterable allow-create default-first-option class="grow" placeholder="从监听目录选择">
-                <el-option v-for="path in form.observer_paths" :key="path" :label="path" :value="path" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="目标群">
-              <el-select v-model="editingRoute.chat_id" filterable class="grow" placeholder="从群列表选择">
+        <p class="route-hint">左路径、右群名。点修改后从已添加的群里选；未指定则走默认群。</p>
+        <div v-if="form.observer_paths.length === 0" class="route-empty">请先在「监听」里添加目录。</div>
+        <div v-for="path in form.observer_paths" :key="path" class="path-card">
+          <div class="path-left">{{ path }}</div>
+          <div class="path-right">
+            <template v-if="editingPath === path">
+              <el-select
+                class="path-select"
+                :model-value="pathChatId(path)"
+                size="small"
+                @change="(value: number) => setPathChat(path, value)"
+              >
+                <el-option label="默认群" :value="0" />
                 <el-option
-                  v-for="chat in catalog"
-                  :key="chat.id"
-                  :label="`${chat.alias.trim() || chat.title || chat.id} (${chat.id})`"
-                  :value="chat.id"
+                  v-for="chat in form.chats"
+                  :key="chat.chat_id"
+                  :label="chatLabel(chat.chat_id)"
+                  :value="chat.chat_id"
                 />
               </el-select>
-            </el-form-item>
-            <el-form-item label="话题">
-              <el-select
-                :model-value="topicMode(editingRoute)"
-                class="grow"
-                @update:model-value="setEditingTopic"
-              >
-                <el-option label="跟随全局" value="inherit" />
-                <el-option label="开启" value="on" />
-                <el-option label="关闭" value="off" />
-              </el-select>
-            </el-form-item>
-            <el-button
-              class="route-del"
-              text
-              type="danger"
-              @click="selectedRoute !== null && removeRoute(selectedRoute)"
-            >
-              删除
-            </el-button>
+            </template>
+            <template v-else>
+              <span class="map-id">{{ chatLabel(pathChatId(path)) }}</span>
+              <el-button size="small" text @click="editingPath = path">修改</el-button>
+            </template>
           </div>
-        </template>
+        </div>
       </section>
 
       <section v-if="panel === 'watch'" class="section">
@@ -459,6 +367,21 @@ defineExpose({ dirty });
         </div>
       </section>
     </el-form>
+
+    <el-dialog v-model="showAddChat" title="添加群或频道" width="420px" append-to-body>
+      <el-form label-position="top">
+        <el-form-item label="名称">
+          <el-input v-model="newChatName" placeholder="可留空，将使用官方名称" />
+        </el-form-item>
+        <el-form-item label="chat_id">
+          <el-input-number v-model="newChatId" :controls="false" class="grow" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showAddChat = false">取消</el-button>
+        <el-button type="primary" :loading="addingChat" @click="confirmAddChat">添加</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -563,6 +486,38 @@ defineExpose({ dirty });
 
 .alias-input {
   margin-top: 8px;
+}
+
+.path-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.path-left {
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.path-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.path-select {
+  width: 180px;
 }
 
 .map-name {

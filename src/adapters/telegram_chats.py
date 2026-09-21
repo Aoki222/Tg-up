@@ -11,6 +11,11 @@ from ..logger import get_logger
 logger = get_logger(__name__)
 
 
+async def resolve_chat_title(client: TelegramClient, chat_id: int) -> str:
+    entity = await client.get_entity(chat_id)
+    return str(getattr(entity, "title", None) or getattr(entity, "username", None) or "")
+
+
 async def list_dialog_chats(client: TelegramClient) -> list[dict]:
     """只收群和频道，id 与 upload.toml 的 chat_id 同一种（含 -100 前缀）。"""
     items: list[dict] = []
