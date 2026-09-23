@@ -45,9 +45,51 @@ class AfterSuccess(StrEnum):
 
 @dataclass(frozen=True)
 class TaskDestination:
-    # 论坛话题必须带 topic_id；普通群为 None
+    # 论坛话题必须带 topic_id；普通群为 None。
+    # platform/dest_id 是通用目的地；旧行没有这两列时由 chat_id/topic_id 回退。
     chat_id: int
     topic_id: int | None = None
+    platform: str = "telegram"
+    dest_id: str = ""
+    dest_extra: str | None = None
+
+
+def destination_from_row(row: dict) -> TaskDestination:
+    """新列优先。dest_id / dest_extra 为空时回退 chat_id / topic_id。"""
+    platform = str(row.get("platform") or "telegram")
+    raw_dest = row.get("dest_id")
+    dest_id = str(raw_dest) if raw_dest not in (None, "") else ""
+    if not dest_id and row.get("chat_id") is not None:
+        dest_id = str(row.get("chat_id"))
+    raw_extra = row.get("dest_extra")
+    dest_extra = str(raw_extra) if raw_extra not in (None, "") else None
+    topic_raw = row.get("topic_id")
+    if dest_extra is None and topic_raw is not None:
+        dest_extra = str(topic_raw)
+    chat_id = int(row["chat_id"]) if row.get("chat_id") not in (None, "") else 0
+    if platform == "telegram" and dest_id:
+        try:
+            chat_id = int(dest_id)
+        except ValueError:
+            pass
+    topic_id = None
+    if dest_extra is not None:
+        try:
+            topic_id = int(dest_extra)
+        except ValueError:
+            topic_id = int(topic_raw) if topic_raw is not None else None
+    return TaskDestination(
+        chat_id=chat_id,
+        topic_id=topic_id,
+        platform=platform,
+        dest_id=dest_id,
+        dest_extra=dest_extra,
+    )
+
+
+def worker_from_row(row: dict) -> str | None:
+    worker = row.get("assigned_worker") or row.get("assigned_bot")
+    return str(worker) if worker else None
 
 
 @dataclass(frozen=True)
@@ -87,7 +129,6 @@ class Task:
 
     def merge_row(self, row: dict) -> Task:
         """用数据库最新行刷新可变字段，保留入库时拍下的 policy。"""
-        topic_id = row.get("topic_id")
         return replace(
             self,
             file_path=row["file_path"],
@@ -95,16 +136,13 @@ class Task:
             file_size=int(row.get("file_size") or self.file_size),
             folder_name=row.get("folder_name"),
             caption=row.get("caption") or "",
-            destination=TaskDestination(
-                chat_id=int(row["chat_id"]),
-                topic_id=int(topic_id) if topic_id is not None else None,
-            ),
+            destination=destination_from_row(row),
             artifacts=TaskArtifacts(
                 video_path=row["file_path"],
                 page_path=row.get("page_path") or None,
             ),
             status=status_from_row(row["status"]) if row.get("status") else self.status,
-            assigned_worker=row.get("assigned_bot"),
+            assigned_worker=worker_from_row(row),
             retry_count=int(row.get("retry_count") or 0),
             error=row.get("error_msg"),
             single_page=bool(row.get("single_page")),
@@ -114,7 +152,6 @@ class Task:
 
 def task_from_row(row: dict, policy: TaskPolicy) -> Task:
     """把数据库行装配成 Task。policy 必须由调用方传入（内存快照或当前配置）。"""
-    topic_id = row.get("topic_id")
     return Task(
         id=int(row["id"]),
         file_path=row["file_path"],
@@ -122,17 +159,14 @@ def task_from_row(row: dict, policy: TaskPolicy) -> Task:
         file_size=int(row.get("file_size") or 0),
         folder_name=row.get("folder_name"),
         caption=row.get("caption") or "",
-        destination=TaskDestination(
-            chat_id=int(row["chat_id"]),
-            topic_id=int(topic_id) if topic_id is not None else None,
-        ),
+        destination=destination_from_row(row),
         artifacts=TaskArtifacts(
             video_path=row["file_path"],
             page_path=row.get("page_path") or None,
         ),
         policy=policy,
         status=status_from_row(row.get("status")),
-        assigned_worker=row.get("assigned_bot"),
+        assigned_worker=worker_from_row(row),
         retry_count=int(row.get("retry_count") or 0),
         error=row.get("error_msg"),
         single_page=bool(row.get("single_page")),

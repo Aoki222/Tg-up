@@ -1,8 +1,9 @@
 """upload_tasks / chat_topic 的唯一写入口。
 
 返回 dict 行，由调用方装配成领域 Task。
-认领、回 pending、标成功都必须带状态条件或清掉 assigned_bot，
-否则崩溃后会出现「库里占着槽、内存里没任务」的假忙。
+认领、回 pending、标成功都必须带状态条件或清掉 assigned_worker。
+新写入只维护 platform / dest_id / dest_extra / assigned_worker / remote_id。
+chat_id 因 NOT NULL 仍写入；topic_id、assigned_bot、telegram_msg_id 只留给旧行回填，不再更新。
 """
 
 import uuid
@@ -41,16 +42,18 @@ class TaskRepository:
                    folder_name,
                    file_size,
                    chat_id,
-                   topic_id,
                    caption,
                    single_page,
                    content_page,
                    page_path,
                    status,
                    max_retries,
-                   after_success
+                   after_success,
+                   platform,
+                   dest_id,
+                   dest_extra
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'telegram', ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -58,13 +61,14 @@ class TaskRepository:
                     folder_name,
                     file_size,
                     chat_id,
-                    topic_id,
                     caption,
                     int(single_page),
                     int(content_page),
                     status,
                     max_retries,
                     after_success,
+                    str(chat_id),
+                    str(topic_id) if topic_id is not None else None,
                 ),
             )
             await database.commit()
@@ -116,9 +120,11 @@ class TaskRepository:
         """一次查出每个 worker 的 assigned+uploading 数量。"""
         async with get_db() as database:
             async with database.execute(
-                """SELECT assigned_bot, COUNT(*) AS n FROM upload_tasks
-                   WHERE status IN ('assigned', 'uploading') AND assigned_bot IS NOT NULL
-                   GROUP BY assigned_bot"""
+                """SELECT COALESCE(assigned_worker, assigned_bot) AS worker, COUNT(*) AS n
+                   FROM upload_tasks
+                   WHERE status IN ('assigned', 'uploading')
+                     AND COALESCE(assigned_worker, assigned_bot) IS NOT NULL
+                   GROUP BY worker"""
             ) as cursor:
                 rows = await cursor.fetchall()
                 return {str(row[0]): int(row[1]) for row in rows}
@@ -129,6 +135,7 @@ class TaskRepository:
             async with database.execute(
                 """SELECT * FROM upload_tasks
                    WHERE status IN ('pending', 'retrying')
+                     AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
                    ORDER BY file_size ASC LIMIT ?""",
                 (limit,),
             ) as cursor:
@@ -138,8 +145,10 @@ class TaskRepository:
         # 带 status 条件的 CAS：抢不到说明已被别的调度轮次领走
         async with get_db() as database:
             cursor = await database.execute(
-                """UPDATE upload_tasks SET status = 'assigned', assigned_bot = ?, assigned_at = CURRENT_TIMESTAMP
-                   WHERE id = ? AND status IN ('pending', 'retrying')""",
+                """UPDATE upload_tasks SET status = 'assigned',
+                   assigned_worker = ?, assigned_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status IN ('pending', 'retrying')
+                     AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'""",
                 (worker_name, task_id),
             )
             await database.commit()
@@ -159,8 +168,8 @@ class TaskRepository:
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET status = 'success', finished_at = CURRENT_TIMESTAMP,
-                   telegram_msg_id = ? WHERE id = ?""",
-                (telegram_message_id, task_id),
+                   remote_id = ? WHERE id = ?""",
+                (str(telegram_message_id), task_id),
             )
             await database.commit()
 
@@ -170,7 +179,7 @@ class TaskRepository:
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET status = ?, retry_count = ?, error_msg = ?,
-                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL WHERE id = ?""",
+                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL WHERE id = ?""",
                 (new_status, retry_count, error_message[:500], task_id),
             )
             await database.commit()
@@ -180,7 +189,7 @@ class TaskRepository:
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
-                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL
+                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL
                    WHERE id = ? AND status IN ('assigned', 'uploading')""",
                 (error_message[:500], task_id),
             )
@@ -191,8 +200,8 @@ class TaskRepository:
         async with get_db() as database:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
-                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL
-                   WHERE assigned_bot = ? AND status IN ('assigned', 'uploading')""",
+                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL
+                   WHERE COALESCE(assigned_worker, assigned_bot) = ? AND status IN ('assigned', 'uploading')""",
                 (error_message[:500], worker_name),
             )
             await database.commit()
@@ -202,7 +211,7 @@ class TaskRepository:
         """进程刚起来时内存队列是空的，这三种状态都是幽灵任务。"""
         async with get_db() as database:
             cursor = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
+                """UPDATE upload_tasks SET status = 'pending', assigned_worker = NULL,
                    assigned_at = NULL, started_at = NULL, error_msg = 'recovered on startup'
                    WHERE status IN ('assigned', 'uploading')"""
             )
@@ -217,14 +226,14 @@ class TaskRepository:
         """运行中兜底：uploading / assigned 超时都打回 pending。"""
         async with get_db() as database:
             uploading = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
+                """UPDATE upload_tasks SET status = 'pending', assigned_worker = NULL,
                    assigned_at = NULL, started_at = NULL, error_msg = 'timeout recovered'
                    WHERE status = 'uploading'
                      AND started_at < datetime('now', ?)""",
                 (f"-{uploading_timeout_seconds} seconds",),
             )
             assigned = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', assigned_bot = NULL,
+                """UPDATE upload_tasks SET status = 'pending', assigned_worker = NULL,
                    assigned_at = NULL, started_at = NULL, error_msg = 'assigned timeout recovered'
                    WHERE status = 'assigned'
                      AND assigned_at < datetime('now', ?)""",
@@ -330,7 +339,7 @@ class TaskRepository:
         async with get_db() as database:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'pending', retry_count = 0,
-                   assigned_bot = NULL, assigned_at = NULL, started_at = NULL,
+                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL,
                    finished_at = NULL, error_msg = 'manual retry'
                    WHERE id = ? AND status = 'failed'""",
                 (task_id,),
@@ -364,7 +373,7 @@ class TaskRepository:
                 placeholders = ",".join("?" * len(chunk))
                 cursor = await database.execute(
                     f"""UPDATE upload_tasks SET status = 'pending', retry_count = 0,
-                        assigned_bot = NULL, assigned_at = NULL, started_at = NULL,
+                        assigned_worker = NULL, assigned_at = NULL, started_at = NULL,
                         finished_at = NULL, error_msg = 'manual retry'
                         WHERE status = 'failed' AND id IN ({placeholders})""",
                     chunk,

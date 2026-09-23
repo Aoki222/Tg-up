@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     -- retrying 仅兼容旧行，调度时当 pending 处理
     
     assigned_bot    TEXT,
+    assigned_worker TEXT,
+    platform        TEXT    NOT NULL DEFAULT 'telegram',
+    dest_id         TEXT,
+    dest_extra      TEXT,
+    remote_id       TEXT,
     retry_count     INTEGER NOT NULL DEFAULT 0,
     max_retries     INTEGER NOT NULL DEFAULT 3,
     after_success   TEXT    NOT NULL DEFAULT 'keep',
@@ -80,6 +85,15 @@ async def init_db() -> None:
             "after_success",
             "TEXT NOT NULL DEFAULT 'keep'",
         )
+        await _ensure_column(db, "upload_tasks", "assigned_worker", "TEXT")
+        await _ensure_column(db, "upload_tasks", "platform", "TEXT NOT NULL DEFAULT 'telegram'")
+        await _ensure_column(db, "upload_tasks", "dest_id", "TEXT")
+        await _ensure_column(db, "upload_tasks", "dest_extra", "TEXT")
+        await _ensure_column(db, "upload_tasks", "remote_id", "TEXT")
+        await _backfill_destination_columns(db)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_status_platform ON upload_tasks(status, platform)"
+        )
         await db.commit()
     logger.info("数据库初始化完成")
 
@@ -90,4 +104,33 @@ async def _ensure_column(db, table: str, column: str, ddl: str) -> None:
     if column not in names:
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         logger.info("已为 %s 增加列 %s", table, column)
+
+
+async def _backfill_destination_columns(db) -> None:
+    """旧行没有通用目的地列时，用 Telegram 列补上。已有值不覆盖。"""
+    await db.execute(
+        """UPDATE upload_tasks
+           SET platform = 'telegram'
+           WHERE platform IS NULL OR platform = ''"""
+    )
+    await db.execute(
+        """UPDATE upload_tasks
+           SET dest_id = CAST(chat_id AS TEXT)
+           WHERE (dest_id IS NULL OR dest_id = '') AND chat_id IS NOT NULL"""
+    )
+    await db.execute(
+        """UPDATE upload_tasks
+           SET dest_extra = CAST(topic_id AS TEXT)
+           WHERE (dest_extra IS NULL OR dest_extra = '') AND topic_id IS NOT NULL"""
+    )
+    await db.execute(
+        """UPDATE upload_tasks
+           SET remote_id = telegram_msg_id
+           WHERE (remote_id IS NULL OR remote_id = '') AND telegram_msg_id IS NOT NULL"""
+    )
+    await db.execute(
+        """UPDATE upload_tasks
+           SET assigned_worker = assigned_bot
+           WHERE (assigned_worker IS NULL OR assigned_worker = '') AND assigned_bot IS NOT NULL"""
+    )
     
