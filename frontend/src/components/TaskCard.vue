@@ -25,6 +25,7 @@ const emit = defineEmits<{
 }>();
 
 function pendingHint(item: BoardTask): string | null {
+  // 从后端错误信息提取适合放在等待卡片上的简短原因。
   const text = item.message || item.error || "";
   if (!text) return null;
   const lower = text.toLowerCase();
@@ -41,6 +42,7 @@ function pendingHint(item: BoardTask): string | null {
 }
 
 function speedLabel(item: BoardTask): string {
+  // 将实时速度转换为展示文案，区分尚未测出速度和确实为零。
   if (item.speed_bps > 0) return formatSpeed(item.speed_bps);
   if (item.percent <= 0) return "测算中";
   return "0 B/s";

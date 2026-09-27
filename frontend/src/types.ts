@@ -120,12 +120,28 @@ export interface ChatAliasItem {
   title: string;
 }
 
+export interface DriveFolderItem {
+  folder_id: string;
+  name: string;
+}
+
 export interface FolderRouteItem {
   name: string;
   path: string;
   chat_id: number;
   topic_enabled: boolean | null;
   enabled: boolean;
+  platform: string;
+  dest_id: string;
+}
+
+export interface UnmatchedFile {
+  id: number;
+  file_path: string;
+  file_name: string;
+  folder_name: string | null;
+  file_size: number;
+  discovered_at: string | null;
 }
 
 /** 监听目录健康诊断信息 */
@@ -171,19 +187,26 @@ export interface UploadConfig {
   /** 目录 → 群/频道路由，未命中则用 chat_id */
   routes: FolderRouteItem[];
   chats: ChatAliasItem[];
+  drive_folders: DriveFolderItem[];
 }
 
 // ── Session 授权登录交互类型 ───────────────────────────────────
 
 /** Session 登录模式：Telegram Bot 凭证登录 | 手机号短信/客户端验证码登录 */
-export type SessionMode = "bot" | "user";
+export type SessionMode = "bot" | "user" | "qr";
+
+export interface SessionAccount {
+  name: string;
+  kind: "bot" | "user" | "unknown";
+  username: string;
+}
 
 /** Session 登录握手与交互步进结果状态机 */
 export interface SessionLoginResult {
   /** 当前登录全流程是否已成功完结 */
   done: boolean;
   /** 下一步需要客户端提交的内容：输入验证码(code) | 输入二步验证密码(password) | 已完成(done) */
-  step: "code" | "password" | "done";
+  step: "code" | "password" | "done" | "qr";
   /** 当前登录会话在服务端的暂存标识 ID */
   login_id: string | null;
   /** 成功登录后获取到的账号名/Session 标识名 */
@@ -198,12 +221,17 @@ export interface SessionLoginResult {
   group_error: string | null;
   /** 服务端返回的引导操作提示文本 */
   message: string;
+  /** 二维码登录链接，tg://login?token= */
+  qr_url?: string;
+  /** 二维码 PNG 的 base64 */
+  qr_image?: string;
 }
 
 /** 现有 Session 元数据信息（用于添加弹窗展示与默认群组预填） */
 export interface SessionMeta {
   /** 当前服务器本地 sessions/ 目录下已持久化的 session 文件名列表 */
   items: string[];
+  accounts: SessionAccount[];
   /** 默认绑定的目标群组 chat_id（来自配置） */
   default_group_id: number | null;
   /** 环境变量是否已正确配置 API_ID 与 API_HASH */

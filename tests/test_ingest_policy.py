@@ -33,23 +33,30 @@ def test_watch_list_rejects_other_suffix() -> None:
 def test_empty_watch_extensions_allows_any_file() -> None:
     decision = IngestPolicy().decide(
         Path("notes.pdf"),
-        _settings(watch_extensions=frozenset()),
+        _settings(
+            watch_extensions=frozenset(),
+            routes=(FolderRoute(path=Path.cwd(), chat_id=-100, dest_id="-100"),),
+        ),
     )
     assert decision.allowed is True
     assert decision.need_single is False
 
 
 def test_video_gets_preview_when_enabled() -> None:
-    decision = IngestPolicy().decide(Path("clip.mp4"), _settings())
+    decision = IngestPolicy().decide(
+        Path("clip.mp4"),
+        _settings(routes=(FolderRoute(path=Path.cwd(), chat_id=-100, dest_id="-100"),)),
+    )
     assert decision.allowed is True
     assert decision.need_single is True
     assert decision.need_content is False
 
 
-def test_no_routes_falls_back_to_global() -> None:
+def test_no_routes_is_unmatched() -> None:
     decision = IngestPolicy().decide(Path("clip.mp4"), _settings(chat_id=-100, topic_creation_enabled=True))
-    assert decision.chat_id == -100
-    assert decision.topic_enabled is True
+    assert decision.matched is False
+    assert decision.allowed is False
+    assert decision.dest_id == ""
 
 
 def test_folder_routes_longest_prefix_and_sibling_fallback(tmp_path: Path) -> None:
@@ -81,8 +88,8 @@ def test_folder_routes_longest_prefix_and_sibling_fallback(tmp_path: Path) -> No
     assert mid.chat_id == -100111
     assert mid.topic_enabled is True
     other = policy.decide(sibling, settings)
-    assert other.chat_id == -100
-    assert other.topic_enabled is True
+    assert other.matched is False
+    assert other.allowed is False
 
 
 def test_disabled_route_falls_back_to_global(tmp_path: Path) -> None:
@@ -103,8 +110,8 @@ def test_disabled_route_falls_back_to_global(tmp_path: Path) -> None:
         ),
     )
     decision = IngestPolicy().decide(clip, settings)
-    assert decision.chat_id == -100
-    assert decision.topic_enabled is True
+    assert decision.matched is False
+    assert decision.allowed is False
 
 
 def test_route_topic_none_follows_global(tmp_path: Path) -> None:

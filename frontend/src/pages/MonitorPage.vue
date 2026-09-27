@@ -9,10 +9,11 @@
  * 3. 【Session 授权弹窗宿主】：通过 Teleport 挂载全局毛玻璃模态窗，解耦业务交互。
  */
 
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import WorkerPanel from "../components/WorkerPanel.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import SessionPanel from "../components/SessionPanel.vue";
+import { fetchUnmatched } from "../api";
 import { useTaskBoard } from "../composables/useTaskBoard";
 import type { WorkerSnapshot } from "../types";
 
@@ -27,6 +28,9 @@ const workers = ref<WorkerSnapshot[]>([]);
 const { items: boardItems, inFlightCount, queueCount, successToday, successTotal } = useTaskBoard();
 
 const SUCCESS_SCOPE_KEY = "uploader.success-scope";
+const unmatchedCount = ref(0);
+let unmatchedTimer = 0;
+
 const successScope = ref<"today" | "all">(loadSuccessScope());
 const successCount = computed(() =>
   successScope.value === "today" ? successToday.value : successTotal.value,
@@ -35,6 +39,20 @@ const successCount = computed(() =>
 function loadSuccessScope(): "today" | "all" {
   return localStorage.getItem(SUCCESS_SCOPE_KEY) === "all" ? "all" : "today";
 }
+
+async function refreshUnmatched(): Promise<void> {
+  try {
+    unmatchedCount.value = (await fetchUnmatched()).length;
+  } catch {
+    unmatchedCount.value = 0;
+  }
+}
+
+onMounted(() => {
+  void refreshUnmatched();
+  unmatchedTimer = window.setInterval(() => void refreshUnmatched(), 3000);
+});
+onUnmounted(() => window.clearInterval(unmatchedTimer));
 
 function onSuccessScopeChange(value: "today" | "all"): void {
   successScope.value = value;
@@ -76,6 +94,9 @@ watch(showSessionForm, (open) => {
 
 <template>
   <div class="monitor-container">
+    <p v-if="unmatchedCount > 0" class="unmatched-banner">
+      {{ unmatchedCount }} 个文件未命中路由，未进入上传队列。到设置的「投递」里为路径指定群。
+    </p>
     <!-- ── 顶部一体化系统遥测带 (Integrated Telemetry Ribbon) ── -->
     <section class="telemetry-ribbon">
       <div class="telemetry-cell">
@@ -192,6 +213,17 @@ watch(showSessionForm, (open) => {
   min-height: 0;
   height: 100%;
   overflow: hidden;
+}
+
+.unmatched-banner {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid #f3d7a1;
+  border-radius: 12px;
+  background: #fdf5ea;
+  color: var(--warn);
+  font-size: 13px;
+  flex-shrink: 0;
 }
 
 /* ── 一体式系统遥测带 (Integrated Telemetry Ribbon) ── */

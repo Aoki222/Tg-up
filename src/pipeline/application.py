@@ -12,6 +12,7 @@ TaskGroup 里任一子任务非取消异常会带崩整组，各循环内部应�
 """
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -24,6 +25,22 @@ from ..adapters.after_upload import ConfigurableAfterUpload
 from ..adapters.disabled_workers import DisabledWorkers
 from ..adapters.progress import FanoutReporter, LogProgressBar, ProgressHub
 from ..adapters.session_login import unlink_session
+
+
+def _session_kind(session_dir, name: str) -> str:
+    """读取 session 旁路元数据，供群组选择时区分个人号与 Bot。"""
+    meta_path = session_dir / f"{name}.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            return "bot" if meta.get("is_bot") else "user"
+        except (OSError, json.JSONDecodeError):
+            pass
+    if name.startswith("bot_"):
+        return "bot"
+    if name.startswith("user_"):
+        return "user"
+    return "unknown"
 from ..adapters.sessions import SessionPool
 from ..adapters.telegram_chats import list_dialog_chats, resolve_chat_title
 from ..adapters.task_store import TaskRepository
@@ -69,6 +86,7 @@ class UploaderApplication:
         self._shutting_down = False
         self._finished = False
         self._bg_tasks: list[asyncio.Task] = []
+        self._logged_no_session = False
 
     async def run(self) -> None:
         """启动整条流水线，直到收到 SIGINT/SIGTERM。
@@ -167,7 +185,7 @@ class UploaderApplication:
         repository: TaskRepository,
         after_upload: ConfigurableAfterUpload,
     ) -> None:
-        """约每 2 秒：重载 upload.toml，并按磁盘上的 session 文件对齐 worker。"""
+        """定期热加载配置并同步 session；它连接文件系统变化、SessionPool 和 Scheduler。"""
         try:
             while not self._stop.is_set():
                 settings_hub.reload_if_changed()
@@ -176,7 +194,11 @@ class UploaderApplication:
                     session_pool, scheduler, repository, after_upload, settings_hub
                 )
                 if not scheduler.worker_map and not self._stop.is_set():
-                    logger.warning("sessions/ 下暂无可用 session，放入 *.session 后会自动加载")
+                    if not self._logged_no_session:
+                        logger.info("sessions/ 下暂无可用 session，放入 *.session 后会自动加载")
+                        self._logged_no_session = True
+                else:
+                    self._logged_no_session = False
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=2)
                     break
@@ -186,6 +208,7 @@ class UploaderApplication:
             pass
 
     def _install_stop_signals(self) -> None:
+        """注册优雅停止信号；第二次信号或超时由强制退出线程兜底。"""
         loop = asyncio.get_running_loop()
 
         def ask_stop(*_args) -> None:
@@ -211,6 +234,7 @@ class UploaderApplication:
                     pass
 
     def _force_exit_if_stuck(self) -> None:
+        """监视优雅停机是否卡住，超过十秒仍未完成则终止进程。"""
         time.sleep(10)
         if not self._finished:
             logger.warning("停止超时，强制退出")
@@ -239,7 +263,7 @@ class UploaderApplication:
         after_upload: ConfigurableAfterUpload,
         settings_hub: SettingsHub,
     ) -> None:
-        """磁盘有且未禁用才加载；禁用或文件没了则卸载（文件是否删除由调用方决定）。"""
+        """按磁盘 session 和禁用名单同步 Worker，连接 SessionPool、Scheduler 与任务回收。"""
         async with self._session_lock:
             discovered = session_pool.list_files()
             for name, session_path in discovered.items():
@@ -276,26 +300,42 @@ class UploaderApplication:
                 await self._unload_worker(name, reason=reason, in_flight_timeout=0)
                 logger.info("已卸载 worker: %s", name)
 
-    async def _list_chats(self) -> list[dict]:
-        pool = self._session_pool
-        scheduler = self._scheduler
-        if pool is None or not pool.clients:
-            return []
-        client = None
-        if scheduler is not None:
-            for name, worker in scheduler.worker_map.items():
-                if worker.is_accepting() and name in pool.clients:
-                    client = pool.clients[name]
-                    break
+    async def _list_chats(self) -> dict:
+        """只用个人号列群。Bot 看不见用户加入的全部会话。"""
+        client, reason = await self._user_client()
         if client is None:
-            client = next(iter(pool.clients.values()), None)
-        if client is None:
-            return []
+            return {"items": [], "online": False, "reason": reason}
         try:
-            return await list_dialog_chats(client)
+            items = await list_dialog_chats(client)
         except Exception:
             logger.exception("拉取群/频道列表失败")
-            return []
+            return {"items": [], "online": False, "reason": "拉取群列表失败"}
+        return {"items": items, "online": True, "reason": ""}
+
+    async def _user_client(self):
+        pool = self._session_pool
+        if pool is None or not pool.clients:
+            return None, "请先在监控页用个人账号登录"
+        users = []
+        unknown = []
+        for name, client in pool.clients.items():
+            kind = _session_kind(pool.session_dir, name)
+            if kind == "user":
+                users.append(client)
+            elif kind == "unknown":
+                unknown.append(client)
+        if users:
+            return users[0], ""
+        for client in unknown:
+            try:
+                me = await client.get_me()
+            except Exception:
+                continue
+            if me is not None and not getattr(me, "bot", False):
+                return client, ""
+        if pool.clients:
+            return None, "当前在线的是 Bot，请用个人账号登录后再选群"
+        return None, "请先在监控页用个人账号登录"
 
     async def _resolve_chat_title(self, chat_id: int) -> str:
         pool = self._session_pool
@@ -307,7 +347,7 @@ class UploaderApplication:
         return await resolve_chat_title(client, chat_id)
 
     async def _serve_api(self) -> None:
-        """和流水线同进程提供 SSE，Vue 以后只对接这个 HTTP 服务。"""
+        """在流水线进程内启动 FastAPI，向 Vue 暴露控制、看板和 SSE 数据。"""
         import uvicorn
 
         def workers_provider() -> list[dict]:
@@ -341,6 +381,7 @@ class UploaderApplication:
         await server.serve()
 
     def request_restart(self) -> None:
+        """异步安排重启，让当前 HTTP 请求先返回成功响应。"""
         """HTTP 先返回；先停发现/调度再拉起新进程，避免入口还在进文件。"""
         asyncio.get_running_loop().create_task(self._restart_soon())
 
@@ -373,6 +414,7 @@ class UploaderApplication:
         os._exit(0)
 
     async def _shutdown_gracefully(self) -> None:
+        """按发现、入库、调度、上传、HTTP 的顺序停止各子系统并释放资源。"""
         """先停入口，再停分发，排空在途上传，最后关 HTTP 和 Telegram。"""
         if self._shutting_down:
             return
@@ -417,6 +459,7 @@ class UploaderApplication:
         logger.info("资源已释放")
 
     async def _unload_worker(self, name: str, *, reason: str, in_flight_timeout: float) -> None:
+        """从调度器移除 Worker，释放其排队/在途任务，再断开 Telegram 客户端。"""
         scheduler = self._scheduler
         session_pool = self._session_pool
         repository = self._repository
@@ -473,4 +516,7 @@ class UploaderApplication:
             self._disabled.discard(name)
             session_path = files.get(name) or (pool.session_dir / name)
             unlink_session(session_path)
+            meta_path = pool.session_dir / f"{name}.json"
+            if meta_path.is_file():
+                meta_path.unlink()
             logger.info("已删除 session 文件: %s", name)

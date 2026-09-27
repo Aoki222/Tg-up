@@ -94,6 +94,7 @@ def create_api(
     app.state.chats_provider = chats_provider
     app.state.chat_resolver = chat_resolver
     app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -120,14 +121,17 @@ def create_api(
             )
         return await call_next(request)
 
+    # 进程是否在听。不鉴权，给探活用。
     @app.get("/api/health")
     async def health() -> dict:
         return {"ok": True}
 
+    # 当前已加载的 Session Worker：在线、队列、限流、是否禁用。
     @app.get("/api/workers")
     async def workers() -> dict:
         return {"items": app.state.workers_provider()}
 
+    # 停用一个 Worker：不再接新任务，在途的会放回 pending。
     @app.post("/api/workers/{name}/disable", dependencies=[Depends(require_token)])
     async def disable_worker(name: str) -> dict:
         op = app.state.disable_worker
@@ -141,6 +145,7 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"ok": True, "name": name, "enabled": False}
 
+    # 重新启用一个被停用的 Worker。
     @app.post("/api/workers/{name}/enable", dependencies=[Depends(require_token)])
     async def enable_worker(name: str) -> dict:
         op = app.state.enable_worker
@@ -154,6 +159,7 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"ok": True, "name": name, "enabled": True}
 
+    # 删除 sessions/<name>.session，并卸掉对应 Worker。
     @app.delete("/api/workers/{name}", dependencies=[Depends(require_token)])
     async def delete_worker(name: str) -> dict:
         op = app.state.delete_worker
@@ -167,6 +173,7 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"ok": True, "name": name, "deleted": True}
 
+    # 磁盘上的 session 列表，区分用户号和 Bot。
     @app.get("/api/sessions")
     async def list_sessions() -> dict:
         service: SessionLoginService = app.state.session_login
@@ -174,12 +181,15 @@ def create_api(
         default_group = hub.get().chat_id if hub is not None else None
         return {
             "items": service.list_saved(),
+            "accounts": service.list_accounts(),
             "default_group_id": default_group,
             "api_configured": True,
         }
 
+    # 开始登录。mode=bot 用 Token；user 发验证码；qr 返回 tg://login 链接。
     @app.post("/api/sessions/start", dependencies=[Depends(require_token)])
     async def start_session(payload: SessionStartBody) -> dict:
+        """登录入口：路由只做鉴权/分流，实际 Telegram 操作由 SessionLoginService 完成。"""
         service: SessionLoginService = app.state.session_login
         group_id = payload.group_id if payload.bind_group else None
         try:
@@ -187,8 +197,10 @@ def create_api(
                 result = await service.start_bot(payload.bot_token, group_id, payload.force)
             elif payload.mode == "user":
                 result = await service.start_user(payload.phone, group_id, payload.force)
+            elif payload.mode == "qr":
+                result = await service.start_qr(group_id, payload.force)
             else:
-                raise HTTPException(status_code=400, detail="mode 只能是 bot 或 user")
+                raise HTTPException(status_code=400, detail="mode 只能是 bot、user 或 qr")
         except FileExistsError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ValueError as error:
@@ -197,8 +209,21 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return login_payload(result)
 
+    # 轮询二维码登录：链接是否更新、是否要两步验证、是否已完成。
+    @app.get("/api/sessions/login/{login_id}")
+    async def poll_session_login(login_id: str) -> dict:
+        """把服务端内存中的二维码状态转换为前端可消费的统一响应。"""
+        service: SessionLoginService = app.state.session_login
+        try:
+            result = service.poll(login_id)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return login_payload(result)
+
+    # 提交手机号登录的验证码。
     @app.post("/api/sessions/code", dependencies=[Depends(require_token)])
     async def session_code(payload: SessionCodeBody) -> dict:
+        """把前端验证码转交给创建手机号登录时保留的 TelegramClient。"""
         service: SessionLoginService = app.state.session_login
         try:
             result = await service.submit_code(payload.login_id, payload.code)
@@ -208,8 +233,10 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return login_payload(result)
 
+    # 提交两步验证密码。手机号和二维码登录都会走到这里。
     @app.post("/api/sessions/password", dependencies=[Depends(require_token)])
     async def session_password(payload: SessionPasswordBody) -> dict:
+        """把 2FA 密码转交给原登录客户端，并返回最终保存结果。"""
         service: SessionLoginService = app.state.session_login
         try:
             result = await service.submit_password(payload.login_id, payload.password)
@@ -219,6 +246,7 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return login_payload(result)
 
+    # 当前进程的 API_ID，以及掩码后的 API_HASH。不回完整 hash。
     @app.get("/api/identity")
     async def get_identity() -> dict:
         return {
@@ -227,6 +255,7 @@ def create_api(
             "configured": bool(API_ID and API_HASH),
         }
 
+    # 把 API_ID / API_HASH 写入 .env。不热更新，需重启后生效。
     @app.put("/api/identity", dependencies=[Depends(require_token)])
     async def put_identity(payload: IdentityPayload) -> dict:
         updates = {"API_ID": str(payload.api_id)}
@@ -238,6 +267,7 @@ def create_api(
         upsert_dotenv(updates)
         return {"ok": True, "restart_required": True}
 
+    # 先停发现和调度，再拉起新进程。凭据保存后由前端确认才调用。
     @app.post("/api/process/restart", dependencies=[Depends(require_token)])
     async def restart_process() -> dict:
         op = app.state.restart_process
@@ -246,40 +276,18 @@ def create_api(
         op()
         return {"ok": True}
 
+    # 个人号已加入的群和频道，供设置页点选。没有用户号时 online 为 false。
     @app.get("/api/chats")
     async def list_chats() -> dict:
-        """Session 里的群/频道 + 配置里出现过的 id，带上别名。"""
         provider = app.state.chats_provider
-        live: list[dict] = []
-        if provider is not None:
-            live = await provider()
-        settings_hub: SettingsHub | None = app.state.settings_hub
-        aliases: dict[int, str] = {}
-        configured: list[int] = []
-        if settings_hub is not None:
-            current = settings_hub.get()
-            aliases = {chat.chat_id: chat.alias for chat in current.chats}
-            configured.append(current.chat_id)
-            configured.extend(route.chat_id for route in current.routes)
-        merged: dict[int, dict] = {}
-        for item in live:
-            chat_id = int(item["id"])
-            merged[chat_id] = {
-                "id": chat_id,
-                "title": item.get("title") or "",
-                "alias": aliases.get(chat_id, ""),
-            }
-        for chat_id in configured:
-            if chat_id and chat_id not in merged:
-                merged[chat_id] = {
-                    "id": chat_id,
-                    "title": "",
-                    "alias": aliases.get(chat_id, ""),
-                }
-            elif chat_id in merged and not merged[chat_id]["alias"]:
-                merged[chat_id]["alias"] = aliases.get(chat_id, "")
-        return {"items": list(merged.values()), "online": bool(live)}
+        if provider is None:
+            return {"items": [], "online": False, "reason": "会话池未就绪"}
+        result = await provider()
+        if isinstance(result, dict):
+            return result
+        return {"items": result, "online": bool(result), "reason": ""}
 
+    # 用 chat_id 向 Telegram 要官方标题。选群列表改走 GET /api/chats 后，这条只作补查。
     @app.post("/api/chats/resolve")
     async def resolve_chat(payload: ChatIdBody) -> dict:
         resolver = app.state.chat_resolver
@@ -291,6 +299,7 @@ def create_api(
                 raise HTTPException(status_code=400, detail=f"找不到该群或频道: {error}") from error
         return {"id": int(payload.chat_id), "title": title or ""}
 
+    # 当前 upload.toml：监听、封面、并发、路由、群别名、Drive 文件夹。
     @app.get("/api/settings")
     async def get_settings() -> dict:
         hub: SettingsHub | None = app.state.settings_hub
@@ -298,6 +307,7 @@ def create_api(
             raise HTTPException(status_code=503, detail="配置服务未就绪")
         return hub.public_dict()
 
+    # 整份写回 upload.toml 并热加载。只影响之后发现的文件。
     @app.put("/api/settings", dependencies=[Depends(require_token)])
     async def put_settings(payload: SettingsPayload) -> dict:
         hub: SettingsHub | None = app.state.settings_hub
@@ -308,6 +318,16 @@ def create_api(
         except Exception as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+    # 没有命中路由、因此没有进入上传队列的文件。
+    @app.get("/api/unmatched")
+    async def list_unmatched() -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        rows = await repo.list_unmatched()
+        return {"items": rows, "count": len(rows)}
+
+    # 看板快照：进行中的任务，外加最近失败。上传中的行叠上实时进度。
     @app.get("/api/tasks")
     async def list_tasks() -> dict:
         """看板快照：SQLite 任务行叠上 ProgressHub 的实时字节/速度。"""
@@ -326,6 +346,7 @@ def create_api(
         if wake is not None:
             wake()
 
+    # 把库里全部 failed 重置为 pending，次数归零。缺文件的跳过。
     @app.post("/api/tasks/retry-failed", dependencies=[Depends(require_token)])
     async def retry_all_failed() -> dict:
         repo = app.state.task_repository
@@ -336,6 +357,7 @@ def create_api(
             _wake_scheduler()
         return {"ok": True, "retried": retried, "skipped": skipped}
 
+    # 重试一条失败任务：failed → pending，retry_count 归零。
     @app.post("/api/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
     async def retry_task(task_id: int) -> dict:
         repo = app.state.task_repository
@@ -351,6 +373,7 @@ def create_api(
         _wake_scheduler()
         return {"ok": True, "id": task_id, "status": "pending", "retry_count": 0}
 
+    # 删除全部失败记录。不删磁盘上的文件。
     @app.delete("/api/tasks/failed", dependencies=[Depends(require_token)])
     async def delete_all_failed() -> dict:
         repo = app.state.task_repository
@@ -359,6 +382,7 @@ def create_api(
         deleted = await repo.delete_all_failed()
         return {"ok": True, "deleted": deleted}
 
+    # 按 id 删除选中的失败记录。不是 failed 的行会跳过。
     @app.post("/api/tasks/failed/delete", dependencies=[Depends(require_token)])
     async def delete_selected_failed(payload: FailedIdsBody) -> dict:
         repo = app.state.task_repository
@@ -367,6 +391,7 @@ def create_api(
         deleted = await repo.delete_failed_ids(payload.ids)
         return {"ok": True, "deleted": deleted}
 
+    # 删除一条失败记录。进行中的任务不能删。
     @app.delete("/api/tasks/{task_id}", dependencies=[Depends(require_token)])
     async def delete_task(task_id: int) -> dict:
         repo = app.state.task_repository
@@ -379,14 +404,16 @@ def create_api(
             raise HTTPException(status_code=409, detail="只能清除失败任务")
         return {"ok": True, "id": task_id, "deleted": True}
 
+    # 当前仍在 uploading 的进度快照，含服务端算好的速度。
     @app.get("/api/progress")
     async def progress_snapshot() -> dict:
         hub: ProgressHub = app.state.progress_hub
         return {"items": [item.to_dict() for item in hub.snapshot()]}
 
+    # SSE 进度流。EventSource 不能带头，令牌放查询参数 access_token。
     @app.get("/api/progress/stream")
     async def progress_stream(request: Request) -> StreamingResponse:
-        """SSE：先推当前快照，再持续推送。"""
+        """先推当前快照，再持续推送。空闲时发 keepalive，避免代理掐连接。"""
         hub: ProgressHub = request.app.state.progress_hub
         queue = hub.subscribe()
 
@@ -423,13 +450,14 @@ def create_api(
 
         index_html = DIST_DIR / "index.html"
 
+        # 控制台首页。
         @app.get("/")
         async def index() -> FileResponse:
             return FileResponse(index_html)
 
+        # 前端路由（/settings/routes 等）都回到 index.html，由 Vue 再分发。
         @app.get("/{path:path}")
         async def spa_fallback(path: str) -> FileResponse:
-            """SPA fallback：非 /api 的路由都返回 index.html。"""
             return FileResponse(index_html)
 
     return app

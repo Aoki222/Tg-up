@@ -17,6 +17,7 @@ import type {
   SessionLoginResult,
   SessionMeta,
   SessionMode,
+  UnmatchedFile,
   UploadConfig,
   UploadProgress,
   WorkerSnapshot,
@@ -138,16 +139,45 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
     ...data,
     observer_paths: paths,
     observer_path_infos: infos,
-    routes: (data.routes ?? []).map((item) => ({ ...item, enabled: item.enabled !== false })),
+    routes: (data.routes ?? []).map((item) => ({
+      ...item,
+      enabled: item.enabled !== false,
+      platform: item.platform || "telegram",
+      dest_id: item.dest_id || (item.chat_id ? String(item.chat_id) : ""),
+    })),
     chats: (data.chats ?? []).map((item) => ({
       chat_id: item.chat_id,
       alias: item.alias ?? "",
       title: item.title ?? "",
     })),
+    drive_folders: data.drive_folders ?? [],
   };
 }
 
+export interface DialogChat {
+  id: number;
+  title: string;
+  type: "group" | "channel";
+}
+
+export async function fetchDialogChats(): Promise<{
+  items: DialogChat[];
+  online: boolean;
+  reason: string;
+}> {
+  // 读取后端通过个人账号可见的群组/频道，供配置面板选择目标。
+  const res = await apiClient.get<{ items: DialogChat[]; online: boolean; reason?: string }>("/api/chats");
+  return { items: res.data.items, online: res.data.online, reason: res.data.reason || "" };
+}
+
+export async function fetchUnmatched(): Promise<UnmatchedFile[]> {
+  // 获取没有命中目录路由、因此未进入上传队列的文件。
+  const res = await apiClient.get<{ items: UnmatchedFile[]; count: number }>("/api/unmatched");
+  return res.data.items;
+}
+
 export async function resolveChat(chatId: number): Promise<{ id: number; title: string }> {
+  // 让后端通过 Telegram 查询指定 chat_id 的官方标题。
   const res = await apiClient.post<{ id: number; title: string }>("/api/chats/resolve", {
     chat_id: chatId,
   });
@@ -181,15 +211,18 @@ export interface IdentityInfo {
 }
 
 export async function fetchIdentity(): Promise<IdentityInfo> {
+  // 获取 API_ID 和掩码后的 API_HASH，不返回完整凭据。
   const res = await apiClient.get<IdentityInfo>("/api/identity");
   return res.data;
 }
 
 export async function saveIdentity(payload: { api_id: number; api_hash: string }): Promise<void> {
+  // 保存进程身份配置；后端会返回需要重启的结果。
   await apiClient.put("/api/identity", payload);
 }
 
 export async function restartProcess(): Promise<void> {
+  // 请求后端停止当前流水线并拉起新进程，使身份配置生效。
   await apiClient.post("/api/process/restart");
 }
 
@@ -206,6 +239,12 @@ export async function fetchSessionMeta(): Promise<SessionMeta> {
 /**
  * 第一步：发起新的 Session 登录握手（Bot Token 校验或向手机号下发验证码）
  */
+export async function pollSessionLogin(loginId: string): Promise<SessionLoginResult> {
+  // 二维码登录期间只读状态；二维码是否刷新、是否扫码成功由后端决定。
+  const res = await apiClient.get<SessionLoginResult>(`/api/sessions/login/${loginId}`);
+  return res.data;
+}
+
 export async function startSessionLogin(payload: {
   mode: SessionMode;
   bot_token: string;
@@ -214,6 +253,7 @@ export async function startSessionLogin(payload: {
   group_id: number | null;
   force: boolean;
 }): Promise<SessionLoginResult> {
+  // 统一入口：后端按 mode 分流到 Bot、手机号或按需建立 QR 连接。
   const res = await apiClient.post<SessionLoginResult>("/api/sessions/start", payload);
   return res.data;
 }
@@ -222,6 +262,7 @@ export async function startSessionLogin(payload: {
  * 第二步：提交手机号收到的短信或 Telegram 官方服务通知验证码
  */
 export async function submitSessionCode(login_id: string, code: string): Promise<SessionLoginResult> {
+  // 继续使用后端保存的手机号客户端，不能在浏览器侧重新创建登录会话。
   const res = await apiClient.post<SessionLoginResult>("/api/sessions/code", { login_id, code });
   return res.data;
 }
@@ -233,6 +274,7 @@ export async function submitSessionPassword(
   login_id: string,
   password: string,
 ): Promise<SessionLoginResult> {
+  // 继续使用同一个 pending 客户端提交 2FA，成功后由后端落盘 session。
   const res = await apiClient.post<SessionLoginResult>("/api/sessions/password", {
     login_id,
     password,

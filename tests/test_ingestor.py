@@ -3,7 +3,7 @@ import os
 import time
 from pathlib import Path
 from src.domain.task import AfterSuccess, TaskPolicy
-from src.domain.upload_settings import PreviewMode, UploadSettings
+from src.domain.upload_settings import FolderRoute, PreviewMode, UploadSettings
 from src.pipeline.ingest.ingestor import FileIngestor, wait_until_file_stable
 
 
@@ -54,6 +54,12 @@ class FakeRepo:
     async def find_active_by_file_path(self, file_path: str) -> int | None:
         return self.active.get(file_path)
 
+    async def record_unmatched(self, file_path: str, file_name: str, folder_name: str, file_size: int) -> None:
+        return None
+
+    async def clear_unmatched(self, file_path: str) -> None:
+        return None
+
     async def add_task(self, **kwargs) -> int:
         task_id = len(self.tasks) + 1
         self.tasks.append(kwargs)
@@ -74,7 +80,11 @@ class FakeRescheduler:
 
 def _ingestor(tmp_path: Path) -> tuple[FileIngestor, FakeRepo]:
     repo = FakeRepo()
-    hub = FakeHub(_settings())
+    hub = FakeHub(
+        _settings(
+            routes=(FolderRoute(path=tmp_path.resolve(), chat_id=-100, dest_id="-100"),),
+        )
+    )
     ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=8)
     return ingestor, repo
 
@@ -167,7 +177,12 @@ async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path) -> None:
             return 1
 
     repo = FakeRepo()
-    hub = FakeHub(_settings(topic_creation_enabled=True))
+    hub = FakeHub(
+        _settings(
+            topic_creation_enabled=True,
+            routes=(FolderRoute(path=tmp_path.resolve(), chat_id=-100, dest_id="-100"),),
+        )
+    )
     ingestor = FileIngestor(repo, FakeRescheduler(), hub, topic_creator=SlowTopics(), concurrency=8)
 
     dir_a = tmp_path / "dir_a"

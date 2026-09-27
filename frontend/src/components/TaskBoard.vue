@@ -57,6 +57,7 @@ const visibleWells = computed(() => (isNarrow.value ? [...columns] : open.value)
 const canCollapse = computed(() => open.value.length > 1);
 
 function loadCollapsed(): Set<ColumnKey> {
+  // 从浏览器恢复列折叠状态，并过滤掉旧版本或非法列名。
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return new Set();
@@ -74,16 +75,19 @@ function loadCollapsed(): Set<ColumnKey> {
 }
 
 function persist(): void {
+  // 将当前列布局持久化到浏览器，供下次打开看板恢复。
   localStorage.setItem(STORAGE_KEY, JSON.stringify([...collapsed.value]));
 }
 
 function collapse(key: ColumnKey): void {
+  // 收起指定列，但始终保留至少一列展开，避免看板失去主要内容。
   if (open.value.length <= 1 || collapsed.value.has(key)) return;
   collapsed.value = new Set([...collapsed.value, key]);
   persist();
 }
 
 function expand(key: ColumnKey): void {
+  // 从左侧轨道恢复一列，并同步保存布局。
   if (!collapsed.value.has(key)) return;
   const next = new Set(collapsed.value);
   next.delete(key);
@@ -92,6 +96,7 @@ function expand(key: ColumnKey): void {
 }
 
 async function onRetry(id: number): Promise<void> {
+  // 调用后端将单条 failed 任务重新置为 pending。
   if (retryingId.value !== null || retryingAll.value) return;
   retryingId.value = id;
   try {
@@ -105,6 +110,7 @@ async function onRetry(id: number): Promise<void> {
 }
 
 async function onRetryAll(): Promise<void> {
+  // 批量重试失败任务，并把缺失文件数量反馈给用户。
   if (retryingAll.value || retryingId.value !== null || buckets.value.failed.length === 0) return;
   retryingAll.value = true;
   try {
@@ -131,6 +137,7 @@ const failedBusy = computed(
 );
 
 function toggleSelect(id: number): void {
+  // 切换失败任务的批量删除选择状态。
   const next = new Set(selectedIds.value);
   if (next.has(id)) next.delete(id);
   else next.add(id);
@@ -138,12 +145,14 @@ function toggleSelect(id: number): void {
 }
 
 function forgetSelected(ids: number[]): void {
+  // 删除任务后同步移除本地已选 ID，避免残留选择影响按钮状态。
   const next = new Set(selectedIds.value);
   for (const id of ids) next.delete(id);
   selectedIds.value = next;
 }
 
 async function onRemove(id: number): Promise<void> {
+  // 删除单条失败记录；只删除数据库记录，不触碰本地文件。
   if (failedBusy.value) return;
   clearing.value = true;
   try {
@@ -158,6 +167,7 @@ async function onRemove(id: number): Promise<void> {
 }
 
 async function onRemoveSelected(): Promise<void> {
+  // 将选中的失败任务 ID 一次提交给后端删除。
   const ids = [...selectedIds.value];
   if (failedBusy.value || ids.length === 0) return;
   clearing.value = true;
@@ -173,6 +183,7 @@ async function onRemoveSelected(): Promise<void> {
 }
 
 async function onRemoveAll(): Promise<void> {
+  // 二次确认后删除全部失败记录，并保留磁盘文件。
   if (failedBusy.value || buckets.value.failed.length === 0) return;
   try {
     await ElMessageBox.confirm("将从数据库删除全部失败记录，本地文件不会动。", "全部清除", {

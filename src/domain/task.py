@@ -88,6 +88,7 @@ def destination_from_row(row: dict) -> TaskDestination:
 
 
 def worker_from_row(row: dict) -> str | None:
+    """新列 assigned_worker 优先。旧行只有 assigned_bot 时回退。"""
     worker = row.get("assigned_worker") or row.get("assigned_bot")
     return str(worker) if worker else None
 

@@ -25,6 +25,10 @@ const router = createRouter({
     },
     {
       path: "/settings",
+      redirect: "/settings/routes",
+    },
+    {
+      path: "/settings/:section",
       name: "settings",
       component: SettingsPage,
       meta: { title: "系统配置" },

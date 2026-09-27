@@ -76,6 +76,7 @@ class SessionPool:
         self._connect_lock = asyncio.Lock()
 
     def list_files(self) -> dict[str, Path]:
+        """返回当前磁盘 session 快照，供 Application 对比并增删 Worker。"""
         return list_session_files(self.session_dir)
 
     def any_client(self) -> TelegramClient | None:
@@ -86,12 +87,14 @@ class SessionPool:
         return next(iter(self.clients.values()), None)
 
     def reconnect_snapshot(self, name: str) -> dict:
+        """返回指定 Worker 的重连状态，供 API 看板展示。"""
         status = self.reconnect.get(name)
         if status is None:
             return ReconnectStatus().snapshot()
         return status.snapshot()
 
     def is_reconnecting(self, name: str) -> bool:
+        """判断 Worker 是否暂时不能接单，包括退避等待和客户端断开。"""
         status = self.reconnect.get(name)
         if status is None or status.auth_failed:
             return False
@@ -101,12 +104,14 @@ class SessionPool:
         return client is not None and not client.is_connected()
 
     def can_retry_now(self, name: str) -> bool:
+        """判断指定 Worker 是否已经到达下一次重连时间点。"""
         status = self.reconnect.get(name)
         if status is None or status.auth_failed:
             return True
         return time.monotonic() >= status.next_at
 
     def mark_disconnected(self, name: str, error: str) -> None:
+        """记录上传层发现的断线，启动指数退避重连。"""
         status = self.reconnect.setdefault(name, ReconnectStatus())
         if status.auth_failed:
             return
@@ -121,6 +126,7 @@ class SessionPool:
             return await self._ensure_client_locked(name, session_path)
 
     async def _ensure_client_locked(self, name: str, session_path: Path) -> TelegramClient | None:
+        """在连接锁内执行一次连接/授权检查，并更新重连状态和 Worker 客户端缓存。"""
         status = self.reconnect.setdefault(name, ReconnectStatus())
         if status.auth_failed:
             return None
@@ -187,5 +193,6 @@ class SessionPool:
             logger.exception("断开客户端失败: %s", name)
 
     async def disconnect_all(self) -> None:
+        """依次断开池中所有客户端，供应用停机阶段调用。"""
         for name in list(self.clients):
             await self.remove_client(name)

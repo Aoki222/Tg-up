@@ -13,8 +13,8 @@
 
 import { onMounted, onUnmounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { deleteWorker, disableWorker, enableWorker, fetchWorkers } from "../api";
-import type { WorkerSnapshot } from "../types";
+import { deleteWorker, disableWorker, enableWorker, fetchSessionMeta, fetchWorkers } from "../api";
+import type { SessionAccount, WorkerSnapshot } from "../types";
 
 // ── 事件派发 ───────────────────────────────────────────────────
 
@@ -29,6 +29,7 @@ const emit = defineEmits<{
 
 /** 当前加载的 Worker 节点状态快照列表 */
 const workers = ref<WorkerSnapshot[]>([]);
+const accounts = ref<SessionAccount[]>([]);
 
 /** 轮询异常错误提示 */
 const error = ref("");
@@ -48,6 +49,8 @@ async function refresh(): Promise<void> {
   try {
     workers.value = await fetchWorkers();
     emit("updateWorkers", workers.value);
+    const meta = await fetchSessionMeta();
+    accounts.value = meta.accounts ?? [];
     error.value = "";
   } catch {
     error.value = "无法读取 Worker 节点列表";
@@ -71,6 +74,14 @@ onUnmounted(() => {
 /**
  * 计算 Worker 当前状态的人类可读中文说明
  */
+function accountKind(name: string): string {
+  // 从 session 元数据中查找 Worker 是个人号、Bot 还是未知类型。
+  const kind = accounts.value.find((item) => item.name === name)?.kind;
+  if (kind === "bot") return "Bot";
+  if (kind === "user") return "用户";
+  return "";
+}
+
 function statusLabel(worker: WorkerSnapshot): string {
   if (!worker.enabled) {
     return "已禁用";
@@ -202,6 +213,7 @@ async function onDelete(name: string): Promise<void> {
         <div class="row">
           <div class="worker-info">
             <strong class="worker-name">{{ worker.name }}</strong>
+            <span v-if="accountKind(worker.name)" class="kind">{{ accountKind(worker.name) }}</span>
             <span v-if="worker.username" class="user">@{{ worker.username }}</span>
           </div>
 
@@ -367,6 +379,16 @@ async function onDelete(name: string): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.kind {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .worker-name {

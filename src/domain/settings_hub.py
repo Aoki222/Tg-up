@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..logger import get_logger
 from .task import AfterSuccess, TaskPolicy
-from .upload_settings import ChatAlias, FolderRoute, PreviewMode, UploadSettings
+from .upload_settings import ChatAlias, DriveFolder, FolderRoute, PreviewMode, UploadSettings
 
 logger = get_logger(__name__)
 
@@ -24,6 +24,7 @@ _DEFAULT_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v")
 
 
 def _rel_path(project_dir: Path, path: Path) -> str:
+    """将路径转成相对项目目录的 POSIX 文本，目录外路径保持绝对形式。"""
     try:
         return path.resolve().relative_to(project_dir.resolve()).as_posix()
     except ValueError:
@@ -31,10 +32,12 @@ def _rel_path(project_dir: Path, path: Path) -> str:
 
 
 def _toml_string(value: str) -> str:
+    """转义字符串并包装成可写入 upload.toml 的 TOML 字符串。"""
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def render_upload_toml(payload: dict) -> str:
+    """把前端配置载荷序列化成完整 upload.toml，兼容旧字段并补默认值。"""
     if payload.get("watch_extensions") is not None:
         extensions = payload.get("watch_extensions")
     else:
@@ -64,32 +67,42 @@ def render_upload_toml(payload: dict) -> str:
         f"stable_timeout_seconds = {max(1.0, float(payload.get('stable_timeout_seconds', 1800)))}\n"
         f"watch_extensions = [{ext_list}]\n"
         f"{_render_chats(payload)}"
+        f"{_render_drive_folders(payload)}"
         f"{_render_routes(payload)}"
     )
 
 
 def _render_routes(payload: dict) -> str:
+    """渲染目录路由；无效或无目标路由跳过，供主 TOML 渲染器拼接。"""
     raw = payload.get("routes") or []
     if not isinstance(raw, list) or not raw:
         return ""
-    chunks: list[str] = ["\n# 目录路由：未命中时用上面的 chat_id。topic_enabled 省略则跟随全局。\n"]
+    chunks: list[str] = ["\n# 目录路由：未命中不上传。topic_enabled 省略则跟随全局。\n"]
     for item in raw:
         if not isinstance(item, dict):
             continue
         path_text = str(item.get("path") or "").strip()
         if not path_text:
             continue
+        platform = str(item.get("platform") or "telegram")
+        dest_id = str(item.get("dest_id") or "").strip()
         try:
-            chat_id = int(item.get("chat_id"))
+            chat_id = int(item.get("chat_id") or 0)
         except (TypeError, ValueError):
-            continue
-        if chat_id == 0:
+            chat_id = 0
+        if platform == "telegram" and not dest_id and chat_id:
+            dest_id = str(chat_id)
+        if platform == "telegram" and chat_id == 0 and dest_id.lstrip("-").isdigit():
+            chat_id = int(dest_id)
+        if not dest_id:
             continue
         name = str(item.get("name") or "")
         block = (
             "[[routes]]\n"
             f"name = {_toml_string(name)}\n"
             f"path = {_toml_string(str(_resolve_observer_path(path_text)))}\n"
+            f"platform = {_toml_string(platform)}\n"
+            f"dest_id = {_toml_string(dest_id)}\n"
             f"chat_id = {chat_id}\n"
         )
         topic = item.get("topic_enabled", None)
@@ -107,6 +120,7 @@ def _render_routes(payload: dict) -> str:
 
 
 def _render_chats(payload: dict) -> str:
+    """渲染群组别名表，按 chat_id 去重后输出 TOML 数组块。"""
     raw = payload.get("chats") or []
     if not isinstance(raw, list) or not raw:
         return ""
@@ -138,6 +152,7 @@ def _render_chats(payload: dict) -> str:
 
 
 def _path_list(payload: dict) -> str:
+    """规范化监听目录列表、去重，并返回 TOML 数组内容。"""
     raw = payload.get("observer_paths")
     if not raw:
         single = payload.get("observer_path")
@@ -167,6 +182,7 @@ def _resolve_observer_path(value: str) -> Path:
 
 
 def inspect_observer_path(path: Path) -> dict:
+    """检查监听路径是否存在且为目录，返回前端可直接展示的状态字典。"""
     text = str(path)
     if not path.exists():
         return {
@@ -180,6 +196,7 @@ def inspect_observer_path(path: Path) -> dict:
 
 
 def _as_observer_paths(_project_dir: Path, data: dict) -> tuple[Path, ...]:
+    """从新旧配置字段读取监听目录，解析绝对路径并按路径去重。"""
     raw = data.get("observer_paths")
     if raw is None:
         single = data.get("observer_path")
@@ -202,6 +219,7 @@ def _as_observer_paths(_project_dir: Path, data: dict) -> tuple[Path, ...]:
 
 
 def _as_path(project_dir: Path, value: str | None, default: str) -> Path:
+    """将配置路径解析到项目目录下；绝对路径不追加项目目录。"""
     path = Path(value if value else default)
     if not path.is_absolute():
         path = project_dir / path
@@ -231,6 +249,7 @@ def _as_watch_extensions(data: dict) -> frozenset[str]:
 
 
 def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
+    """把原始 routes 转成不可变领域对象，校验目标、布尔值并保留最后一条路径配置。"""
     raw = data.get("routes") or []
     if not isinstance(raw, list):
         return ()
@@ -242,13 +261,19 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
         path_text = str(item.get("path") or "").strip()
         if not path_text:
             continue
+        platform = str(item.get("platform") or "telegram")
+        dest_id = str(item.get("dest_id") or "").strip()
         try:
-            chat_id = int(item.get("chat_id"))
+            chat_id = int(item.get("chat_id") or 0)
         except (TypeError, ValueError):
             logger.warning("跳过无效路由: %s", item)
             continue
-        if chat_id == 0:
-            logger.warning("跳过 chat_id=0 的路由: %s", path_text)
+        if platform == "telegram" and not dest_id and chat_id:
+            dest_id = str(chat_id)
+        if platform == "telegram" and chat_id == 0 and dest_id.lstrip("-").isdigit():
+            chat_id = int(dest_id)
+        if not dest_id:
+            logger.warning("跳过没有目标的路由: %s", path_text)
             continue
         path = _resolve_observer_path(path_text)
         key = str(path)
@@ -266,12 +291,15 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 name=str(item.get("name") or ""),
                 topic_enabled=topic_enabled,
                 enabled=enabled,
+                platform=platform,
+                dest_id=dest_id,
             )
         )
     return tuple(routes)
 
 
 def _as_chats(data: dict) -> tuple[ChatAlias, ...]:
+    """把原始 chats 转成去重后的群组别名领域对象。"""
     raw = data.get("chats") or []
     if not isinstance(raw, list):
         return ()
@@ -295,6 +323,46 @@ def _as_chats(data: dict) -> tuple[ChatAlias, ...]:
             )
         )
     return tuple(chats)
+
+
+def _render_drive_folders(payload: dict) -> str:
+    raw = payload.get("drive_folders") or []
+    if not isinstance(raw, list) or not raw:
+        return ""
+    chunks = ["\n# Google Drive 文件夹。\n"]
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        folder_id = str(item.get("folder_id") or "").strip()
+        if not folder_id or folder_id in seen:
+            continue
+        seen.add(folder_id)
+        chunks.append(
+            "[[drive_folders]]\n"
+            f"name = {_toml_string(str(item.get('name') or '').strip())}\n"
+            f"folder_id = {_toml_string(folder_id)}\n"
+        )
+    if len(chunks) == 1:
+        return ""
+    return "".join(chunks)
+
+
+def _as_drive_folders(data: dict) -> tuple[DriveFolder, ...]:
+    raw = data.get("drive_folders") or []
+    if not isinstance(raw, list):
+        return ()
+    folders: list[DriveFolder] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        folder_id = str(item.get("folder_id") or "").strip()
+        if not folder_id or folder_id in seen:
+            continue
+        seen.add(folder_id)
+        folders.append(DriveFolder(folder_id=folder_id, name=str(item.get("name") or "").strip()))
+    return tuple(folders)
 
 
 def _as_bool(raw: object, default: bool) -> bool:
@@ -338,6 +406,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         watch_extensions=_as_watch_extensions(data),
         routes=_as_routes(data),
         chats=_as_chats(data),
+        drive_folders=_as_drive_folders(data),
     )
 
 
@@ -407,12 +476,18 @@ class SettingsHub:
                     "chat_id": route.chat_id,
                     "topic_enabled": route.topic_enabled,
                     "enabled": route.enabled,
+                    "platform": route.platform,
+                    "dest_id": route.dest_id or (str(route.chat_id) if route.chat_id else ""),
                 }
                 for route in settings.routes
             ],
             "chats": [
                 {"chat_id": chat.chat_id, "alias": chat.alias, "title": chat.title}
                 for chat in settings.chats
+            ],
+            "drive_folders": [
+                {"name": folder.name, "folder_id": folder.folder_id}
+                for folder in settings.drive_folders
             ],
         }
 

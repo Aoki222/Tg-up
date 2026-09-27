@@ -50,7 +50,7 @@ class UploadScheduler:
         self._rr = 0
 
     def request_reschedule(self) -> None:
-        # 多次 set 可合并；万一丢掉，轮询最多隔 poll_interval 再跑
+        """唤醒调度循环；重复唤醒会合并，丢失时仍由定时轮询兜底。"""
         self.wakeup_event.set()
 
     def register_worker(self, worker) -> None:
@@ -100,7 +100,9 @@ class UploadScheduler:
                 pass
 
     async def schedule_once(self) -> None:
-        """每条 pending 分给当前负载最低的号；并列则轮转，不要先喂饱同一个 bot。"""
+        """把 Telegram pending 分给当前负载最低且仍接活的 Session。并列则轮转。
+        不接活：停机、FloodWait、正在重连。空槽 = concurrency - (assigned + uploading)。
+        """
         settings = self.settings_hub.get()
         counts = await self.task_repository.count_active_by_workers()
         loads: dict[str, int] = {}

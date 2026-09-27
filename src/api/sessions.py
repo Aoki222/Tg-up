@@ -37,4 +37,6 @@ def login_payload(result: LoginResult) -> dict:
         "group_ok": result.group_ok,
         "group_error": result.group_error,
         "message": result.message,
+        "qr_url": result.qr_url,
+        "qr_image": result.qr_image,
     }

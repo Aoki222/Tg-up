@@ -37,6 +37,7 @@ export function useTaskBoard() {
   const successTotal = computed(() => counts.value.success);
 
   function upsert(task: BoardTask): void {
+    // 以任务 ID 合并数据库快照或 SSE 增量，避免替换掉另一来源的字段。
     const index = items.value.findIndex((item) => item.id === task.id);
     if (index >= 0) {
       const next = items.value.slice();
@@ -48,6 +49,7 @@ export function useTaskBoard() {
   }
 
   function progressToTask(progress: UploadProgress): BoardTask {
+    // 将 SSE 的轻量进度事件补齐为看板可展示的任务模型。
     const failed = progress.stage === "failed";
     return {
       id: progress.task_id,
@@ -72,6 +74,7 @@ export function useTaskBoard() {
   }
 
   function applyProgress(progress: UploadProgress): void {
+    // 合并实时进度；成功任务短暂保留为 ghost，等待下一次数据库快照确认。
     if (progress.stage === "success") {
       const existing = items.value.find((item) => item.id === progress.task_id);
       const ghost: BoardTask = {
@@ -134,6 +137,7 @@ export function useTaskBoard() {
   }
 
   async function refresh(): Promise<void> {
+    // 用数据库快照校正看板列归属，并与临时 ghost 任务合并。
     try {
       const data = await fetchBoardTasks();
       const byId = new Map(data.items.map((item) => [item.id, item]));
@@ -153,6 +157,7 @@ export function useTaskBoard() {
   }
 
   function scheduleGhostSweep(): void {
+    // 删除已展示完成态的 ghost，避免成功任务永久停留在上传列。
     window.clearTimeout(ghostTimer);
     let soonest = Infinity;
     const now = Date.now();

@@ -23,13 +23,23 @@ class ChatAlias:
 
 @dataclass(frozen=True)
 class FolderRoute:
-    """一条目录 → 群/频道规则。topic_enabled 为 None 时跟随全局开关。"""
+    """一条目录规则。topic_enabled 为 None 时跟随全局开关。未命中不回退默认群。"""
 
     path: Path
     chat_id: int
     name: str = ""
     topic_enabled: bool | None = None
     enabled: bool = True
+    platform: str = "telegram"
+    dest_id: str = ""
+
+
+@dataclass(frozen=True)
+class DriveFolder:
+    """手动添加的 Google Drive 文件夹。"""
+
+    folder_id: str
+    name: str = ""
 
 
 class PreviewMode(StrEnum):
@@ -58,3 +68,4 @@ class UploadSettings:
     watch_extensions: frozenset[str]
     routes: tuple[FolderRoute, ...] = ()
     chats: tuple[ChatAlias, ...] = ()
+    drive_folders: tuple[DriveFolder, ...] = ()

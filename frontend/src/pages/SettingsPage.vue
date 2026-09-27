@@ -14,22 +14,29 @@
  */
 
 import { computed, ref, onMounted } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { fetchIdentity, getApiToken, restartProcess, saveIdentity, setApiToken } from "../api";
 import ConfigPanel from "../components/ConfigPanel.vue";
 
-type SettingsTab = "delivery" | "watch" | "process" | "account";
-
-const tabs: { id: SettingsTab; label: string }[] = [
-  { id: "delivery", label: "投递" },
+const sections = [
+  { id: "routes", label: "路径" },
+  { id: "telegram", label: "Telegram" },
+  { id: "drive", label: "Google Drive" },
   { id: "watch", label: "监听" },
   { id: "process", label: "处理" },
   { id: "account", label: "账号" },
-];
+] as const;
 
-const tab = ref<SettingsTab>("delivery");
+type SettingsSection = (typeof sections)[number]["id"];
+
+const route = useRoute();
 const tomlDirty = ref(false);
-const configPanelId = computed(() => (tab.value === "account" ? "delivery" : tab.value));
+const section = computed<SettingsSection>(() => {
+  const value = String(route.params.section || "routes");
+  return sections.some((item) => item.id === value) ? (value as SettingsSection) : "routes";
+});
+const configPanelId = computed(() => (section.value === "account" ? "routes" : section.value));
 
 // ── 响应式状态 ─────────────────────────────────────────────────
 
@@ -125,28 +132,28 @@ function clearToken(): void {
       <p class="page-desc">投递、监听、处理写入 upload.toml。账号写入 .env 或本机 Token。</p>
     </div>
 
-    <nav class="tabs" aria-label="设置分段">
-      <button
-        v-for="item in tabs"
+    <div class="settings-layout">
+    <nav class="side-nav" aria-label="设置">
+      <router-link
+        v-for="item in sections"
         :key="item.id"
-        type="button"
-        class="tab"
-        :class="{ active: tab === item.id }"
-        @click="tab = item.id"
+        :to="`/settings/${item.id}`"
+        class="side-link"
+        active-class="active"
       >
         {{ item.label }}
         <span v-if="item.id !== 'account' && tomlDirty" class="tab-dot" aria-hidden="true"></span>
-      </button>
+      </router-link>
     </nav>
 
     <el-card shadow="never" class="settings-board">
       <ConfigPanel
-        v-show="tab !== 'account'"
+        v-show="section !== 'account'"
         :panel="configPanelId"
         @update:dirty="tomlDirty = $event"
       />
 
-      <section v-if="tab === 'account'" class="block first">
+      <section v-if="section === 'account'" class="block first">
       <h3 class="block-title">Telegram 凭据 (.env)</h3>
       <p class="hint">
         来自 <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a>。
@@ -181,7 +188,7 @@ function clearToken(): void {
       <el-button type="primary" :loading="identitySaving" @click="saveCredentials">保存凭据</el-button>
       </section>
 
-      <section v-if="tab === 'account'" class="block">
+      <section v-if="section === 'account'" class="block">
       <h3 class="block-title">控制台鉴权</h3>
       <p class="hint">
         用于访问受保护的 API 端点。与后端 <code>API_TOKEN</code> 环境变量保持一致，留空表示不鉴权。
@@ -219,6 +226,7 @@ function clearToken(): void {
       </transition>
       </section>
     </el-card>
+    </div>
 
   </div>
 </template>
@@ -256,34 +264,45 @@ function clearToken(): void {
   color: var(--text-secondary);
 }
 
-.tabs {
+.settings-layout {
   display: flex;
-  flex-wrap: wrap;
+  gap: 18px;
+  min-height: 0;
+  align-items: flex-start;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  width: fit-content;
-  padding: 4px;
+  width: 168px;
+  flex-shrink: 0;
+  padding: 8px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--surface);
 }
 
-.tab {
-  display: inline-flex;
+.side-link {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 10px;
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 500;
-  cursor: pointer;
+  text-decoration: none;
 }
 
-.tab.active {
+.side-link.active {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.settings-board {
+  flex: 1;
+  min-width: 0;
 }
 
 .tab-dot {
@@ -411,6 +430,16 @@ function clearToken(): void {
 }
 
 @media (max-width: 860px) {
+  .settings-layout {
+    flex-direction: column;
+  }
+
+  .side-nav {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
   .settings {
     padding: 12px 14px 40px;
   }

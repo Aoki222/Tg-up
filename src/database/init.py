@@ -1,6 +1,8 @@
-"""初始化表结构。
+"""初始化表结构，并给旧库补列。
 
-CREATE TABLE IF NOT EXISTS 不会给已有表加列；init_db 里对 after_success 做 ALTER。
+CREATE TABLE IF NOT EXISTS 不会改已有表。新列用 ALTER 加上，再把旧的
+Telegram 列复制到 platform / dest_id / dest_extra / remote_id / assigned_worker。
+复制不覆盖已有值，也不清空旧列。新写入只维护新列；chat_id 因 NOT NULL 仍写。
 """
 
 from __future__ import annotations
@@ -16,13 +18,13 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS upload_tasks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id         TEXT    NOT NULL UNIQUE,          -- UUID
-    telegram_msg_id TEXT,
+    telegram_msg_id TEXT,                         -- 旧列，成功回执改记 remote_id
     file_path       TEXT    NOT NULL,
     file_name       TEXT    NOT NULL,
     folder_name     TEXT,
     file_size       INTEGER NOT NULL DEFAULT 0,
-    chat_id         INTEGER NOT NULL,
-    topic_id        INTEGER,
+    chat_id         INTEGER NOT NULL,         -- 仅满足非空；发送以 dest_id 为准
+    topic_id        INTEGER,                      -- 旧列，新任务不再写入，话题在 dest_extra
     caption         TEXT    DEFAULT '',
     
     single_page     INTEGER NOT NULL DEFAULT 0,
@@ -33,12 +35,12 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     -- 现行：preparing / pending / assigned / uploading / success / failed
     -- retrying 仅兼容旧行，调度时当 pending 处理
     
-    assigned_bot    TEXT,
-    assigned_worker TEXT,
-    platform        TEXT    NOT NULL DEFAULT 'telegram',
-    dest_id         TEXT,
-    dest_extra      TEXT,
-    remote_id       TEXT,
+    assigned_bot    TEXT,                         -- 旧列，认领改记 assigned_worker
+    assigned_worker TEXT,                         -- 当前领任务的 worker 名
+    platform        TEXT    NOT NULL DEFAULT 'telegram', -- telegram / gdrive
+    dest_id         TEXT,                         -- 群 id 或 Drive folder id
+    dest_extra      TEXT,                         -- Telegram 话题 id
+    remote_id       TEXT,                         -- 成功后的消息 id 或 Drive file id
     retry_count     INTEGER NOT NULL DEFAULT 0,
     max_retries     INTEGER NOT NULL DEFAULT 3,
     after_success   TEXT    NOT NULL DEFAULT 'keep',
@@ -72,6 +74,15 @@ CREATE TABLE IF NOT EXISTS chat_topic (
 
 CREATE INDEX IF NOT EXISTS idx_chat_topic_chat_path
     ON chat_topic(chat_id, topic_path);
+
+CREATE TABLE IF NOT EXISTS unmatched_files (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path     TEXT    NOT NULL UNIQUE,
+    file_name     TEXT    NOT NULL,
+    folder_name   TEXT,
+    file_size     INTEGER NOT NULL DEFAULT 0,
+    discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

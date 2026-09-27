@@ -30,6 +30,8 @@ class TaskRepository:
         topic_id: int | None = None,
         caption: str = "",
         after_success: str = "keep",
+        platform: str = "telegram",
+        dest_id: str | None = None,
     ) -> int:
         """插入一条任务。封面需求和 after_success 入库时拍快照。"""
         async with get_db() as database:
@@ -53,7 +55,7 @@ class TaskRepository:
                    dest_id,
                    dest_extra
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'telegram', ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -67,7 +69,8 @@ class TaskRepository:
                     status,
                     max_retries,
                     after_success,
-                    str(chat_id),
+                    platform,
+                    dest_id if dest_id else (str(chat_id) if platform == "telegram" else ""),
                     str(topic_id) if topic_id is not None else None,
                 ),
             )
@@ -100,6 +103,7 @@ class TaskRepository:
                 return int(row[0]) if row else None
 
     async def save_chat_topic(self, chat_id: int, topic_id: int, topic_path: str) -> None:
+        """保存群组与目录的 topic 映射；重复键更新 topic_id 和时间戳。"""
         async with get_db() as database:
             await database.execute(
                 """INSERT INTO chat_topic (chat_id, topic_id, topic_path)
@@ -130,7 +134,7 @@ class TaskRepository:
                 return {str(row[0]): int(row[1]) for row in rows}
 
     async def fetch_pending_tasks(self, limit: int) -> list[dict]:
-        """小文件优先。含旧数据里可能残留的 retrying。"""
+        """只捞 Telegram 的 pending。gdrive 行留在队列里，等对应 Worker 再领。小文件优先。"""
         async with get_db() as database:
             async with database.execute(
                 """SELECT * FROM upload_tasks
@@ -142,7 +146,7 @@ class TaskRepository:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def claim_task(self, task_id: int, worker_name: str) -> bool:
-        # 带 status 条件的 CAS：抢不到说明已被别的调度轮次领走
+        """用带状态条件的 CAS 抢占 pending 任务，成功后归属指定 Worker。"""
         async with get_db() as database:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'assigned',
@@ -165,6 +169,7 @@ class TaskRepository:
             await database.commit()
 
     async def mark_task_succeeded(self, task_id: int, telegram_message_id: int) -> None:
+        """将上传中的任务标记为成功，并记录 Telegram 远端消息 ID。"""
         async with get_db() as database:
             await database.execute(
                 """UPDATE upload_tasks SET status = 'success', finished_at = CURRENT_TIMESTAMP,
@@ -416,6 +421,35 @@ class TaskRepository:
                 deleted += cursor.rowcount
             await database.commit()
         return deleted
+
+    async def record_unmatched(self, file_path: str, file_name: str, folder_name: str, file_size: int) -> None:
+        """没有路由的文件只记账，不进入上传队列。"""
+        async with get_db() as database:
+            await database.execute(
+                """INSERT INTO unmatched_files (file_path, file_name, folder_name, file_size, discovered_at)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(file_path) DO UPDATE SET
+                     file_name = excluded.file_name,
+                     folder_name = excluded.folder_name,
+                     file_size = excluded.file_size,
+                     discovered_at = CURRENT_TIMESTAMP""",
+                (file_path, file_name, folder_name, file_size),
+            )
+            await database.commit()
+
+    async def clear_unmatched(self, file_path: str) -> None:
+        async with get_db() as database:
+            await database.execute("DELETE FROM unmatched_files WHERE file_path = ?", (file_path,))
+            await database.commit()
+
+    async def list_unmatched(self, limit: int = 100) -> list[dict]:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT id, file_path, file_name, folder_name, file_size, discovered_at
+                   FROM unmatched_files ORDER BY id DESC LIMIT ?""",
+                (limit,),
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
 
     async def delete_all_failed(self) -> int:
         """删除库里全部 failed 行。"""

@@ -2,6 +2,9 @@
 
 preview 是单一枚举（off / first_frame / grid），所以不会同时开两种封面。
 watch_extensions 为空表示任意后缀都入库。封面只对常见视频后缀尝试 ffmpeg。
+
+路由用父目录哈希：从文件所在目录往根找，第一次命中就是最长前缀。
+没有命中时返回 None，不回退 upload.toml 的全局 chat_id。
 """
 
 from __future__ import annotations
@@ -21,13 +24,16 @@ class IngestDecision:
     chat_id: int
     topic_enabled: bool
     allowed: bool
+    matched: bool = False
+    platform: str = ""
+    dest_id: str = ""
 
 
-def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[int, bool]:
-    """父目录哈希回溯：从近到远，第一次命中即最长前缀。空表不建 dict。"""
-    active = [route for route in settings.routes if route.enabled]
+def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[str, str, int, bool] | None:
+    """父目录哈希回溯。没有启用中的规则，或祖先都不在表里，返回 None，不回退全局群。"""
+    active = [route for route in settings.routes if route.enabled and _route_dest(route)]
     if not active:
-        return settings.chat_id, settings.topic_creation_enabled
+        return None
     route_map = {route.path.resolve(): route for route in active}
     for parent in file_path.resolve().parents:
         route = route_map.get(parent)
@@ -36,8 +42,23 @@ def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[int, 
         topic_on = (
             settings.topic_creation_enabled if route.topic_enabled is None else route.topic_enabled
         )
-        return route.chat_id, topic_on
-    return settings.chat_id, settings.topic_creation_enabled
+        return route.platform, _route_dest(route), route.chat_id or _chat_id_of(route), topic_on
+
+
+def _route_dest(route) -> str:
+    if route.dest_id:
+        return route.dest_id
+    if route.platform == "telegram" and route.chat_id:
+        return str(route.chat_id)
+    return ""
+
+
+def _chat_id_of(route) -> int:
+    if route.chat_id:
+        return route.chat_id
+    if route.platform == "telegram" and route.dest_id.lstrip("-").isdigit():
+        return int(route.dest_id)
+    return 0
 
 
 class IngestPolicy:
@@ -45,8 +66,18 @@ class IngestPolicy:
 
     def decide(self, file_path: Path, settings: UploadSettings) -> IngestDecision:
         """用调用当下的 settings。同一文件稍后热更新了预览模式，已入库的不受影响。"""
-        chat_id, topic_enabled = match_folder_route(file_path, settings)
+        matched = match_folder_route(file_path, settings)
         suffix = file_path.suffix.lower()
+        if matched is None:
+            return IngestDecision(
+                need_single=False,
+                need_content=False,
+                chat_id=0,
+                topic_enabled=False,
+                allowed=False,
+                matched=False,
+            )
+        platform, dest_id, chat_id, topic_enabled = matched
         if settings.watch_extensions and suffix not in settings.watch_extensions:
             return IngestDecision(
                 need_single=False,
@@ -54,15 +85,21 @@ class IngestPolicy:
                 chat_id=chat_id,
                 topic_enabled=topic_enabled,
                 allowed=False,
+                matched=True,
+                platform=platform,
+                dest_id=dest_id,
             )
 
-        previewable = suffix in _PREVIEWABLE_SUFFIXES
+        previewable = suffix in _PREVIEWABLE_SUFFIXES and platform == "telegram"
         need_single = previewable and settings.preview is PreviewMode.FIRST_FRAME
         need_content = previewable and settings.preview is PreviewMode.GRID
         return IngestDecision(
             need_single=need_single,
             need_content=need_content,
             chat_id=chat_id,
-            topic_enabled=topic_enabled,
+            topic_enabled=topic_enabled and platform == "telegram",
             allowed=True,
+            matched=True,
+            platform=platform,
+            dest_id=dest_id,
         )

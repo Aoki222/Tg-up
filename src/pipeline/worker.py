@@ -71,6 +71,7 @@ class UploadWorker:
         return True
 
     async def enqueue_task(self, task: Task) -> None:
+        """接收调度器已 CAS 认领的任务；真正上传由 serve_forever 异步派发。"""
         await self.task_queue.put(task)
         logger.info("[%s] 任务已加入队列: %s", self.worker_name, task.file_name)
 
@@ -127,7 +128,7 @@ class UploadWorker:
             await asyncio.wait(self.background_tasks, timeout=2.0)
 
     async def process_single_task(self, task: Task) -> None:
-        """处理一条任务。无论成败，finally 里都要 task_done 并唤醒调度器补位。"""
+        """执行单任务发送，并按 Transport 结果更新数据库、进度和重试状态。"""
         try:
             await self._wait_if_flooded()
             # 开工重读：拿到入库后才回填的 page_path，policy 仍用队列里那份快照
@@ -219,7 +220,7 @@ class UploadWorker:
             logger.exception("[%s] 进度上报失败", self.worker_name)
 
     async def _watch_connection(self) -> None:
-        """断线后按 1/2/4/8/16s（上限 30s）重试，最多 5 次，失败后再等 30s 开新一轮。"""
+        """监听 SessionPool 的断线状态，重连期间暂停接单并让任务回队列重试。"""
         pool = self.session_pool
         path = self.session_path
         if pool is None or path is None:

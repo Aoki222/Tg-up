@@ -1,6 +1,7 @@
 """发现层之后的入库。
 
-顺序：扩展名过滤 → 路径去重 → 等文件写完 → 再建话题 → 入库。
+顺序：路径是否命中路由 → 扩展名过滤 → 路径去重 → 等文件写完 → 再建话题 → 入库。
+未命中只写入 unmatched_files，不进上传队列。
 写稳和建话题不占全局锁，多个文件可并行等待；只有「再查重 + INSERT」串行。
 需要封面时写成 preparing 后立刻返回；截图由 PreviewPool 做完再转 pending。
 封面失败不丢视频：page_path 置空，仍然上传。
@@ -142,9 +143,22 @@ class FileIngestor:
         # 写稳可能很久，热更新后的扩展名 / 封面 / 群要重新决议
         settings = self.settings_hub.get()
         decision = self.ingest_policy.decide(file_path, settings)
+        if not decision.matched:
+            if settings.watch_extensions and file_path.suffix.lower() not in settings.watch_extensions:
+                logger.info("跳过非目标文件: %s", file_path)
+                return None
+            await self.task_repository.record_unmatched(
+                str(file_path),
+                file_path.name,
+                file_path.parent.name,
+                file_size,
+            )
+            logger.info("未命中路由，不上传: %s", file_path)
+            return None
         if not decision.allowed:
             logger.info("跳过非目标文件: %s", file_path)
             return None
+        await self.task_repository.clear_unmatched(str(file_path))
 
         file_name = file_path.name
         folder_name = file_path.parent.name
@@ -176,8 +190,10 @@ class FileIngestor:
                 folder_name=folder_name,
                 single_page=decision.need_single,
                 content_page=decision.need_content,
-                chat_id=decision.chat_id,
+                chat_id=decision.chat_id if decision.platform == "telegram" else 0,
                 topic_id=topic_id,
+                platform=decision.platform or "telegram",
+                dest_id=decision.dest_id,
                 status=status.value,
                 max_retries=policy.max_retries,
                 caption=caption,

@@ -1,4 +1,8 @@
-"""从当前 Session 列出可投递的群/频道。"""
+"""从个人号 Session 列出可投递的群/频道。
+
+Bot 会话列不出用户加入的全部对话，调用方必须先跳过 Bot。
+返回的 id 已是带 -100 前缀的 chat_id，和 upload.toml 里存的一致。
+"""
 
 from __future__ import annotations
 
@@ -28,5 +32,9 @@ async def list_dialog_chats(client: TelegramClient) -> list[dict]:
         if chat_id in seen:
             continue
         seen.add(chat_id)
-        items.append({"id": chat_id, "title": dialog.name or ""})
+        if isinstance(entity, Channel) and not getattr(entity, "megagroup", False):
+            kind = "channel"
+        else:
+            kind = "group"
+        items.append({"id": chat_id, "title": dialog.name or "", "type": kind})
     return items
