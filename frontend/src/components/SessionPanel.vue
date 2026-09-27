@@ -23,6 +23,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import QRCode from "qrcode";
 import {
+  cancelSessionLogin,
   fetchSessionMeta,
   pollSessionLogin,
   startSessionLogin,
@@ -218,9 +219,11 @@ async function sendPassword(): Promise<void> {
 }
 
 /** 重置状态并关闭弹窗 */
-function close(): void {
+async function close(): Promise<void> {
   // 重置前端状态；当前登录连接的释放由后端 pending 生命周期负责。
   stopQrPoll();
+  const activeLoginId = loginId.value;
+  await cancelActiveLogin(activeLoginId);
   step.value = "form";
   loginId.value = "";
   code.value = "";
@@ -228,6 +231,18 @@ function close(): void {
   qrUrl.value = "";
   qrImage.value = "";
   emit("close");
+}
+
+/**
+ * 取消当前登录事务。按钮关闭和组件卸载都会走这里，覆盖遮罩点击、路由切换等退出方式。
+ */
+async function cancelActiveLogin(activeLoginId: string): Promise<void> {
+  if (!activeLoginId) return;
+  try {
+    await cancelSessionLogin(activeLoginId);
+  } catch {
+    // 后端有五分钟过期清理作为兜底，不能阻塞前端卸载。
+  }
 }
 
 watch(
@@ -244,7 +259,11 @@ watch(
 onMounted(() => {
   void loadMeta();
 });
-onUnmounted(() => stopQrPoll());
+onUnmounted(() => {
+  stopQrPoll();
+  // 遮罩点击或父组件 v-if 卸载不会调用 close()，这里必须主动取消后端 pending。
+  void cancelActiveLogin(loginId.value);
+});
 </script>
 
 <template>

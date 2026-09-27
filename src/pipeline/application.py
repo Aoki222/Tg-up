@@ -405,6 +405,9 @@ class UploaderApplication:
         self._spawn_and_exit()
 
     def _spawn_and_exit(self) -> None:
+        if os.environ.get("WATCHFILES_MANAGED"):
+            logger.info("由外部进程管理器托管，直接退出")
+            os._exit(0)
         argv = list(getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv])
         kwargs: dict = {"cwd": str(PROJECT_DIR)}
         if sys.platform == "win32":

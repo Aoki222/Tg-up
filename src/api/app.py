@@ -220,6 +220,14 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return login_payload(result)
 
+    # 取消二维码/手机号登录，立即释放后端客户端和临时 session。
+    @app.delete("/api/sessions/login/{login_id}", dependencies=[Depends(require_token)])
+    async def cancel_session_login(login_id: str) -> dict:
+        """前端关闭登录面板时调用，避免 pending 登录等到超时才清理。"""
+        service: SessionLoginService = app.state.session_login
+        await service.cancel(login_id)
+        return {"ok": True, "login_id": login_id}
+
     # 提交手机号登录的验证码。
     @app.post("/api/sessions/code", dependencies=[Depends(require_token)])
     async def session_code(payload: SessionCodeBody) -> dict:

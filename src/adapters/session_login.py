@@ -108,9 +108,17 @@ class SessionLoginService:
         self.api_id = api_id
         self.api_hash = api_hash
         self.proxy = parse_proxy(proxy_url)
+        self._cleanup_orphan_qr_sessions()
         self._pending: dict[str, PendingLogin] = {}
         self._finished: dict[str, LoginResult] = {}
         self._lock = asyncio.Lock()
+
+    def _cleanup_orphan_qr_sessions(self) -> None:
+        """服务重启时删除上次未正常取消的二维码临时 session。"""
+        if not self.session_dir.is_dir():
+            return
+        for path in self.session_dir.glob("_tmp_qr_*.session"):
+            unlink_session(path)
 
     def list_saved(self) -> list[str]:
         if not self.session_dir.is_dir():
@@ -304,9 +312,11 @@ class SessionLoginService:
         return await self._finalize(pending)
 
     async def cancel(self, login_id: str) -> None:
-        """取消登录并释放客户端；未完成的临时 session 由 _discard 清理。"""
+        """取消登录并释放客户端，同时删除本次二维码对应的临时 session。"""
         pending = self._pending.pop(login_id, None)
         if pending is None:
+            # 即使后台 watcher 已经结束，也清理前端本次登录留下的文件。
+            unlink_session(self.session_dir / f"_tmp_qr_{login_id}")
             return
         await self._discard(pending)
 
@@ -421,19 +431,11 @@ class SessionLoginService:
         )
 
     async def _discard(self, pending: PendingLogin) -> None:
-        """停止二维码 watcher、断开客户端，并按登录状态决定是否删除临时 session。"""
+        """停止二维码 watcher、断开客户端，并删除未完成登录的临时 session。"""
         if pending.watcher is not None:
             pending.watcher.cancel()
-        keep_key = False
-        if pending.kind == "qr":
-            try:
-                keep_key = not await pending.client.is_user_authorized()
-            except Exception:
-                keep_key = True
         await _safe_disconnect(pending.client)
-        # 未登录的二维码连接留下密钥，下次不用重新握手
-        if not keep_key:
-            unlink_session(pending.tmp_base)
+        unlink_session(pending.tmp_base)
 
 
 def _qr_png(url: str) -> str:

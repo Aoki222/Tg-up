@@ -245,6 +245,11 @@ export async function pollSessionLogin(loginId: string): Promise<SessionLoginRes
   return res.data;
 }
 
+/** 取消未完成的登录，通知后端立即释放客户端和临时 session。 */
+export async function cancelSessionLogin(loginId: string): Promise<void> {
+  await apiClient.delete(`/api/sessions/login/${loginId}`);
+}
+
 export async function startSessionLogin(payload: {
   mode: SessionMode;
   bot_token: string;
