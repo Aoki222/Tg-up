@@ -19,7 +19,7 @@ topic_creation_enabled = true
 # keep | delete | move_to_archive
 after_success = "keep"
 
-concurrency = 3
+concurrency = 1
 max_retries = 3
 upload_timeout_seconds = 1200
 assigned_timeout_seconds = 600

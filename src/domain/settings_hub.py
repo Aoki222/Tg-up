@@ -60,7 +60,7 @@ def render_upload_toml(payload: dict) -> str:
         f"preview = {_toml_string(str(payload.get('preview') or 'off'))}\n"
         f"topic_creation_enabled = {topic}\n"
         f"after_success = {_toml_string(str(payload.get('after_success') or 'keep'))}\n"
-        f"concurrency = {max(1, int(payload.get('concurrency', 3)))}\n"
+        "concurrency = 1\n"
         f"max_retries = {max(1, int(payload.get('max_retries', 3)))}\n"
         f"upload_timeout_seconds = {max(1, int(payload.get('upload_timeout_seconds', 1200)))}\n"
         f"assigned_timeout_seconds = {max(1, int(payload.get('assigned_timeout_seconds', 600)))}\n"
@@ -398,7 +398,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         preview=preview,
         topic_creation_enabled=_as_bool(data.get("topic_creation_enabled"), True),
         after_success=after_success,
-        concurrency=max(1, int(data.get("concurrency", 3))),
+        concurrency=1,
         max_retries=max(1, int(data.get("max_retries", 3))),
         upload_timeout_seconds=max(1, int(data.get("upload_timeout_seconds", 1200))),
         assigned_timeout_seconds=max(1, int(data.get("assigned_timeout_seconds", 600))),

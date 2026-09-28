@@ -75,7 +75,8 @@ class SettingsPayload(BaseModel):
     preview: Literal["off", "first_frame", "grid"] = "off"
     topic_creation_enabled: bool = True
     after_success: Literal["keep", "delete", "move_to_archive"] = "keep"
-    concurrency: int = Field(default=3, ge=1, le=32)
+    # 账号级上传并发固定为 1，文件内部并发由 FastTelethon 负责。
+    concurrency: int = Field(default=1, ge=1, le=32)
     max_retries: int = Field(default=3, ge=1, le=20)
     upload_timeout_seconds: int = Field(default=1200, ge=30)
     assigned_timeout_seconds: int = Field(default=600, ge=30)

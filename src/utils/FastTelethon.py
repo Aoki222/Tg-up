@@ -147,51 +147,65 @@ class FastTelethon:
         file_id = helpers.generate_random_long()
         hash_md5 = hashlib.md5()
 
-        semaphore = asyncio.Semaphore(max_workers)
+        worker_count = max(1, int(max_workers))
+        queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=worker_count * 2)
         uploaded_bytes = 0
         lock = asyncio.Lock()
 
-        async def upload_worker(part_idx: int, chunk_data: bytes):
+        async def upload_worker() -> None:
             nonlocal uploaded_bytes
-            async with semaphore:
-                # 借用会话池的 TCP 发送管道
-                sender = await client._borrow_sender(client.session.dc_id)
+            while True:
+                item = await queue.get()
                 try:
-                    if is_big:
-                        req = SaveBigFilePartRequest(
-                            file_id=file_id,
-                            file_part=part_idx,
-                            file_total_parts=total_parts,
-                            bytes=chunk_data,
-                        )
-                    else:
-                        req = SaveFilePartRequest(
-                            file_id=file_id,
-                            file_part=part_idx,
-                            bytes=chunk_data,
-                        )
-                    await sender.send(req)
-                finally:
-                    await client._return_sender(sender)
-
-                # 回调进度处理
-                if progress_callback:
-                    async with lock:
-                        uploaded_bytes += len(chunk_data)
-                        if inspect.iscoroutinefunction(progress_callback):
-                            await progress_callback(uploaded_bytes, file_size)
+                    if item is None:
+                        return
+                    part_idx, chunk_data = item
+                    # 借用会话池的 TCP 发送管道；账号级文件并发由 UploadWorker 限制为 1。
+                    sender = await client._borrow_sender(client.session.dc_id)
+                    try:
+                        if is_big:
+                            req = SaveBigFilePartRequest(
+                                file_id=file_id,
+                                file_part=part_idx,
+                                file_total_parts=total_parts,
+                                bytes=chunk_data,
+                            )
                         else:
-                            progress_callback(uploaded_bytes, file_size)
+                            req = SaveFilePartRequest(
+                                file_id=file_id,
+                                file_part=part_idx,
+                                bytes=chunk_data,
+                            )
+                        await sender.send(req)
+                    finally:
+                        await client._return_sender(sender)
 
-        tasks = []
-        try:
+                    if progress_callback:
+                        async with lock:
+                            uploaded_bytes += len(chunk_data)
+                            if inspect.iscoroutinefunction(progress_callback):
+                                await progress_callback(uploaded_bytes, file_size)
+                            else:
+                                progress_callback(uploaded_bytes, file_size)
+                finally:
+                    queue.task_done()
+
+        async def produce() -> None:
             for part_index in range(total_parts):
                 chunk = file_handle.read(CHUNK_SIZE)
+                if not chunk and part_index < total_parts:
+                    raise OSError("读取文件分块失败")
                 if not is_big:
                     hash_md5.update(chunk)
-                tasks.append(upload_worker(part_index, chunk))
+                await queue.put((part_index, chunk))
+            for _ in range(worker_count):
+                await queue.put(None)
 
-            await asyncio.gather(*tasks)
+        try:
+            async with asyncio.TaskGroup() as group:
+                for _ in range(worker_count):
+                    group.create_task(upload_worker())
+                group.create_task(produce())
         finally:
             if should_close:
                 file_handle.close()

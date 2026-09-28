@@ -47,7 +47,7 @@ const form = reactive<UploadConfig>({
   preview: "first_frame",
   topic_creation_enabled: true,
   after_success: "keep",
-  concurrency: 3,
+  concurrency: 1,
   max_retries: 3,
   upload_timeout_seconds: 1200,
   assigned_timeout_seconds: 600,
@@ -484,9 +484,6 @@ defineExpose({ dirty });
         </div>
         <h3 class="section-title later">并发与容错</h3>
         <div class="cols">
-          <el-form-item label="每账号并发流数">
-            <el-input-number v-model="form.concurrency" :min="1" :max="32" />
-          </el-form-item>
           <el-form-item label="最大重试次数">
             <el-input-number v-model="form.max_retries" :min="1" :max="20" />
           </el-form-item>
