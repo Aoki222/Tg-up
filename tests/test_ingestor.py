@@ -206,3 +206,14 @@ async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path) -> None:
     first_id = await first
     assert first_id == 2
     assert created == ["dir_a", "dir_b"]
+
+
+async def test_existing_task_is_kept_when_route_no_longer_matches(tmp_path: Path) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    repo = FakeRepo()
+    repo.active[str(video.resolve())] = 7
+    ingestor = FileIngestor(repo, FakeRescheduler(), FakeHub(_settings()), concurrency=1)
+    result = await ingestor.handle_new_file(video)
+    assert result == 7
+    assert repo.tasks == []

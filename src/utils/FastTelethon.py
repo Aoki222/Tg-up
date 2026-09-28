@@ -5,8 +5,7 @@ import math
 import os
 from typing import AsyncGenerator, Awaitable, BinaryIO, Callable, Optional, Union
 
-from telethon import TelegramClient, helpers, utils
-from telethon.crypto import AuthKey
+from telethon import TelegramClient, helpers
 from telethon.network import MTProtoSender
 from telethon.tl.functions.auth import ExportAuthorizationRequest, ImportAuthorizationRequest
 from telethon.tl.functions.upload import (
@@ -25,6 +24,10 @@ from telethon.tl.types import (
     TypeInputFile,
 )
 
+from ..logger import get_logger
+
+logger = get_logger(__name__)
+
 # MTProto 规范中单块的最大物理上限：512 KB
 CHUNK_SIZE = 512 * 1024
 
@@ -35,6 +38,55 @@ TypeLocation = Union[
     InputPhotoFileLocation,
     InputFileLocation,
 ]
+
+
+def describe_taskgroup_error(error: BaseException) -> str:
+    """TaskGroup 把真实原因包进 ExceptionGroup，日志里要展开子异常。"""
+    if isinstance(error, BaseExceptionGroup):
+        parts = [describe_taskgroup_error(item) for item in error.exceptions]
+        return "; ".join(parts) or str(error)
+    text = str(error).strip()
+    name = type(error).__name__
+    return f"{name}: {text}" if text else name
+
+
+async def _create_parallel_sender(client: TelegramClient) -> MTProtoSender:
+    """同一 DC 上再建一条独立 TCP，复用当前 session 的 auth_key。"""
+    dc_id = client.session.dc_id
+    dc = await client._get_dc(dc_id)
+    sender = MTProtoSender(
+        client.session.auth_key,
+        loggers=client._log,
+        auto_reconnect=False,
+    )
+    await sender.connect(
+        client._connection(
+            dc.ip_address,
+            dc.port,
+            dc.id,
+            loggers=client._log,
+            proxy=client._proxy,
+            local_addr=getattr(client, "_local_addr", None),
+        )
+    )
+    return sender
+
+
+async def _open_upload_senders(client: TelegramClient, count: int) -> tuple[list[MTProtoSender], list[MTProtoSender]]:
+    """尽量打开 count 条额外连接；一条都建不出时退回主连接，不要 disconnect 主连接。"""
+    extra: list[MTProtoSender] = []
+    for index in range(max(1, count)):
+        try:
+            extra.append(await _create_parallel_sender(client))
+        except Exception as error:
+            logger.warning("额外上传连接建立失败 (%s/%s): %s", index + 1, count, error)
+            break
+    if extra:
+        return extra, extra
+    main = getattr(client, "_sender", None)
+    if main is None:
+        raise RuntimeError("Telegram client 没有可用的上传连接")
+    return [main], []
 
 
 class ParallelTransferrer:
@@ -88,7 +140,7 @@ class ParallelTransferrer:
             queue = asyncio.Queue(maxsize=connections)
 
             async def worker(part_idx: int):
-                sender = await self.client._borrow_sender(self.dc_id)
+                sender = await self.client._borrow_exported_sender(self.dc_id)
                 try:
                     res = await sender.send(
                         GetFileRequest(
@@ -99,7 +151,7 @@ class ParallelTransferrer:
                     )
                     await queue.put((part_idx, res.bytes))
                 finally:
-                    await self.client._return_sender(sender)
+                    await self.client._return_exported_sender(sender)
 
             # 派发下载切片
             for i in range(part_count):
@@ -142,17 +194,33 @@ class FastTelethon:
             file_handle = file
             should_close = False
 
-        total_parts = math.ceil(file_size / CHUNK_SIZE)
+        total_parts = math.ceil(file_size / CHUNK_SIZE) if file_size else 1
         is_big = file_size > 10 * 1024 * 1024  # > 10MB
         file_id = helpers.generate_random_long()
         hash_md5 = hashlib.md5()
 
-        worker_count = max(1, int(max_workers))
+        senders, owned_senders = await _open_upload_senders(client, max(1, int(max_workers)))
+        worker_count = len(senders)
+        logger.info(
+            "FastTelethon 分块上传 name=%s size=%s parts=%s connections=%s",
+            file_name,
+            file_size,
+            total_parts,
+            worker_count,
+        )
         queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=worker_count * 2)
         uploaded_bytes = 0
         lock = asyncio.Lock()
 
-        async def upload_worker() -> None:
+        async def report_progress(current: int) -> None:
+            if progress_callback is None:
+                return
+            if inspect.iscoroutinefunction(progress_callback):
+                await progress_callback(current, file_size)
+            else:
+                progress_callback(current, file_size)
+
+        async def upload_worker(sender: MTProtoSender) -> None:
             nonlocal uploaded_bytes
             while True:
                 item = await queue.get()
@@ -160,55 +228,55 @@ class FastTelethon:
                     if item is None:
                         return
                     part_idx, chunk_data = item
-                    # 借用会话池的 TCP 发送管道；账号级文件并发由 UploadWorker 限制为 1。
-                    sender = await client._borrow_sender(client.session.dc_id)
-                    try:
-                        if is_big:
-                            req = SaveBigFilePartRequest(
-                                file_id=file_id,
-                                file_part=part_idx,
-                                file_total_parts=total_parts,
-                                bytes=chunk_data,
-                            )
-                        else:
-                            req = SaveFilePartRequest(
-                                file_id=file_id,
-                                file_part=part_idx,
-                                bytes=chunk_data,
-                            )
-                        await sender.send(req)
-                    finally:
-                        await client._return_sender(sender)
-
-                    if progress_callback:
-                        async with lock:
-                            uploaded_bytes += len(chunk_data)
-                            if inspect.iscoroutinefunction(progress_callback):
-                                await progress_callback(uploaded_bytes, file_size)
-                            else:
-                                progress_callback(uploaded_bytes, file_size)
+                    if is_big:
+                        req = SaveBigFilePartRequest(
+                            file_id=file_id,
+                            file_part=part_idx,
+                            file_total_parts=total_parts,
+                            bytes=chunk_data,
+                        )
+                    else:
+                        req = SaveFilePartRequest(
+                            file_id=file_id,
+                            file_part=part_idx,
+                            bytes=chunk_data,
+                        )
+                    result = await sender.send(req)
+                    if not result:
+                        raise RuntimeError(f"分块 {part_idx}/{total_parts} 上传失败")
+                    async with lock:
+                        uploaded_bytes += len(chunk_data)
+                        await report_progress(uploaded_bytes)
                 finally:
                     queue.task_done()
 
         async def produce() -> None:
             for part_index in range(total_parts):
                 chunk = file_handle.read(CHUNK_SIZE)
-                if not chunk and part_index < total_parts:
+                if not chunk and file_size:
                     raise OSError("读取文件分块失败")
-                if not is_big:
+                if not is_big and chunk:
                     hash_md5.update(chunk)
-                await queue.put((part_index, chunk))
+                await queue.put((part_index, chunk or b""))
             for _ in range(worker_count):
                 await queue.put(None)
 
         try:
-            async with asyncio.TaskGroup() as group:
-                for _ in range(worker_count):
-                    group.create_task(upload_worker())
-                group.create_task(produce())
+            try:
+                async with asyncio.TaskGroup() as group:
+                    for sender in senders:
+                        group.create_task(upload_worker(sender))
+                    group.create_task(produce())
+            except BaseExceptionGroup as error:
+                raise RuntimeError(describe_taskgroup_error(error)) from error
         finally:
             if should_close:
                 file_handle.close()
+            for sender in owned_senders:
+                try:
+                    await sender.disconnect()
+                except Exception:
+                    logger.debug("关闭额外上传连接失败", exc_info=True)
 
         # 返回 Telegram 官方需要的 InputFile 凭证对象
         if is_big:
@@ -265,3 +333,4 @@ class FastTelethon:
 # 便捷别名导出，方便直接 import
 upload_file = FastTelethon.upload_file
 download_file = FastTelethon.download_file
+describe_error = describe_taskgroup_error

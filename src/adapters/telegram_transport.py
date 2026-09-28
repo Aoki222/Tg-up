@@ -11,17 +11,52 @@ import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, MediaInvalidError
+from telethon.tl.types import InputFile, InputFileBig
 
 from ..domain.task import Task
 from ..logger import get_logger
 from ..ports.transport import SendDisconnected, SendFailed, SendOk, SendResult, SendRetryLater
-from ..utils.FastTelethon import upload_file as fast_upload_file
+from ..utils.FastTelethon import describe_taskgroup_error, upload_file as fast_upload_file
 
 logger = get_logger(__name__)
 
 FAST_UPLOAD_WORKERS = 6
 FAST_UPLOAD_ATTEMPTS = 2
+
+_VIDEO_SUFFIXES = frozenset({
+    ".mp4", ".m4v", ".mov", ".mkv", ".avi", ".wmv", ".webm",
+    ".ts", ".mpeg", ".mpg", ".flv",
+})
+
+
+def telegram_upload_name(path: str) -> str:
+    """Telegram 相册把 .m4v/.mov 等当普通文档，和封面图组在一起会 MediaInvalid。"""
+    original = Path(path)
+    suffix = original.suffix.lower()
+    if suffix in _VIDEO_SUFFIXES and suffix != ".mp4":
+        return f"{original.stem}.mp4"
+    return original.name
+
+
+class _NamedFile:
+    """让 Telethon 按自定义文件名猜 mime，读的仍是磁盘上的原文件。"""
+
+    def __init__(self, path: str, name: str):
+        self.name = name
+        self._fh = open(path, "rb")
+
+    def read(self, size: int = -1):
+        return self._fh.read(size)
+
+    def seek(self, offset: int, whence: int = 0):
+        return self._fh.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._fh.tell()
+
+    def close(self) -> None:
+        self._fh.close()
 
 
 class _FastUploadError(Exception):
@@ -119,17 +154,12 @@ class TelegramTransport:
             except FloodWaitError:
                 raise
             except Exception as error:
-                raise _FastUploadError(str(error)) from error
-            handles.append(handle)
+                raise _FastUploadError(describe_taskgroup_error(error)) from error
+            handles.append(_rename_input_file(handle, path))
             completed_size += Path(path).stat().st_size
 
-        send_kwargs = self._send_kwargs(task, handles if len(handles) > 1 else handles[0])
-        if len(handles) > 1:
-            send_kwargs["album"] = True
-        send_kwargs["force_document"] = False
-        send_kwargs["supports_streaming"] = True
         try:
-            sent_messages = await self.telegram_client.send_file(**send_kwargs)
+            return await self._submit_media(task, handles)
         except FloodWaitError:
             raise
         except Exception as error:
@@ -139,29 +169,19 @@ class TelegramTransport:
                 raise
             return await self._send_album_failure_fallback(task, handles, error)
 
-        video_message = sent_messages[0] if isinstance(sent_messages, list) else sent_messages
-        return SendOk(video_message.id)
-
     async def _send_album_failure_fallback(self, task: Task, handles: list, album_error: Exception) -> SendResult:
         """相册失败后优先保住视频，再尝试用两个句柄重新提交相册。"""
-        logger.warning("FastTelethon 相册提交失败，先单独发送视频: %s", album_error)
-        video_kwargs = self._send_kwargs(task, handles[0])
-        video_kwargs["force_document"] = False
-        video_kwargs["supports_streaming"] = True
+        logger.warning("相册提交失败，先单独发送视频: %s", album_error)
         try:
-            video_message = await self.telegram_client.send_file(**video_kwargs)
+            video_message = await self.telegram_client.send_file(**self._send_kwargs(task, handles[0]))
         except FloodWaitError:
             raise
         except Exception as video_error:
             if _is_disconnect_error(video_error):
                 raise
-            logger.warning("FastTelethon 单独发送视频失败，重新尝试整组句柄: %s", video_error)
-            album_kwargs = self._send_kwargs(task, handles)
-            album_kwargs["album"] = True
-            album_kwargs["force_document"] = False
-            album_kwargs["supports_streaming"] = True
+            logger.warning("单独发送视频失败，重新尝试整组句柄: %s", video_error)
             try:
-                messages = await self.telegram_client.send_file(**album_kwargs)
+                messages = await self.telegram_client.send_file(**self._send_kwargs(task, handles))
             except FloodWaitError:
                 raise
             except Exception as retry_error:
@@ -180,9 +200,8 @@ class TelegramTransport:
         on_progress: Callable[[float, float], None] | None,
     ) -> SendResult:
         """FastTelethon 分块失败后的原生整组回退路径。"""
-        send_kwargs = self._send_kwargs(task, files if len(files) > 1 else files[0])
-        if len(files) > 1:
-            send_kwargs["album"] = True
+        prepared, cleanup = _prepare_native_files(files)
+        send_kwargs = self._send_kwargs(task, prepared if len(prepared) > 1 else prepared[0])
         if on_progress is not None:
             send_kwargs["progress_callback"] = on_progress
         try:
@@ -197,9 +216,55 @@ class TelegramTransport:
         except Exception as error:
             if _is_disconnect_error(error):
                 return SendDisconnected(str(error))
+            if len(prepared) > 1 and _is_album_invalid(error):
+                logger.warning("原生相册提交失败，改为只发视频: %s", error)
+                return await self._send_native_video_only(
+                    task, files[0], timeout_seconds, on_progress
+                )
             logger.exception("Telegram 原生发送失败: %s", files[0])
             return SendFailed(str(error))
+        finally:
+            _close_files(cleanup)
 
+        video_message = sent_messages[0] if isinstance(sent_messages, list) else sent_messages
+        return SendOk(video_message.id)
+
+    async def _send_native_video_only(
+        self,
+        task: Task,
+        video_path: str,
+        timeout_seconds: int,
+        on_progress: Callable[[float, float], None] | None,
+    ) -> SendResult:
+        """相册被拒后只发视频，避免 500MB+ 传完却整组失败。"""
+        prepared, cleanup = _prepare_native_files([video_path])
+        send_kwargs = self._send_kwargs(task, prepared[0])
+        if on_progress is not None:
+            send_kwargs["progress_callback"] = on_progress
+        try:
+            sent_message = await asyncio.wait_for(
+                self.telegram_client.send_file(**send_kwargs),
+                timeout=timeout_seconds,
+            )
+        except FloodWaitError as flood_error:
+            return SendRetryLater(flood_error.seconds)
+        except TimeoutError:
+            return SendFailed(f"上传超时 {timeout_seconds}s")
+        except Exception as error:
+            if _is_disconnect_error(error):
+                return SendDisconnected(str(error))
+            logger.exception("Telegram 原生单独发视频失败: %s", task.file_path)
+            return SendFailed(str(error))
+        finally:
+            _close_files(cleanup)
+        video_message = sent_message[0] if isinstance(sent_message, list) else sent_message
+        logger.warning("视频已发送，封面未随相册发送: %s", task.file_path)
+        return SendOk(video_message.id)
+
+    async def _submit_media(self, task: Task, handles: list) -> SendResult:
+        sent_messages = await self.telegram_client.send_file(
+            **self._send_kwargs(task, handles if len(handles) > 1 else handles[0])
+        )
         video_message = sent_messages[0] if isinstance(sent_messages, list) else sent_messages
         return SendOk(video_message.id)
 
@@ -210,10 +275,56 @@ class TelegramTransport:
             "entity": task.destination.chat_id,
             "file": file,
             "caption": task.caption or "",
+            "force_document": False,
+            "supports_streaming": True,
         }
         if task.destination.topic_id is not None:
             send_kwargs["reply_to"] = task.destination.topic_id
         return send_kwargs
+
+
+def _rename_input_file(handle, original_path: str):
+    """InputFile 的 name 决定 Telethon 推断的 mime；视频统一成 .mp4。"""
+    name = telegram_upload_name(original_path)
+    if isinstance(handle, InputFileBig):
+        return InputFileBig(id=handle.id, parts=handle.parts, name=name)
+    if isinstance(handle, InputFile):
+        return InputFile(
+            id=handle.id,
+            parts=handle.parts,
+            name=name,
+            md5_checksum=handle.md5_checksum,
+        )
+    return handle
+
+
+def _prepare_native_files(paths: list[str]) -> tuple[list, list[_NamedFile]]:
+    prepared: list = []
+    opened: list[_NamedFile] = []
+    for path in paths:
+        name = telegram_upload_name(path)
+        if name == Path(path).name:
+            prepared.append(path)
+            continue
+        renamed = _NamedFile(path, name)
+        opened.append(renamed)
+        prepared.append(renamed)
+    return prepared, opened
+
+
+def _close_files(files: list[_NamedFile]) -> None:
+    for handle in files:
+        try:
+            handle.close()
+        except Exception:
+            logger.debug("关闭临时上传文件失败", exc_info=True)
+
+
+def _is_album_invalid(error: BaseException) -> bool:
+    if isinstance(error, MediaInvalidError):
+        return True
+    text = str(error).lower()
+    return "media invalid" in text or "sendmultimedia" in text.replace(" ", "")
 
 
 def _is_disconnect_error(error: BaseException) -> bool:

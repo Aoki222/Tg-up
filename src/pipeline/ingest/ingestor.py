@@ -105,13 +105,19 @@ class FileIngestor:
         已有未完成任务时返回那条 id，不重复插入。
         """
         file_path = file_path.resolve()
+        path_key = str(file_path)
         settings = self.settings_hub.get()
         decision = self.ingest_policy.decide(file_path, settings)
         if not decision.allowed:
-            logger.info("跳过非目标文件: %s", file_path)
+            existing = await self.task_repository.find_active_by_file_path(path_key)
+            if existing:
+                return existing
+            if not decision.matched:
+                logger.info("未命中路由，不上传: %s", file_path)
+            else:
+                logger.info("跳过非目标扩展名: %s", file_path)
             return None
 
-        path_key = str(file_path)
         async with self._paths_lock:
             if path_key in self._inflight_paths:
                 logger.info("已在入库中，忽略重复发现: %s", file_path)
