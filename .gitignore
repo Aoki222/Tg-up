@@ -47,3 +47,5 @@ docs/
 
 .grok/
 docks/
+
+credentials.json

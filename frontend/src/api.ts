@@ -170,6 +170,16 @@ export async function fetchDialogChats(): Promise<{
   return { items: res.data.items, online: res.data.online, reason: res.data.reason || "" };
 }
 
+/** 强制后端从 Telegram 全量校准群组/频道缓存。 */
+export async function syncDialogChats(): Promise<{
+  items: DialogChat[];
+  online: boolean;
+  reason: string;
+}> {
+  const res = await apiClient.post<{ items: DialogChat[]; online: boolean; reason?: string }>("/api/chats/sync");
+  return { items: res.data.items, online: res.data.online, reason: res.data.reason || "" };
+}
+
 export async function fetchUnmatched(): Promise<UnmatchedFile[]> {
   // 获取没有命中目录路由、因此未进入上传队列的文件。
   const res = await apiClient.get<{ items: UnmatchedFile[]; count: number }>("/api/unmatched");

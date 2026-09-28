@@ -2,6 +2,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 from src.adapters.task_store import TaskRepository
+from src.adapters.telegram_channel_cache import TelegramChannelCache
 from src.database.connection import POOL_SIZE, close_pool, get_db, open_pool
 from src.database.init import SCHEMA
 
@@ -38,5 +39,46 @@ async def test_find_active_by_file_path_roundtrip(tmp_path: Path) -> None:
         assert await repo.find_active_by_file_path(file_path) == task_id
         counts = await repo.count_active_by_workers()
         assert counts == {}
+    finally:
+        await close_pool()
+
+
+async def test_telegram_channel_cache_roundtrip(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "app.db"
+    await open_pool(path)
+    try:
+        async with get_db() as database:
+            await database.executescript(SCHEMA)
+            await database.commit()
+
+        async def fake_list_dialog_chats(_client):
+            return [
+                {
+                    "id": -1001,
+                    "title": "示例频道",
+                    "type": "channel",
+                    "username": "example",
+                }
+            ]
+
+        monkeypatch.setattr(
+            "src.adapters.telegram_channel_cache.list_dialog_chats",
+            fake_list_dialog_chats,
+        )
+        cache = TelegramChannelCache()
+        await cache.full_sync("user_1", object())
+        assert cache.snapshot("user_1") == [
+            {
+                "id": -1001,
+                "title": "示例频道",
+                "type": "channel",
+                "username": "example",
+                "is_active": True,
+            }
+        ]
+
+        restored = TelegramChannelCache()
+        await restored.load_from_db()
+        assert restored.snapshot("user_1") == cache.snapshot("user_1")
     finally:
         await close_pool()

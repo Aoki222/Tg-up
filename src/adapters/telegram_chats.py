@@ -36,5 +36,12 @@ async def list_dialog_chats(client: TelegramClient) -> list[dict]:
             kind = "channel"
         else:
             kind = "group"
-        items.append({"id": chat_id, "title": dialog.name or "", "type": kind})
+        items.append(
+            {
+                "id": chat_id,
+                "title": dialog.name or "",
+                "type": kind,
+                "username": str(getattr(entity, "username", None) or ""),
+            }
+        )
     return items

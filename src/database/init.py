@@ -83,6 +83,22 @@ CREATE TABLE IF NOT EXISTS unmatched_files (
     file_size     INTEGER NOT NULL DEFAULT 0,
     discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS telegram_channels (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_name TEXT    NOT NULL,
+    chat_id      INTEGER NOT NULL,
+    title        TEXT    NOT NULL DEFAULT '',
+    type         TEXT    NOT NULL DEFAULT 'group',
+    username     TEXT    NOT NULL DEFAULT '',
+    is_active    INTEGER NOT NULL DEFAULT 1,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    synced_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(account_name, chat_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_channels_active
+    ON telegram_channels(account_name, is_active);
 """
 
 

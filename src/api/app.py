@@ -78,6 +78,7 @@ def create_api(
     reschedule=None,
     restart_process=None,
     chats_provider=None,
+    chats_sync=None,
     chat_resolver=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
@@ -92,6 +93,7 @@ def create_api(
     app.state.reschedule = reschedule
     app.state.restart_process = restart_process
     app.state.chats_provider = chats_provider
+    app.state.chats_sync = chats_sync
     app.state.chat_resolver = chat_resolver
     app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
 
@@ -290,6 +292,18 @@ def create_api(
         provider = app.state.chats_provider
         if provider is None:
             return {"items": [], "online": False, "reason": "会话池未就绪"}
+        result = await provider()
+        if isinstance(result, dict):
+            return result
+        return {"items": result, "online": bool(result), "reason": ""}
+
+    # 手动强制从 Telegram 全量校准本地群组/频道缓存。
+    @app.post("/api/chats/sync", dependencies=[Depends(require_token)])
+    async def sync_chats() -> dict:
+        """调用注入的同步函数，供前端在缓存异常或需要立即刷新时使用。"""
+        provider = app.state.chats_sync
+        if provider is None:
+            raise HTTPException(status_code=503, detail="群组缓存服务未就绪")
         result = await provider()
         if isinstance(result, dict):
             return result

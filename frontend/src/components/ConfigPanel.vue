@@ -13,7 +13,7 @@
 
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { fetchDialogChats, fetchSettings, fetchUnmatched, saveSettings } from "../api";
+import { fetchDialogChats, fetchSettings, fetchUnmatched, saveSettings, syncDialogChats } from "../api";
 import type { DialogChat } from "../api";
 import type { UnmatchedFile } from "../types";
 import type { UploadConfig } from "../types";
@@ -221,16 +221,53 @@ async function openAddChat(): Promise<void> {
   }
 }
 
-function pickChat(chat: DialogChat): void {
-  // 将选中的群组加入配置，重复选择直接忽略。
-  if (form.chats.some((item) => item.chat_id === chat.id)) return;
-  form.chats.push({ chat_id: chat.id, alias: "", title: chat.title });
+async function syncChats(): Promise<void> {
+  addingChat.value = true;
+  dialogReason.value = "";
+  try {
+    const data = await syncDialogChats();
+    dialogChats.value = data.items;
+    dialogReason.value = data.online ? "" : data.reason || "请先在监控页用个人账号登录";
+  } catch (error) {
+    dialogReason.value = error instanceof Error ? error.message : "同步群列表失败";
+  } finally {
+    addingChat.value = false;
+  }
 }
 
-function removeChat(chatId: number): void {
-  // 删除群组别名，并清理引用该群组的 Telegram 路由。
+async function persistChatConfig(
+  previousChats: typeof form.chats,
+  previousRoutes: typeof form.routes,
+): Promise<void> {
+  saving.value = true;
+  try {
+    applyServer(await saveSettings({ ...form }));
+    ElMessage.success("已保存群组配置");
+  } catch (error) {
+    form.chats = previousChats;
+    form.routes = previousRoutes;
+    ElMessage.error(error instanceof Error ? error.message : "保存群组配置失败");
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function pickChat(chat: DialogChat): Promise<void> {
+  // 将选中的群组加入配置，重复选择直接忽略，并立即写入 upload.toml。
+  if (form.chats.some((item) => item.chat_id === chat.id)) return;
+  const previousChats = [...form.chats];
+  const previousRoutes = [...form.routes];
+  form.chats.push({ chat_id: chat.id, alias: "", title: chat.title });
+  await persistChatConfig(previousChats, previousRoutes);
+}
+
+async function removeChat(chatId: number): Promise<void> {
+  // 删除群组别名和相关路由，并立即写入 upload.toml。
+  const previousChats = [...form.chats];
+  const previousRoutes = [...form.routes];
   form.chats = form.chats.filter((item) => item.chat_id !== chatId);
   form.routes = form.routes.filter((item) => item.chat_id !== chatId);
+  await persistChatConfig(previousChats, previousRoutes);
 }
 
 /** 当前表单是否有未保存的变更 */
@@ -466,7 +503,10 @@ defineExpose({ dirty });
     <el-dialog v-model="showAddChat" title="选择群或频道" width="440px" append-to-body>
       <p v-if="dialogReason" class="route-hint">{{ dialogReason }}</p>
       <template v-else>
-        <el-input v-model="chatQuery" placeholder="搜索名称" clearable />
+        <div class="dialog-tools">
+          <el-input v-model="chatQuery" placeholder="搜索名称" clearable />
+          <el-button :loading="addingChat" @click="syncChats">刷新</el-button>
+        </div>
         <div v-loading="addingChat" class="dialog-list">
           <button
             v-for="chat in filteredDialogs"

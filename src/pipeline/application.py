@@ -25,6 +25,7 @@ from ..adapters.after_upload import ConfigurableAfterUpload
 from ..adapters.disabled_workers import DisabledWorkers
 from ..adapters.progress import FanoutReporter, LogProgressBar, ProgressHub
 from ..adapters.session_login import unlink_session
+from ..adapters.telegram_channel_cache import TelegramChannelCache
 
 
 def _session_kind(session_dir, name: str) -> str:
@@ -87,6 +88,7 @@ class UploaderApplication:
         self._finished = False
         self._bg_tasks: list[asyncio.Task] = []
         self._logged_no_session = False
+        self._channel_cache = TelegramChannelCache()
 
     async def run(self) -> None:
         """启动整条流水线，直到收到 SIGINT/SIGTERM。
@@ -98,6 +100,7 @@ class UploaderApplication:
         logger.info("正在启动")
         self._install_stop_signals()
         await init_db()
+        await self._channel_cache.load_from_db()
         settings_hub = SettingsHub(ensure_upload_config(PROJECT_DIR), PROJECT_DIR)
         self._settings_hub = settings_hub
         settings = settings_hub.get()
@@ -276,6 +279,23 @@ class UploaderApplication:
                 client = await session_pool.ensure_client(name, session_path)
                 if client is None:
                     continue
+                kind = _session_kind(session_pool.session_dir, name)
+                if kind == "unknown":
+                    try:
+                        me = await client.get_me()
+                        kind = "bot" if me is not None and getattr(me, "bot", False) else "user"
+                    except Exception:
+                        kind = "unknown"
+                if kind == "user" and not self._channel_cache.has_account(name):
+                    try:
+                        await self._channel_cache.full_sync(name, client)
+                    except Exception:
+                        logger.exception("首次同步 Telegram 群组失败: %s", name)
+                if kind == "user":
+                    try:
+                        await self._channel_cache.attach_client(name, client)
+                    except Exception:
+                        logger.exception("注册 Telegram 群组事件失败: %s", name)
                 worker = UploadWorker(
                     worker_name=name,
                     task_repository=repository,
@@ -301,21 +321,35 @@ class UploaderApplication:
                 logger.info("已卸载 worker: %s", name)
 
     async def _list_chats(self) -> dict:
-        """只用个人号列群。Bot 看不见用户加入的全部会话。"""
-        client, reason = await self._user_client()
-        if client is None:
+        """只读个人号的内存快照；首次无缓存时才触发一次 Telegram 全量同步。"""
+        account_name, client, reason = await self._user_client()
+        if client is None or account_name is None:
             return {"items": [], "online": False, "reason": reason}
         try:
-            items = await list_dialog_chats(client)
+            if not self._channel_cache.has_account(account_name):
+                await self._channel_cache.full_sync(account_name, client)
+            items = self._channel_cache.snapshot(account_name)
         except Exception:
-            logger.exception("拉取群/频道列表失败")
-            return {"items": [], "online": False, "reason": "拉取群列表失败"}
+            logger.exception("同步群/频道缓存失败")
+            return {"items": [], "online": False, "reason": "同步群列表失败"}
+        return {"items": items, "online": True, "reason": ""}
+
+    async def _sync_chats(self) -> dict:
+        """手动强制同步当前个人号的 Telegram 会话并刷新本地缓存。"""
+        account_name, client, reason = await self._user_client()
+        if client is None or account_name is None:
+            return {"items": [], "online": False, "reason": reason}
+        try:
+            items = await self._channel_cache.full_sync(account_name, client)
+        except Exception:
+            logger.exception("手动同步群/频道失败")
+            return {"items": [], "online": False, "reason": "同步群列表失败"}
         return {"items": items, "online": True, "reason": ""}
 
     async def _user_client(self):
         pool = self._session_pool
         if pool is None or not pool.clients:
-            return None, "请先在监控页用个人账号登录"
+            return None, None, "请先在监控页用个人账号登录"
         users = []
         unknown = []
         for name, client in pool.clients.items():
@@ -325,17 +359,20 @@ class UploaderApplication:
             elif kind == "unknown":
                 unknown.append(client)
         if users:
-            return users[0], ""
-        for client in unknown:
+            name = next(name for name, client in pool.clients.items() if client is users[0])
+            return name, users[0], ""
+        for name, client in pool.clients.items():
+            if client not in unknown:
+                continue
             try:
                 me = await client.get_me()
             except Exception:
                 continue
             if me is not None and not getattr(me, "bot", False):
-                return client, ""
+                return name, client, ""
         if pool.clients:
-            return None, "当前在线的是 Bot，请用个人账号登录后再选群"
-        return None, "请先在监控页用个人账号登录"
+            return None, None, "当前在线的是 Bot，请用个人账号登录后再选群"
+        return None, None, "请先在监控页用个人账号登录"
 
     async def _resolve_chat_title(self, chat_id: int) -> str:
         pool = self._session_pool
@@ -366,6 +403,7 @@ class UploaderApplication:
             reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
             restart_process=self.request_restart,
             chats_provider=self._list_chats,
+            chats_sync=self._sync_chats,
             chat_resolver=self._resolve_chat_title,
         )
         config = uvicorn.Config(
@@ -472,6 +510,7 @@ class UploaderApplication:
         if worker is not None:
             scheduler.unregister_worker(name)
             await worker.abort_and_release(reason, in_flight_timeout=in_flight_timeout)
+        self._channel_cache.detach_client(name)
         released = await repository.release_tasks_for_worker(name, reason)
         if released:
             logger.info("[%s] 已释放挂起任务 %s 条", name, released)
