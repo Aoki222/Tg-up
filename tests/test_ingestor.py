@@ -4,7 +4,8 @@ import time
 from pathlib import Path
 from src.domain.task import AfterSuccess, TaskPolicy
 from src.domain.upload_settings import FolderRoute, PreviewMode, UploadSettings
-from src.pipeline.ingest.ingestor import FileIngestor, wait_until_file_stable
+from src.pipeline.ingest.ingestor import SESSION_RETRY_SECONDS, FileIngestor, wait_until_file_stable
+from src.utils.topic_creactor import TopicSessionUnavailable
 
 
 def _settings(**kwargs) -> UploadSettings:
@@ -206,6 +207,33 @@ async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path) -> None:
     first_id = await first
     assert first_id == 2
     assert created == ["dir_a", "dir_b"]
+
+
+async def test_missing_session_requeues_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.SESSION_RETRY_SECONDS", 0.01)
+
+    class UnavailableTopics:
+        async def get_or_create_topic(self, fold_path: str, folder_name: str, chat_id: int) -> int:
+            raise TopicSessionUnavailable("没有可用的 Telegram session，无法创建话题")
+
+    repo = FakeRepo()
+    hub = FakeHub(
+        _settings(
+            topic_creation_enabled=True,
+            routes=(FolderRoute(path=tmp_path.resolve(), chat_id=-100, dest_id="-100"),),
+        )
+    )
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, topic_creator=UnavailableTopics())
+    path = _video(tmp_path, "wait.mp4")
+    past = time.time() - 60
+    os.utime(path, (past, past))
+    queue: asyncio.Queue[Path | None] = asyncio.Queue()
+    ingestor._file_queue = queue
+    await ingestor._run_guarded(path)
+    assert repo.tasks == []
+    retried = await asyncio.wait_for(queue.get(), timeout=1)
+    assert retried == path.resolve()
+    assert SESSION_RETRY_SECONDS == 5.0
 
 
 async def test_oversized_file_is_stored_without_schedule(tmp_path: Path, monkeypatch) -> None:

@@ -9,6 +9,7 @@ client 通过 get_client() 现取，这样 session 被热卸载后不会拿着�
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,16 +20,32 @@ from ..logger import get_logger
 
 logger = get_logger(__name__)
 
+# 启动时入库和连接 session 同时开始。磁盘上已有 *.session 也不代表客户端已经进池。
+_CLIENT_WAIT_SECONDS = 20.0
+_CLIENT_POLL_SECONDS = 0.5
+
+
+class TopicSessionUnavailable(RuntimeError):
+    """进程里还没有连上的 Telegram 客户端，话题先不建。"""
+
 
 class TopicCreator:
     """按文件目录为群组复用或创建 Telegram 话题。"""
 
-    def __init__(self, get_client: Callable, task_repository: TaskRepository):
+    def __init__(
+        self,
+        get_client: Callable,
+        task_repository: TaskRepository,
+        client_wait_seconds: float = _CLIENT_WAIT_SECONDS,
+    ):
         # get_client 每次现取，避免绑死某个后来被卸掉的 session
         self.get_client = get_client
         self.task_repository = task_repository
+        self._client_wait_seconds = client_wait_seconds
         self._folder_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
+        self._client_wait: asyncio.Task | None = None
+        self._client_wait_guard = asyncio.Lock()
 
     async def _lock_for(self, chat_id: int, topic_path: str) -> asyncio.Lock:
         key = (chat_id, topic_path)
@@ -46,6 +63,10 @@ class TopicCreator:
         if existing_topic_id is not None:
             return existing_topic_id
 
+        telegram_client = await self._await_client()
+        if telegram_client is None:
+            raise TopicSessionUnavailable("没有可用的 Telegram session，无法创建话题")
+
         lock = await self._lock_for(chat_id, topic_path)
         async with lock:
             existing_topic_id = await self.task_repository.get_chat_topic(chat_id, topic_path)
@@ -54,7 +75,7 @@ class TopicCreator:
 
             telegram_client = self.get_client()
             if telegram_client is None:
-                raise RuntimeError("没有可用的 Telegram session，无法创建话题")
+                raise TopicSessionUnavailable("没有可用的 Telegram session，无法创建话题")
 
             result = await telegram_client(
                 CreateForumTopicRequest(
@@ -66,6 +87,30 @@ class TopicCreator:
             await self.task_repository.save_chat_topic(chat_id, topic_id, topic_path)
             logger.info("已创建群组话题 chat_id=%s topic_id=%s path=%s", chat_id, topic_id, topic_path)
             return topic_id
+
+    async def _await_client(self):
+        """同一轮等待只轮询一次。多个目录同时建话题时共用这次结果。"""
+        async with self._client_wait_guard:
+            task = self._client_wait
+            if task is None or task.done():
+                task = asyncio.create_task(self._poll_client())
+                self._client_wait = task
+        return await task
+
+    async def _poll_client(self):
+        deadline = time.monotonic() + self._client_wait_seconds
+        announced = False
+        while True:
+            client = self.get_client()
+            if client is not None:
+                return client
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            if not announced:
+                logger.info("等待 Telegram session 连上后再创建话题")
+                announced = True
+            await asyncio.sleep(min(_CLIENT_POLL_SECONDS, remaining))
 
     @staticmethod
     def _extract_topic_id(result) -> int:

@@ -19,7 +19,7 @@ from ...domain.settings_hub import SettingsHub
 from ...domain.task import TaskStatus
 from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
-from ...utils.topic_creactor import TopicCreator
+from ...utils.topic_creactor import TopicCreator, TopicSessionUnavailable
 from .policy import IngestPolicy
 from .preview import PreviewJob, PreviewPool
 
@@ -27,6 +27,8 @@ logger = get_logger(__name__)
 
 # 同时等写稳 / 建话题的文件数。INSERT 仍由 _insert_lock 串行。
 INGEST_CONCURRENCY = 8
+# session 还没连上时先放回队列。启动扫描和连接是并行的，不能把文件直接丢掉。
+SESSION_RETRY_SECONDS = 5.0
 
 
 async def wait_until_file_stable(
@@ -276,6 +278,9 @@ class FileIngestor:
             if not self._running:
                 return
             raise
+        except TopicSessionUnavailable:
+            logger.warning("暂无已连接的 Telegram session，稍后重试: %s", file_path)
+            await self._requeue_when_session_may_connect(file_path)
         except Exception:
             logger.exception("处理发现文件失败: %s", file_path)
         finally:
@@ -284,6 +289,17 @@ class FileIngestor:
                 self._inflight.discard(current)
             if self._file_queue is not None:
                 self._file_queue.task_done()
+
+    async def _requeue_when_session_may_connect(self, file_path: Path) -> None:
+        try:
+            await asyncio.sleep(SESSION_RETRY_SECONDS)
+        except asyncio.CancelledError:
+            if not self._running:
+                return
+            raise
+        if not self._running or self._file_queue is None:
+            return
+        await self._file_queue.put(file_path)
 
     async def stop(self) -> None:
         """不再接新文件，并取消正在跑的入库（含写稳等待）。"""

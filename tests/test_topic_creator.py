@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.utils.topic_creactor import TopicCreator
+from src.utils.topic_creactor import TopicCreator, TopicSessionUnavailable
 
 
 class FakeTopicRepo:
@@ -90,3 +90,37 @@ async def test_different_folders_create_in_parallel(tmp_path: Path) -> None:
     ids = await asyncio.gather(first, second)
     assert sorted(ids) == [1, 2]
     assert client.creates == 2
+
+
+async def test_waits_until_session_connects(tmp_path: Path) -> None:
+    repo = FakeTopicRepo()
+    folder = tmp_path / "late"
+    folder.mkdir()
+    client = BlockingClient()
+    client.release.set()
+    holder: dict[str, object | None] = {"client": None}
+
+    async def connect_later() -> None:
+        await asyncio.sleep(0.05)
+        holder["client"] = client
+
+    creator = TopicCreator(lambda: holder["client"], repo, client_wait_seconds=2)
+    connecting = asyncio.create_task(connect_later())
+    topic_id = await creator.get_or_create_topic(str(folder), "late", -100)
+    await connecting
+    assert topic_id == 1
+    assert client.creates == 1
+
+
+async def test_missing_session_raises_without_creating(tmp_path: Path) -> None:
+    repo = FakeTopicRepo()
+    folder = tmp_path / "empty"
+    folder.mkdir()
+    creator = TopicCreator(lambda: None, repo, client_wait_seconds=0)
+    try:
+        await creator.get_or_create_topic(str(folder), "empty", -100)
+    except TopicSessionUnavailable:
+        pass
+    else:
+        raise AssertionError("expected TopicSessionUnavailable")
+    assert repo.topics == {}
