@@ -363,4 +363,22 @@ function speedLabel(item: BoardTask): string {
     transform: none;
   }
 }
+
+@media (max-width: 768px) {
+  .card {
+    padding: 12px 14px;
+    border-radius: 12px;
+  }
+
+  .retry-btn {
+    padding: 5px 12px;
+    font-size: 12px;
+    min-height: 32px;
+  }
+
+  .fail-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
 </style>

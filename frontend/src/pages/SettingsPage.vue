@@ -443,20 +443,51 @@ function clearToken(): void {
 @media (max-width: 860px) {
   .settings-layout {
     flex-direction: column;
+    gap: 12px;
   }
 
   .side-nav {
     width: 100%;
     flex-direction: row;
     overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding: 6px;
+    gap: 6px;
+  }
+
+  .side-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .side-link {
+    white-space: nowrap;
+    padding: 6px 12px;
+    font-size: 13px;
   }
 
   .settings {
-    padding: 12px 14px 40px;
+    padding: 8px 0 40px;
+    gap: 12px;
+  }
+
+  .settings-board :deep(.el-card__body) {
+    padding: 14px 14px 18px;
   }
 
   .creds-grid {
     grid-template-columns: 1fr;
+  }
+
+  .token-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .token-input {
+    max-width: 100%;
+    width: 100%;
+    flex: 1 1 100%;
   }
 }
 </style>

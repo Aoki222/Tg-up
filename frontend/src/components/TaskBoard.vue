@@ -33,6 +33,7 @@ const COLUMN_KEYS: ColumnKey[] = columns.map((column) => column.key);
 const props = defineProps<{ items: BoardTask[] }>();
 
 const isNarrow = ref(false);
+const activeMobileTab = ref<ColumnKey>("uploading");
 const collapsed = ref<Set<ColumnKey>>(loadCollapsed());
 const retryingId = ref<number | null>(null);
 const dispatchingId = ref<number | null>(null);
@@ -58,7 +59,13 @@ const buckets = computed(() => {
 
 const rail = computed(() => columns.filter((column) => collapsed.value.has(column.key)));
 const open = computed(() => columns.filter((column) => !collapsed.value.has(column.key)));
-const visibleWells = computed(() => (isNarrow.value ? [...columns] : open.value));
+const visibleWells = computed(() => {
+  if (isNarrow.value) {
+    const active = columns.find((c) => c.key === activeMobileTab.value) ?? columns[2];
+    return [active];
+  }
+  return open.value;
+});
 const canCollapse = computed(() => open.value.length > 1);
 
 function loadCollapsed(): Set<ColumnKey> {
@@ -246,7 +253,24 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="board" :class="{ 'has-rail': !isNarrow && rail.length > 0 }" aria-label="任务看板">
+  <section class="board" :class="{ 'has-rail': !isNarrow && rail.length > 0, 'is-narrow': isNarrow }" aria-label="任务看板">
+    <!-- 移动端状态 Tab 切换胶囊条 (仅在窄屏呈现) -->
+    <nav v-if="isNarrow" class="mobile-board-tabs" aria-label="看板状态切换">
+      <button
+        v-for="column in columns"
+        :key="column.key"
+        type="button"
+        class="mobile-tab-pill"
+        :class="[column.key, { active: activeMobileTab === column.key }]"
+        @click="activeMobileTab = column.key"
+      >
+        <span class="tab-label">{{ column.title }}</span>
+        <span class="tab-count" :class="{ 'has-items': buckets[column.key].length > 0 }">
+          {{ buckets[column.key].length }}
+        </span>
+      </button>
+    </nav>
+
     <Transition name="rail">
       <aside v-if="!isNarrow && rail.length" class="rail" aria-label="已收起的列">
         <button
@@ -665,24 +689,131 @@ onMounted(() => {
   }
 }
 
+/* ── 移动端顶部分段状态栏 ── */
+.mobile-board-tabs {
+  display: none;
+}
+
 @media (max-width: 768px) {
   .board {
     display: flex;
+    flex-direction: column;
+    overflow: visible;
+    height: auto;
+    gap: 8px;
+  }
+
+  .mobile-board-tabs {
+    display: flex;
+    gap: 6px;
     overflow-x: auto;
-    overflow-y: hidden;
-    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding: 2px 2px 4px;
+    flex-shrink: 0;
+  }
+
+  .mobile-board-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mobile-tab-pill {
+    flex: 1;
+    min-width: fit-content;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+
+  .mobile-tab-pill.active {
+    background: var(--surface);
+    color: var(--text);
+    border-color: var(--accent);
+    font-weight: 600;
+    box-shadow: 0 1px 4px rgba(40, 153, 90, 0.15);
+  }
+
+  .tab-count {
+    padding: 1px 6px;
+    border-radius: 9999px;
+    background: var(--hover);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .tab-count.has-items {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .mobile-tab-pill.failed.active {
+    border-color: var(--bad);
+    box-shadow: 0 1px 4px rgba(226, 77, 93, 0.15);
+  }
+
+  .mobile-tab-pill.failed .tab-count.has-items {
+    background: #fdecee;
+    color: var(--bad);
+  }
+
+  .mobile-tab-pill.oversized.active {
+    border-color: var(--warn);
+    box-shadow: 0 1px 4px rgba(217, 119, 6, 0.15);
+  }
+
+  .mobile-tab-pill.oversized .tab-count.has-items {
+    background: #f8efe0;
+    color: var(--warn);
   }
 
   .open-pane {
     display: flex;
+    flex-direction: column;
     overflow: visible;
-    height: 100%;
+    height: auto;
+    flex: 1;
+    min-height: 0;
   }
 
   .well {
-    flex: 0 0 calc(100vw - 32px);
-    height: 100%;
-    scroll-snap-align: start;
+    width: 100%;
+    flex: 1;
+    min-width: 0;
+    height: auto;
+    min-height: 280px;
+    padding: 12px 14px;
+    border-radius: 14px;
+  }
+
+  .well-body {
+    overflow: visible;
+    height: auto;
+  }
+
+  .well.failed .well-head {
+    row-gap: 6px;
+  }
+
+  .well.failed .well-actions {
+    gap: 4px;
+  }
+
+  .retry-all-btn {
+    padding: 4px 8px;
+    font-size: 11px;
   }
 }
 </style>

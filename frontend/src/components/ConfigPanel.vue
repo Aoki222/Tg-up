@@ -1062,15 +1062,55 @@ defineExpose({ dirty });
   .cols {
     grid-template-columns: 1fr 1fr;
   }
-
-  .route-row {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 768px) {
+  .head {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
   .cols {
     grid-template-columns: 1fr;
+  }
+
+  .tree-node-row {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 0;
+    height: auto !important;
+  }
+
+  .node-left {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .node-right {
+    width: 100%;
+    padding-left: 22px;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .path-select {
+    width: 100% !important;
+    max-width: 220px;
+  }
+
+  :deep(.el-tree-node__content) {
+    height: auto !important;
+    min-height: 36px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  :deep(.el-dialog) {
+    max-width: calc(100vw - 24px) !important;
+    width: auto !important;
+    margin: 16px auto !important;
+    border-radius: 16px;
   }
 }
 </style>

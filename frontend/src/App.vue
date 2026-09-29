@@ -203,16 +203,36 @@ const route = useRoute();
   flex-direction: column;
 }
 
-@media (max-width: 640px) {
-  .floating-island {
-    padding: 5px 10px;
-    gap: 8px;
+@media (max-width: 768px) {
+  .app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
   }
+
+  .island-wrapper {
+    padding: max(8px, env(safe-area-inset-top)) 10px 0;
+  }
+
+  .floating-island {
+    padding: 4px 10px;
+    gap: 8px;
+    max-width: 100%;
+  }
+
   .system-status {
     display: none;
   }
+
+  .pill-item {
+    padding: 4px 10px;
+    font-size: 12.5px;
+  }
+
   .main-viewport {
-    padding: 12px 14px 12px;
+    padding: 8px 10px max(16px, env(safe-area-inset-bottom));
+    overflow: visible;
+    height: auto;
   }
 }
 </style>
@@ -238,5 +258,20 @@ const route = useRoute();
   overflow: auto;
   border-radius: 20px;
   box-shadow: 0 24px 64px -12px rgba(18, 30, 20, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+@media (max-width: 768px) {
+  .session-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .session-modal {
+    width: 100%;
+    max-height: 90vh;
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -8px 32px rgba(18, 30, 20, 0.16);
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
 }
 </style>

@@ -24,6 +24,9 @@ defineOptions({ name: "MonitorPage" });
 /** 控制添加 Session 模态弹窗的显示与隐藏 */
 const showSessionForm = ref(false);
 
+/** 移动端当前选中的主视图 tab ('board' | 'workers') */
+const mobileTab = ref<"board" | "workers">("board");
+
 /** 由子组件 WorkerPanel 派发的最新 Worker 快照数组 */
 const workers = ref<WorkerSnapshot[]>([]);
 
@@ -169,8 +172,44 @@ watch(showSessionForm, (open) => {
       </div>
     </section>
 
+    <!-- ── 移动端分段视图切换 (仅在窄屏呈现) ── -->
+    <div class="mobile-view-tabs" role="tablist" aria-label="工作区视图切换">
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="mobileTab === 'board'"
+        class="mobile-view-btn"
+        :class="{ active: mobileTab === 'board' }"
+        @click="mobileTab = 'board'"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+          <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+          <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+        </svg>
+        <span>任务看板</span>
+        <span v-if="boardItems.length" class="view-badge">{{ boardItems.length }}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="mobileTab === 'workers'"
+        class="mobile-view-btn"
+        :class="{ active: mobileTab === 'workers' }"
+        @click="mobileTab = 'workers'"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+        </svg>
+        <span>Worker 节点</span>
+        <span v-if="totalWorkersCount" class="view-badge">{{ activeWorkersCount }}/{{ totalWorkersCount }}</span>
+      </button>
+    </div>
+
     <!-- ── 主工作区：左侧 Worker 节点列表 + 右侧宽幅实时传输通道 ── -->
-    <main class="workspace-layout">
+    <main class="workspace-layout" :class="`show-${mobileTab}`">
       <!-- 左栏：Worker 管理 -->
       <aside class="worker-column">
         <WorkerPanel @add="openSessionForm" @update-workers="onUpdateWorkers" />
@@ -372,7 +411,49 @@ watch(showSessionForm, (open) => {
   height: 100%;
 }
 
-@media (max-width: 1100px) {
+/* ── 移动端分段视图切换器 ── */
+.mobile-view-tabs {
+  display: none;
+}
+
+.mobile-view-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mobile-view-btn.active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.view-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: var(--hover);
+  color: var(--text-secondary);
+}
+
+.mobile-view-btn.active .view-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+@media (max-width: 1100px) and (min-width: 769px) {
   .telemetry-ribbon {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -397,9 +478,117 @@ watch(showSessionForm, (open) => {
   }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 768px) {
+  .monitor-page {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .monitor-container {
+    height: auto;
+    overflow: visible;
+    gap: 12px;
+    padding: 0;
+  }
+
+  .unmatched-banner {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
   .telemetry-ribbon {
-    grid-template-columns: 1fr;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .telemetry-divider {
+    display: none;
+  }
+
+  .telemetry-cell {
+    padding: 3px 6px;
+    gap: 8px;
+  }
+
+  .cell-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+  }
+
+  .cell-icon svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .cell-label {
+    font-size: 10.5px;
+    margin-bottom: 0;
+  }
+
+  .cell-value {
+    font-size: 13.5px;
+  }
+
+  .cell-unit {
+    font-size: 10.5px;
+  }
+
+  .scope-select {
+    width: 86px;
+  }
+
+  .scope-select :deep(.el-select__wrapper) {
+    min-height: 18px;
+    padding: 0 4px;
+  }
+
+  .scope-select :deep(.el-select__selected-item) {
+    font-size: 10.5px;
+  }
+
+  .mobile-view-tabs {
+    display: flex;
+    background: #eef2ef;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 3px;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .workspace-layout {
+    flex-direction: column;
+    height: auto;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .workspace-layout.show-board .worker-column {
+    display: none;
+  }
+
+  .workspace-layout.show-workers .progress-column {
+    display: none;
+  }
+
+  .worker-column {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    flex: 1;
+    overflow: visible;
+  }
+
+  .progress-column {
+    width: 100%;
+    height: auto;
+    flex: 1;
+    overflow: visible;
   }
 }
 </style>

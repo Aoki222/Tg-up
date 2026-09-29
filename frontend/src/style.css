@@ -46,12 +46,25 @@ body,
   overflow: hidden;
 }
 
+@media (max-width: 768px) {
+  html,
+  body,
+  #app {
+    height: 100%;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Geist", "Plus Jakarta Sans", "SF Pro Display", "PingFang SC", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* ── Element Plus 润白浮雕定制 ───────────────────────────── */

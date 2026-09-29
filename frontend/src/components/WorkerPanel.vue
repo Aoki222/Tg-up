@@ -374,7 +374,7 @@ async function onDelete(name: string): Promise<void> {
   gap: 10px;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1100px) and (min-width: 769px) {
   .list {
     flex-direction: row;
     overflow-x: auto;
@@ -385,6 +385,32 @@ async function onDelete(name: string): Promise<void> {
   .item {
     min-width: 260px;
     scroll-snap-align: start;
+  }
+}
+
+@media (max-width: 768px) {
+  .worker-card {
+    border-radius: 14px !important;
+  }
+
+  .list {
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .item {
+    min-width: 100%;
+    padding: 12px 14px;
+  }
+
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .actions :deep(.el-button) {
+    flex: 1;
+    min-height: 32px;
   }
 }
 

@@ -476,4 +476,17 @@ onUnmounted(() => {
 .grow {
   width: 100%;
 }
+
+@media (max-width: 768px) {
+  .qr-image,
+  .qr-loading {
+    width: 220px;
+    height: 220px;
+    min-height: 220px;
+  }
+
+  .qr-hint {
+    max-width: 260px;
+  }
+}
 </style>
