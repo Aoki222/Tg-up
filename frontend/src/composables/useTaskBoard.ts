@@ -1,8 +1,8 @@
 /**
  * 看板数据：1 秒轮询 /api/tasks 决定列归属，SSE 叠字节与速度。
  */
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { fetchBoardTasks, fetchProgressSnapshot, openProgressStream } from "../api";
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
+import { fetchBoardTasks, openProgressStream } from "../api";
 import type { BoardCounts, BoardTask, UploadProgress } from "../types";
 
 const EMPTY_COUNTS: BoardCounts = {
@@ -10,6 +10,7 @@ const EMPTY_COUNTS: BoardCounts = {
   pending: 0,
   assigned: 0,
   uploading: 0,
+  oversized: 0,
   failed: 0,
   success: 0,
   success_today: 0,
@@ -23,6 +24,8 @@ export function useTaskBoard() {
   let pollTimer = 0;
   let ghostTimer = 0;
   let source: EventSource | null = null;
+  let boardFlight = false;
+  let live = false;
 
   const inFlightCount = computed(
     () =>
@@ -137,7 +140,9 @@ export function useTaskBoard() {
   }
 
   async function refresh(): Promise<void> {
-    // 用数据库快照校正看板列归属，并与临时 ghost 任务合并。
+    // 上一轮还没回来就跳过本次，避免 1 秒定时器叠出并发请求。
+    if (boardFlight) return;
+    boardFlight = true;
     try {
       const data = await fetchBoardTasks();
       const byId = new Map(data.items.map((item) => [item.id, item]));
@@ -153,6 +158,8 @@ export function useTaskBoard() {
       counts.value = { ...EMPTY_COUNTS, ...data.counts };
     } catch {
       // 保留上一帧，避免轮询闪断清空看板
+    } finally {
+      boardFlight = false;
     }
   }
 
@@ -174,24 +181,32 @@ export function useTaskBoard() {
     }
   }
 
-  onMounted(() => {
+  function start(): void {
+    if (live) return;
+    live = true;
     void refresh();
-    void fetchProgressSnapshot()
-      .then((list) => {
-        for (const item of list) applyProgress(item);
-      })
-      .catch(() => undefined);
     source = openProgressStream(applyProgress);
     pollTimer = window.setInterval(() => {
       void refresh();
     }, 1000);
-  });
+    if (ghosts.size > 0) scheduleGhostSweep();
+  }
 
-  onUnmounted(() => {
+  function stop(): void {
+    if (!live) return;
+    live = false;
     source?.close();
+    source = null;
     window.clearInterval(pollTimer);
+    pollTimer = 0;
     window.clearTimeout(ghostTimer);
-  });
+    ghostTimer = 0;
+  }
+
+  onMounted(start);
+  onActivated(start);
+  onDeactivated(stop);
+  onUnmounted(stop);
 
   return { items, counts, inFlightCount, queueCount, successToday, successTotal };
 }

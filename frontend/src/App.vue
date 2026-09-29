@@ -63,7 +63,11 @@ const route = useRoute();
 
     <!-- ── 居中通透大画幅主视口 ── -->
     <main class="main-viewport">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <keep-alive :include="['MonitorPage', 'SettingsPage']">
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </main>
   </div>
 </template>

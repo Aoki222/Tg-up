@@ -11,6 +11,27 @@ import uuid
 from pathlib import Path
 
 from ..database.connection import get_db
+from ..domain import limits
+
+
+def _bot_limit() -> int:
+    return limits.TELEGRAM_BOT_MAX_BYTES
+
+
+async def _requeue_ids(database, task_ids: list[int], status: str, error_message: str) -> int:
+    updated = 0
+    for offset in range(0, len(task_ids), 400):
+        chunk = task_ids[offset : offset + 400]
+        placeholders = ",".join("?" * len(chunk))
+        cursor = await database.execute(
+            f"""UPDATE upload_tasks SET status = ?, retry_count = 0,
+                assigned_worker = NULL, assigned_at = NULL, started_at = NULL,
+                finished_at = NULL, error_msg = ?
+                WHERE status = 'failed' AND id IN ({placeholders})""",
+            (status, error_message, *chunk),
+        )
+        updated += cursor.rowcount
+    return updated
 
 
 class TaskRepository:
@@ -32,6 +53,7 @@ class TaskRepository:
         after_success: str = "keep",
         platform: str = "telegram",
         dest_id: str | None = None,
+        error_msg: str | None = None,
     ) -> int:
         """插入一条任务。封面需求和 after_success 入库时拍快照。"""
         async with get_db() as database:
@@ -53,9 +75,10 @@ class TaskRepository:
                    after_success,
                    platform,
                    dest_id,
-                   dest_extra
+                   dest_extra,
+                   error_msg
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -72,6 +95,7 @@ class TaskRepository:
                     platform,
                     dest_id if dest_id else (str(chat_id) if platform == "telegram" else ""),
                     str(topic_id) if topic_id is not None else None,
+                    error_msg,
                 ),
             )
             await database.commit()
@@ -134,7 +158,7 @@ class TaskRepository:
                 return {str(row[0]): int(row[1]) for row in rows}
 
     async def fetch_pending_tasks(self, limit: int) -> list[dict]:
-        """只捞 Telegram 的 pending。gdrive 行留在队列里，等对应 Worker 再领。小文件优先。"""
+        """只捞 Telegram 的 pending。oversized 不在这里，避免自动分给 Bot。小文件优先。"""
         async with get_db() as database:
             async with database.execute(
                 """SELECT * FROM upload_tasks
@@ -158,6 +182,29 @@ class TaskRepository:
             await database.commit()
             return cursor.rowcount > 0
 
+    async def claim_oversized(self, task_id: int, worker_name: str) -> bool:
+        """手动把 oversized 交给个人号。只有当前仍是 oversized 才能抢走。"""
+        async with get_db() as database:
+            cursor = await database.execute(
+                """UPDATE upload_tasks SET status = 'assigned',
+                   assigned_worker = ?, assigned_at = CURRENT_TIMESTAMP, error_msg = NULL
+                   WHERE id = ? AND status = 'oversized'""",
+                (worker_name, task_id),
+            )
+            await database.commit()
+            return cursor.rowcount > 0
+
+    async def park_oversized(self, task_id: int, error_message: str) -> None:
+        """停在 oversized，清空归属，不增加 retry_count。"""
+        async with get_db() as database:
+            await database.execute(
+                """UPDATE upload_tasks SET status = 'oversized', error_msg = ?,
+                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL
+                   WHERE id = ?""",
+                (error_message[:500], task_id),
+            )
+            await database.commit()
+
     async def mark_task_uploading(self, task_id: int) -> None:
         """只有 assigned 才能进入 uploading，防止对账打回 pending 后还被标成在传。"""
         async with get_db() as database:
@@ -179,24 +226,38 @@ class TaskRepository:
             await database.commit()
 
     async def mark_task_failed(self, task_id: int, retry_count: int, max_retries: int, error_message: str) -> None:
-        """未超限回 pending 并清空归属，让别的 worker 可以再抢。"""
-        new_status = "failed" if retry_count >= max_retries else "pending"
+        """未超限回 pending 并清空归属。超过 Bot 上限则停在 oversized，不换 Bot。"""
+        limit = _bot_limit()
         async with get_db() as database:
             await database.execute(
-                """UPDATE upload_tasks SET status = ?, retry_count = ?, error_msg = ?,
-                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL WHERE id = ?""",
-                (new_status, retry_count, error_message[:500], task_id),
+                """UPDATE upload_tasks SET
+                   status = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN 'oversized'
+                       WHEN ? >= ? THEN 'failed'
+                       ELSE 'pending'
+                   END,
+                   retry_count = ?, error_msg = ?,
+                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL
+                   WHERE id = ?""",
+                (limit, retry_count, max_retries, retry_count, error_message[:500], task_id),
             )
             await database.commit()
 
     async def release_task(self, task_id: int, error_message: str) -> None:
-        """回 pending 且不增加 retry_count。FloodWait / 禁用 worker 走这条。"""
+        """回 pending 且不增加 retry_count。超过 Bot 上限则改为 oversized。"""
         async with get_db() as database:
             await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
+                """UPDATE upload_tasks SET
+                   status = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN 'oversized'
+                       ELSE 'pending'
+                   END,
+                   error_msg = ?,
                    assigned_worker = NULL, assigned_at = NULL, started_at = NULL
                    WHERE id = ? AND status IN ('assigned', 'uploading')""",
-                (error_message[:500], task_id),
+                (_bot_limit(), error_message[:500], task_id),
             )
             await database.commit()
 
@@ -204,21 +265,41 @@ class TaskRepository:
         """这个号名下还挂着的 assigned/uploading 全部释放，不增加 retry_count。"""
         async with get_db() as database:
             cursor = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', error_msg = ?,
+                """UPDATE upload_tasks SET
+                   status = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN 'oversized'
+                       ELSE 'pending'
+                   END,
+                   error_msg = ?,
                    assigned_worker = NULL, assigned_at = NULL, started_at = NULL
                    WHERE COALESCE(assigned_worker, assigned_bot) = ? AND status IN ('assigned', 'uploading')""",
-                (error_message[:500], worker_name),
+                (_bot_limit(), error_message[:500], worker_name),
             )
             await database.commit()
             return cursor.rowcount
 
     async def reconcile_stale_tasks(self) -> int:
-        """进程刚起来时内存队列是空的，这三种状态都是幽灵任务。"""
+        """进程刚起来时内存队列是空的，assigned / uploading 都是幽灵任务。"""
+        limit = _bot_limit()
         async with get_db() as database:
             cursor = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', assigned_worker = NULL,
-                   assigned_at = NULL, started_at = NULL, error_msg = 'recovered on startup'
-                   WHERE status IN ('assigned', 'uploading')"""
+                """UPDATE upload_tasks SET
+                   status = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN 'oversized'
+                       ELSE 'pending'
+                   END,
+                   assigned_worker = NULL,
+                   assigned_at = NULL,
+                   started_at = NULL,
+                   error_msg = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN COALESCE(NULLIF(error_msg, ''), ?)
+                       ELSE 'recovered on startup'
+                   END
+                   WHERE status IN ('assigned', 'uploading')""",
+                (limit, limit, limits.OVERSIZED_REASON),
             )
             await database.commit()
             return cursor.rowcount
@@ -228,21 +309,34 @@ class TaskRepository:
         uploading_timeout_seconds: int = 1200,
         assigned_timeout_seconds: int = 600,
     ) -> int:
-        """运行中兜底：uploading / assigned 超时都打回 pending。"""
+        """运行中兜底：超时的小文件回 pending，超过 Bot 上限的改为 oversized。"""
+        limit = _bot_limit()
         async with get_db() as database:
             uploading = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', assigned_worker = NULL,
+                """UPDATE upload_tasks SET
+                   status = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN 'oversized'
+                       ELSE 'pending'
+                   END,
+                   assigned_worker = NULL,
                    assigned_at = NULL, started_at = NULL, error_msg = 'timeout recovered'
                    WHERE status = 'uploading'
                      AND started_at < datetime('now', ?)""",
-                (f"-{uploading_timeout_seconds} seconds",),
+                (limit, f"-{uploading_timeout_seconds} seconds"),
             )
             assigned = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', assigned_worker = NULL,
+                """UPDATE upload_tasks SET
+                   status = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN 'oversized'
+                       ELSE 'pending'
+                   END,
+                   assigned_worker = NULL,
                    assigned_at = NULL, started_at = NULL, error_msg = 'assigned timeout recovered'
                    WHERE status = 'assigned'
                      AND assigned_at < datetime('now', ?)""",
-                (f"-{assigned_timeout_seconds} seconds",),
+                (limit, f"-{assigned_timeout_seconds} seconds"),
             )
             await database.commit()
             return uploading.rowcount + assigned.rowcount
@@ -258,12 +352,25 @@ class TaskRepository:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def update_preview(self, task_id: int, page_path: str | None, success: bool, error_message: str = "") -> None:
-        """截图结束的唯一放行点：无论成败都转到 pending，让调度器能看见。"""
+        """截图结束的放行点。小文件转 pending；超过 Bot 上限转 oversized，不进调度。"""
+        limit = _bot_limit()
+        preview_note = "" if success else f"preview failed: {error_message}"[:500]
+        oversized_note = preview_note or limits.OVERSIZED_REASON
         async with get_db() as database:
             await database.execute(
-                """UPDATE upload_tasks SET page_path = ?, status = 'pending',
-                   error_msg = ? WHERE id = ?""",
-                (page_path, ("" if success else f"preview failed: {error_message}"[:500]), task_id),
+                """UPDATE upload_tasks SET page_path = ?,
+                   status = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN 'oversized'
+                       ELSE 'pending'
+                   END,
+                   error_msg = CASE
+                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                           THEN ?
+                       ELSE ?
+                   END
+                   WHERE id = ?""",
+                (page_path, limit, limit, oversized_note[:500], preview_note, task_id),
             )
             await database.commit()
 
@@ -281,7 +388,7 @@ class TaskRepository:
         async with get_db() as database:
             async with database.execute(
                 """SELECT * FROM upload_tasks
-                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading')
+                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'oversized')
                    ORDER BY id ASC"""
             ) as cursor:
                 active = [dict(row) for row in await cursor.fetchall()]
@@ -301,6 +408,7 @@ class TaskRepository:
             "pending": 0,
             "assigned": 0,
             "uploading": 0,
+            "oversized": 0,
             "failed": 0,
             "success": 0,
             "success_today": 0,
@@ -308,7 +416,10 @@ class TaskRepository:
         async with get_db() as database:
             async with database.execute(
                 """SELECT status, COUNT(*) AS n FROM upload_tasks
-                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'failed', 'success')
+                   WHERE status IN (
+                       'preparing', 'pending', 'retrying', 'assigned', 'uploading',
+                       'oversized', 'failed', 'success'
+                   )
                    GROUP BY status"""
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -341,62 +452,63 @@ class TaskRepository:
         file_path = str(row.get("file_path") or "")
         if not file_path or not Path(file_path).exists():
             return "missing_file"
+        platform = str(row.get("platform") or "telegram")
+        huge = limits.telegram_bot_blocked(int(row.get("file_size") or 0), platform)
+        target = "oversized" if huge else "pending"
+        note = limits.OVERSIZED_REASON if huge else "manual retry"
         async with get_db() as database:
             cursor = await database.execute(
-                """UPDATE upload_tasks SET status = 'pending', retry_count = 0,
+                """UPDATE upload_tasks SET status = ?, retry_count = 0,
                    assigned_worker = NULL, assigned_at = NULL, started_at = NULL,
-                   finished_at = NULL, error_msg = 'manual retry'
+                   finished_at = NULL, error_msg = ?
                    WHERE id = ? AND status = 'failed'""",
-                (task_id,),
+                (target, note, task_id),
             )
             await database.commit()
             if cursor.rowcount == 0:
                 return "not_failed"
         return "ok"
 
-    async def requeue_all_failed(self) -> tuple[int, int]:
-        """重置库里全部 failed。缺文件的跳过。返回 (retried, skipped)。"""
+    async def requeue_all_failed(self) -> tuple[int, int, int]:
+        """重置 failed。缺文件跳过；超过 Bot 上限改为 oversized，不回到 Bot。
+
+        返回 (retried, skipped, parked)。
+        """
         async with get_db() as database:
             async with database.execute(
-                "SELECT id, file_path FROM upload_tasks WHERE status = 'failed'"
+                "SELECT id, file_path, file_size, platform FROM upload_tasks WHERE status = 'failed'"
             ) as cursor:
                 rows = await cursor.fetchall()
         ready: list[int] = []
+        parked_ids: list[int] = []
         skipped = 0
         for row in rows:
             file_path = str(row[1] or "")
-            if file_path and Path(file_path).exists():
-                ready.append(int(row[0]))
-            else:
+            if not file_path or not Path(file_path).exists():
                 skipped += 1
-        if not ready:
-            return 0, skipped
+                continue
+            if limits.telegram_bot_blocked(int(row[2] or 0), str(row[3] or "telegram")):
+                parked_ids.append(int(row[0]))
+            else:
+                ready.append(int(row[0]))
         retried = 0
+        parked = 0
         async with get_db() as database:
-            for offset in range(0, len(ready), 400):
-                chunk = ready[offset : offset + 400]
-                placeholders = ",".join("?" * len(chunk))
-                cursor = await database.execute(
-                    f"""UPDATE upload_tasks SET status = 'pending', retry_count = 0,
-                        assigned_worker = NULL, assigned_at = NULL, started_at = NULL,
-                        finished_at = NULL, error_msg = 'manual retry'
-                        WHERE status = 'failed' AND id IN ({placeholders})""",
-                    chunk,
-                )
-                retried += cursor.rowcount
+            retried = await _requeue_ids(database, ready, "pending", "manual retry")
+            parked = await _requeue_ids(database, parked_ids, "oversized", limits.OVERSIZED_REASON)
             await database.commit()
-        return retried, skipped
+        return retried, skipped, parked
 
     async def delete_failed(self, task_id: int) -> str:
-        """物理删除一条 failed 行。返回 ok / not_found / not_failed。"""
+        """物理删除一条 failed 或 oversized 行。返回 ok / not_found / not_failed。"""
         row = await self.get_task_by_id(task_id)
         if row is None:
             return "not_found"
-        if str(row.get("status")) != "failed":
+        if str(row.get("status")) not in {"failed", "oversized"}:
             return "not_failed"
         async with get_db() as database:
             cursor = await database.execute(
-                "DELETE FROM upload_tasks WHERE id = ? AND status = 'failed'",
+                "DELETE FROM upload_tasks WHERE id = ? AND status IN ('failed', 'oversized')",
                 (task_id,),
             )
             await database.commit()
@@ -415,7 +527,7 @@ class TaskRepository:
                 chunk = ids[offset : offset + 400]
                 placeholders = ",".join("?" * len(chunk))
                 cursor = await database.execute(
-                    f"DELETE FROM upload_tasks WHERE status = 'failed' AND id IN ({placeholders})",
+                    f"DELETE FROM upload_tasks WHERE status IN ('failed', 'oversized') AND id IN ({placeholders})",
                     chunk,
                 )
                 deleted += cursor.rowcount

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from ...adapters.task_store import TaskRepository
+from ...domain import limits
 from ...domain.settings_hub import SettingsHub
 from ...domain.task import TaskStatus
 from ...logger import get_logger
@@ -188,7 +189,14 @@ class FileIngestor:
             if existing:
                 logger.info("已有未完成任务，忽略重复发现: %s", file_path)
                 return existing
-            status = TaskStatus.PENDING if not need_preview else TaskStatus.PREPARING
+            platform = decision.platform or "telegram"
+            oversized = limits.telegram_bot_blocked(file_size, platform)
+            if need_preview:
+                status = TaskStatus.PREPARING
+            elif oversized:
+                status = TaskStatus.OVERSIZED
+            else:
+                status = TaskStatus.PENDING
             task_id = await self.task_repository.add_task(
                 file_path=str(file_path),
                 file_name=file_name,
@@ -196,18 +204,30 @@ class FileIngestor:
                 folder_name=folder_name,
                 single_page=decision.need_single,
                 content_page=decision.need_content,
-                chat_id=decision.chat_id if decision.platform == "telegram" else 0,
+                chat_id=decision.chat_id if platform == "telegram" else 0,
                 topic_id=topic_id,
-                platform=decision.platform or "telegram",
+                platform=platform,
                 dest_id=decision.dest_id,
                 status=status.value,
                 max_retries=policy.max_retries,
                 caption=caption,
                 after_success=policy.after_success.value,
+                error_msg=limits.OVERSIZED_REASON if oversized and not need_preview else None,
             )
             self.settings_hub.remember_policy(task_id, policy)
 
-        logger.info("已入库 task=%s: %s", task_id, file_path)
+        if oversized:
+            logger.info(
+                "已入库（超过 2GB，不自动分配） task=%s size=%s: %s",
+                task_id,
+                file_size,
+                file_path,
+            )
+        else:
+            logger.info("已入库 task=%s: %s", task_id, file_path)
+
+        if oversized and not need_preview:
+            return task_id
 
         if not need_preview:
             self.rescheduler.request_reschedule()
@@ -215,7 +235,8 @@ class FileIngestor:
 
         if self.preview_pool is None:
             await self.task_repository.update_preview(task_id, None, False, "preview pool missing")
-            self.rescheduler.request_reschedule()
+            if not oversized:
+                self.rescheduler.request_reschedule()
             return task_id
         self.preview_pool.submit(
             PreviewJob(

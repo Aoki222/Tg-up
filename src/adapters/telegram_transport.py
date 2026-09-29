@@ -8,15 +8,17 @@ FloodWait 是账号节奏信号：必须等待，不能当成文件失败去累�
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 from telethon.errors import FloodWaitError, MediaInvalidError
 from telethon.tl.types import InputFile, InputFileBig
 
+from ..domain import limits
 from ..domain.task import Task
 from ..logger import get_logger
-from ..ports.transport import SendDisconnected, SendFailed, SendOk, SendResult, SendRetryLater
+from ..ports.transport import SendDisconnected, SendFailed, SendOk, SendOversized, SendResult, SendRetryLater
 from ..utils.FastTelethon import describe_taskgroup_error, upload_file as fast_upload_file
 
 logger = get_logger(__name__)
@@ -40,13 +42,23 @@ def telegram_upload_name(path: str) -> str:
 
 
 class _NamedFile:
-    """让 Telethon 按自定义文件名猜 mime，读的仍是磁盘上的原文件。"""
+    """让 Telethon 按自定义文件名猜 mime，读的仍是磁盘上的原文件。
+
+    必须声明 seekable。否则 Telethon 认为长度未知，会 read() 不带上限，
+    把整份视频放进内存。
+    """
 
     def __init__(self, path: str, name: str):
         self.name = name
+        self._size = os.path.getsize(path)
         self._fh = open(path, "rb")
 
+    def seekable(self) -> bool:
+        return True
+
     def read(self, size: int = -1):
+        if size is None or size < 0:
+            raise OSError("拒绝一次性读取整个文件，请按块读取")
         return self._fh.read(size)
 
     def seek(self, offset: int, whence: int = 0):
@@ -100,6 +112,9 @@ class TelegramTransport:
                     timeout=timeout_seconds,
                 )
             except _FastUploadError as error:
+                if _is_parts_invalid(error):
+                    logger.warning("文件分片超过 Telegram 上限，停止重试: %s", error)
+                    return SendOversized(limits.PARTS_INVALID_REASON)
                 logger.warning(
                     "FastTelethon 分块上传失败，第 %s/%s 次: %s",
                     attempt,
@@ -216,6 +231,8 @@ class TelegramTransport:
         except Exception as error:
             if _is_disconnect_error(error):
                 return SendDisconnected(str(error))
+            if _is_parts_invalid(error):
+                return SendOversized(limits.PARTS_INVALID_REASON)
             if len(prepared) > 1 and _is_album_invalid(error):
                 logger.warning("原生相册提交失败，改为只发视频: %s", error)
                 return await self._send_native_video_only(
@@ -253,6 +270,8 @@ class TelegramTransport:
         except Exception as error:
             if _is_disconnect_error(error):
                 return SendDisconnected(str(error))
+            if _is_parts_invalid(error):
+                return SendOversized(limits.PARTS_INVALID_REASON)
             logger.exception("Telegram 原生单独发视频失败: %s", task.file_path)
             return SendFailed(str(error))
         finally:
@@ -320,6 +339,34 @@ def _close_files(files: list[_NamedFile]) -> None:
             logger.debug("关闭临时上传文件失败", exc_info=True)
 
 
+def _is_parts_invalid(error: BaseException) -> bool:
+    """FILE_PARTS_INVALID：分片数超过 4000。不要再换连接或换 Bot 重传。"""
+    seen: set[int] = set()
+    stack: list[BaseException] = [error]
+    while stack:
+        current = stack.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        name = type(current).__name__.lower().replace("_", "")
+        text = str(current).lower().replace(" ", "").replace("_", "")
+        if "filepartsinvalid" in name or "filepartsinvalid" in text:
+            return True
+        if "numberoffilepartsisinvalid" in text:
+            return True
+        cause = current.__cause__
+        if isinstance(cause, BaseException):
+            stack.append(cause)
+        context = current.__context__
+        if isinstance(context, BaseException):
+            stack.append(context)
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            stack.extend(item for item in nested if isinstance(item, BaseException))
+    return False
+
+
 def _is_album_invalid(error: BaseException) -> bool:
     if isinstance(error, MediaInvalidError):
         return True
@@ -354,5 +401,7 @@ def _classify_send_error(error: BaseException, prefix: str) -> SendResult:
         return SendFailed(f"{prefix}: 请求超时，未自动重发")
     if _is_disconnect_error(error):
         return SendDisconnected(str(error))
+    if _is_parts_invalid(error):
+        return SendOversized(limits.PARTS_INVALID_REASON)
     logger.exception("%s: %s", prefix, error)
     return SendFailed(str(error))

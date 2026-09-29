@@ -208,6 +208,46 @@ async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path) -> None:
     assert created == ["dir_a", "dir_b"]
 
 
+async def test_oversized_file_is_stored_without_schedule(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.domain.limits.TELEGRAM_BOT_MAX_BYTES", 1)
+    ingestor, repo = _ingestor(tmp_path)
+    path = _video(tmp_path, "big.mp4")
+    past = time.time() - 60
+    os.utime(path, (past, past))
+    task_id = await ingestor.handle_new_file(path)
+    assert task_id == 1
+    assert repo.tasks[0]["status"] == "oversized"
+    assert repo.tasks[0]["file_size"] == 5
+    assert "2GB" in (repo.tasks[0]["error_msg"] or "")
+    assert ingestor.rescheduler.calls == 0
+
+
+async def test_oversized_preview_stays_preparing_until_cover_finishes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.domain.limits.TELEGRAM_BOT_MAX_BYTES", 1)
+    jobs: list[object] = []
+
+    class Pool:
+        def submit(self, job) -> None:
+            jobs.append(job)
+
+    repo = FakeRepo()
+    hub = FakeHub(
+        _settings(
+            preview=PreviewMode.FIRST_FRAME,
+            routes=(FolderRoute(path=tmp_path.resolve(), chat_id=-100, dest_id="-100"),),
+        )
+    )
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, preview_pool=Pool(), concurrency=1)
+    path = _video(tmp_path, "big.mp4")
+    past = time.time() - 60
+    os.utime(path, (past, past))
+    task_id = await ingestor.handle_new_file(path)
+    assert task_id == 1
+    assert repo.tasks[0]["status"] == "preparing"
+    assert ingestor.rescheduler.calls == 0
+    assert len(jobs) == 1
+
+
 async def test_existing_task_is_kept_when_route_no_longer_matches(tmp_path: Path) -> None:
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"video")

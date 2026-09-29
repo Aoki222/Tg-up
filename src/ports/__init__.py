@@ -3,7 +3,15 @@
 from .after_upload import AfterUpload
 from .progress import ProgressReporter
 from .rescheduler import Rescheduler
-from .transport import SendDisconnected, SendFailed, SendOk, SendResult, SendRetryLater, Transport
+from .transport import (
+    SendDisconnected,
+    SendFailed,
+    SendOk,
+    SendOversized,
+    SendResult,
+    SendRetryLater,
+    Transport,
+)
 
 __all__ = [
     "AfterUpload",
@@ -12,6 +20,7 @@ __all__ = [
     "SendDisconnected",
     "SendFailed",
     "SendOk",
+    "SendOversized",
     "SendResult",
     "SendRetryLater",
     "Transport",

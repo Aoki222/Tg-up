@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 四列观察看板：封面 / 等待 / 上传中 / 失败。
+ * 五列观察看板：封面 / 等待 / 上传中 / 过大 / 失败。
  * 列可收起：收起的列进左侧 48px 轨，展开列均分剩余宽度。
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
@@ -9,6 +9,7 @@ import {
   deleteAllFailedTasks,
   deleteFailedTask,
   deleteSelectedFailedTasks,
+  dispatchOversizedTask,
   retryAllFailedTasks,
   retryBoardTask,
 } from "../api";
@@ -21,6 +22,7 @@ const columns = [
   { key: "preparing", title: "封面", empty: "没有封面任务" },
   { key: "pending", title: "等待", empty: "队列空闲" },
   { key: "uploading", title: "上传中", empty: "没有在传" },
+  { key: "oversized", title: "过大", empty: "没有过大文件" },
   { key: "failed", title: "失败", empty: "没有失败" },
 ] as const;
 
@@ -33,6 +35,7 @@ const props = defineProps<{ items: BoardTask[] }>();
 const isNarrow = ref(false);
 const collapsed = ref<Set<ColumnKey>>(loadCollapsed());
 const retryingId = ref<number | null>(null);
+const dispatchingId = ref<number | null>(null);
 const retryingAll = ref(false);
 const clearing = ref(false);
 const selectedIds = ref<Set<number>>(new Set());
@@ -41,14 +44,16 @@ const buckets = computed(() => {
   const preparing: BoardTask[] = [];
   const pending: BoardTask[] = [];
   const uploading: BoardTask[] = [];
+  const oversized: BoardTask[] = [];
   const failed: BoardTask[] = [];
   for (const item of props.items) {
     if (item.status === "preparing") preparing.push(item);
     else if (item.status === "pending") pending.push(item);
     else if (item.status === "assigned" || item.status === "uploading") uploading.push(item);
+    else if (item.status === "oversized") oversized.push(item);
     else if (item.status === "failed") failed.push(item);
   }
-  return { preparing, pending, uploading, failed };
+  return { preparing, pending, uploading, oversized, failed };
 });
 
 const rail = computed(() => columns.filter((column) => collapsed.value.has(column.key)));
@@ -100,8 +105,8 @@ async function onRetry(id: number): Promise<void> {
   if (retryingId.value !== null || retryingAll.value) return;
   retryingId.value = id;
   try {
-    await retryBoardTask(id);
-    ElMessage.success("已重新排队");
+    const status = await retryBoardTask(id);
+    ElMessage.success(status === "oversized" ? "超过 2GB，已放到过大" : "已重新排队");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "重试失败");
   } finally {
@@ -115,14 +120,16 @@ async function onRetryAll(): Promise<void> {
   retryingAll.value = true;
   try {
     const result = await retryAllFailedTasks();
-    if (result.retried === 0 && result.skipped === 0) {
+    const notes: string[] = [];
+    if (result.retried > 0) notes.push(`已重新排队 ${result.retried} 个`);
+    if (result.parked > 0) notes.push(`${result.parked} 个超过 2GB，已留在过大`);
+    if (result.skipped > 0) notes.push(`跳过 ${result.skipped} 个`);
+    if (notes.length === 0) {
       ElMessage.info("没有可重试的任务");
-    } else if (result.retried === 0) {
+    } else if (result.retried === 0 && result.parked === 0) {
       ElMessage.warning(`文件不存在，已跳过 ${result.skipped} 个`);
-    } else if (result.skipped > 0) {
-      ElMessage.success(`已重新排队 ${result.retried} 个，跳过 ${result.skipped} 个`);
     } else {
-      ElMessage.success(`已重新排队 ${result.retried} 个`);
+      ElMessage.success(notes.join("，"));
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "全部重试失败");
@@ -133,7 +140,11 @@ async function onRetryAll(): Promise<void> {
 
 const selectedCount = computed(() => selectedIds.value.size);
 const failedBusy = computed(
-  () => retryingAll.value || retryingId.value !== null || clearing.value,
+  () =>
+    retryingAll.value ||
+    retryingId.value !== null ||
+    clearing.value ||
+    dispatchingId.value !== null,
 );
 
 function toggleSelect(id: number): void {
@@ -149,6 +160,20 @@ function forgetSelected(ids: number[]): void {
   const next = new Set(selectedIds.value);
   for (const id of ids) next.delete(id);
   selectedIds.value = next;
+}
+
+async function onDispatch(id: number): Promise<void> {
+  // 过大文件只交给个人号。没有个人号时后端返回「没有可用的个人账号」。
+  if (failedBusy.value) return;
+  dispatchingId.value = id;
+  try {
+    await dispatchOversizedTask(id);
+    ElMessage.success("已交给个人号");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法交给个人号");
+  } finally {
+    dispatchingId.value = null;
+  }
 }
 
 async function onRemove(id: number): Promise<void> {
@@ -297,12 +322,14 @@ onMounted(() => {
               v-for="task in buckets[column.key]"
               :key="task.id"
               :task="task"
-              :retrying="retryingId === task.id || retryingAll || clearing"
+              :retrying="failedBusy"
+              :dispatching="dispatchingId === task.id"
               :selectable="column.key === 'failed'"
               :selected="selectedIds.has(task.id)"
               @retry="onRetry"
               @remove="onRemove"
               @toggle="toggleSelect"
+              @dispatch="onDispatch"
             />
           </TransitionGroup>
           <p v-if="buckets[column.key].length === 0" class="empty">{{ column.empty }}</p>
@@ -370,6 +397,10 @@ onMounted(() => {
   background: var(--col-uploading);
 }
 
+.rail-tab.oversized {
+  background: var(--col-oversized);
+}
+
 .rail-tab.failed {
   background: var(--col-failed);
 }
@@ -416,6 +447,10 @@ onMounted(() => {
   background: var(--col-uploading);
 }
 
+.well.oversized {
+  background: var(--col-oversized);
+}
+
 .well.failed {
   background: var(--col-failed);
 }
@@ -453,6 +488,12 @@ onMounted(() => {
   font-weight: 500;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+.well.oversized .well-count,
+.rail-tab.oversized .well-count {
+  background: #f8efe0;
+  color: var(--warn);
 }
 
 .well.failed .well-count,

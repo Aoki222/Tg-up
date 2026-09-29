@@ -9,13 +9,15 @@
  * 3. 【Session 授权弹窗宿主】：通过 Teleport 挂载全局毛玻璃模态窗，解耦业务交互。
  */
 
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onDeactivated, ref, watch } from "vue";
 import WorkerPanel from "../components/WorkerPanel.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import SessionPanel from "../components/SessionPanel.vue";
-import { fetchUnmatched } from "../api";
 import { useTaskBoard } from "../composables/useTaskBoard";
+import { useUnmatchedPolling } from "../composables/useUnmatched";
 import type { WorkerSnapshot } from "../types";
+
+defineOptions({ name: "MonitorPage" });
 
 // ── 响应式状态定义 ─────────────────────────────────────────────
 
@@ -28,8 +30,8 @@ const workers = ref<WorkerSnapshot[]>([]);
 const { items: boardItems, inFlightCount, queueCount, successToday, successTotal } = useTaskBoard();
 
 const SUCCESS_SCOPE_KEY = "uploader.success-scope";
-const unmatchedCount = ref(0);
-let unmatchedTimer = 0;
+const { files: unmatchedFiles } = useUnmatchedPolling();
+const unmatchedCount = computed(() => unmatchedFiles.value.length);
 
 const successScope = ref<"today" | "all">(loadSuccessScope());
 const successCount = computed(() =>
@@ -40,19 +42,9 @@ function loadSuccessScope(): "today" | "all" {
   return localStorage.getItem(SUCCESS_SCOPE_KEY) === "all" ? "all" : "today";
 }
 
-async function refreshUnmatched(): Promise<void> {
-  try {
-    unmatchedCount.value = (await fetchUnmatched()).length;
-  } catch {
-    unmatchedCount.value = 0;
-  }
-}
-
-onMounted(() => {
-  void refreshUnmatched();
-  unmatchedTimer = window.setInterval(() => void refreshUnmatched(), 3000);
+onDeactivated(() => {
+  showSessionForm.value = false;
 });
-onUnmounted(() => window.clearInterval(unmatchedTimer));
 
 function onSuccessScopeChange(value: "today" | "all"): void {
   successScope.value = value;
@@ -93,6 +85,7 @@ watch(showSessionForm, (open) => {
 </script>
 
 <template>
+  <div class="monitor-page">
   <div class="monitor-container">
     <p v-if="unmatchedCount > 0" class="unmatched-banner">
       {{ unmatchedCount }} 个文件未命中路由，未进入上传队列。到设置的「投递」里为路径指定群。
@@ -201,9 +194,19 @@ watch(showSessionForm, (open) => {
       </div>
     </div>
   </Teleport>
+  </div>
 </template>
 
 <style scoped>
+.monitor-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
 .monitor-container {
   display: flex;
   flex-direction: column;

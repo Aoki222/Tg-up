@@ -1,10 +1,11 @@
 """发送端口。实现可以换成 Bot API，调度/worker 不用改。
 
-四种结果必须分开：
+五种结果必须分开：
 - SendOk：拿到消息 id
 - SendRetryLater：FloodWait，任务没坏，账号要歇 seconds 秒
 - SendDisconnected：网络/断线，不计业务失败，走连接重试
 - SendFailed：文件/权限/超时等，走重试计数
+- SendOversized：分片超过 Bot 上限，停在 oversized，不换 Bot
 """
 
 from __future__ import annotations
@@ -40,7 +41,14 @@ class SendFailed:
     reason: str
 
 
-SendResult = SendOk | SendRetryLater | SendDisconnected | SendFailed
+@dataclass(frozen=True)
+class SendOversized:
+    """文件分片超过 Telegram Bot 上限。停住，不要回 pending 换 Bot。"""
+
+    reason: str
+
+
+SendResult = SendOk | SendRetryLater | SendDisconnected | SendFailed | SendOversized
 
 
 class Transport(Protocol):

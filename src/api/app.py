@@ -76,6 +76,7 @@ def create_api(
     delete_worker=None,
     task_repository=None,
     reschedule=None,
+    dispatch_oversized=None,
     restart_process=None,
     chats_provider=None,
     chats_sync=None,
@@ -91,6 +92,7 @@ def create_api(
     app.state.delete_worker = delete_worker
     app.state.task_repository = task_repository
     app.state.reschedule = reschedule
+    app.state.dispatch_oversized = dispatch_oversized
     app.state.restart_process = restart_process
     app.state.chats_provider = chats_provider
     app.state.chats_sync = chats_sync
@@ -374,10 +376,10 @@ def create_api(
         repo = app.state.task_repository
         if repo is None:
             raise HTTPException(status_code=503, detail="任务仓库未就绪")
-        retried, skipped = await repo.requeue_all_failed()
+        retried, skipped, parked = await repo.requeue_all_failed()
         if retried:
             _wake_scheduler()
-        return {"ok": True, "retried": retried, "skipped": skipped}
+        return {"ok": True, "retried": retried, "skipped": skipped, "parked": parked}
 
     # 重试一条失败任务：failed → pending，retry_count 归零。
     @app.post("/api/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
@@ -392,8 +394,30 @@ def create_api(
             raise HTTPException(status_code=409, detail="只能重试失败任务")
         if result == "missing_file":
             raise HTTPException(status_code=409, detail="文件不存在")
-        _wake_scheduler()
-        return {"ok": True, "id": task_id, "status": "pending", "retry_count": 0}
+        fresh = await repo.get_task_by_id(task_id)
+        status = str(fresh.get("status") if fresh else "pending")
+        if status == "pending":
+            _wake_scheduler()
+        return {"ok": True, "id": task_id, "status": status, "retry_count": 0}
+
+    # 过大文件只交给个人号。没有可用个人号时明确拒绝，不回退到 Bot。
+    @app.post("/api/tasks/{task_id}/dispatch-user", dependencies=[Depends(require_token)])
+    async def dispatch_oversized(task_id: int) -> dict:
+        dispatch = app.state.dispatch_oversized
+        if dispatch is None:
+            raise HTTPException(status_code=503, detail="任务分发未就绪")
+        result = await dispatch(task_id)
+        if result == "not_found":
+            raise HTTPException(status_code=404, detail="找不到任务")
+        if result == "not_oversized":
+            raise HTTPException(status_code=409, detail="只能把过大文件交给个人号")
+        if result == "missing_file":
+            raise HTTPException(status_code=409, detail="文件不存在")
+        if result == "no_user":
+            raise HTTPException(status_code=409, detail="没有可用的个人账号")
+        if result != "ok":
+            raise HTTPException(status_code=503, detail="任务分发未就绪")
+        return {"ok": True, "id": task_id, "status": "assigned"}
 
     # 删除全部失败记录。不删磁盘上的文件。
     @app.delete("/api/tasks/failed", dependencies=[Depends(require_token)])
@@ -423,7 +447,7 @@ def create_api(
         if result == "not_found":
             raise HTTPException(status_code=404, detail="找不到任务")
         if result == "not_failed":
-            raise HTTPException(status_code=409, detail="只能清除失败任务")
+            raise HTTPException(status_code=409, detail="只能清除失败或过大的任务")
         return {"ok": True, "id": task_id, "deleted": True}
 
     # 当前仍在 uploading 的进度快照，含服务端算好的速度。

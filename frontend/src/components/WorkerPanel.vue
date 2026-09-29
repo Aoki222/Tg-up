@@ -11,10 +11,11 @@
  * 4. 【生命周期控制】：支持单节点热禁用、热恢复、以及物理销毁 Session 文件（带安全警示确认窗）。
  */
 
-import { onMounted, onUnmounted, ref } from "vue";
+import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { deleteWorker, disableWorker, enableWorker, fetchSessionMeta, fetchWorkers } from "../api";
-import type { SessionAccount, WorkerSnapshot } from "../types";
+import { deleteWorker, disableWorker, enableWorker, fetchWorkers } from "../api";
+import { refreshSessionAccounts, reloadSessionAccounts, useSessionAccounts } from "../composables/useSessionAccounts";
+import type { WorkerSnapshot } from "../types";
 
 // ── 事件派发 ───────────────────────────────────────────────────
 
@@ -29,45 +30,77 @@ const emit = defineEmits<{
 
 /** 当前加载的 Worker 节点状态快照列表 */
 const workers = ref<WorkerSnapshot[]>([]);
-const accounts = ref<SessionAccount[]>([]);
+const { accounts } = useSessionAccounts();
 
 /** 轮询异常错误提示 */
 const error = ref("");
 
 /** 轮询定时器 ID */
 let timer = 0;
+let workerFlight: Promise<void> | null = null;
+let active = false;
+let sessionsLoaded = false;
 
 /** 当前正在执行异步操作（启用/禁用/删除）的 Worker 名称，用于呈现按钮 loading 状态 */
 const busyName = ref("");
 
 // ── 数据拉取与轮询 ─────────────────────────────────────────────
 
-/**
- * 刷新 Worker 节点列表
- */
-async function refresh(): Promise<void> {
-  try {
-    workers.value = await fetchWorkers();
-    emit("updateWorkers", workers.value);
-    const meta = await fetchSessionMeta();
-    accounts.value = meta.accounts ?? [];
-    error.value = "";
-  } catch {
-    error.value = "无法读取 Worker 节点列表";
-  }
+function fetchWorkerSnapshot(): Promise<void> {
+  if (workerFlight) return workerFlight;
+  const pending = (async () => {
+    try {
+      workers.value = await fetchWorkers();
+      emit("updateWorkers", workers.value);
+      error.value = "";
+    } catch {
+      error.value = "无法读取 Worker 节点列表";
+    } finally {
+      workerFlight = null;
+    }
+  })();
+  workerFlight = pending;
+  return pending;
 }
 
-onMounted(() => {
-  void refresh();
-  // 1 秒心跳轮询状态
-  timer = window.setInterval(() => {
-    void refresh();
-  }, 1000);
-});
+/** 操作完成后重新读取。若有一轮还在飞，等它结束再读，避免拿到操作前的快照。 */
+async function reloadWorkers(): Promise<void> {
+  const pending = workerFlight;
+  if (pending) await pending;
+  await fetchWorkerSnapshot();
+}
 
-onUnmounted(() => {
+function loadSessionLabels(): void {
+  if (sessionsLoaded) return;
+  void refreshSessionAccounts()
+    .then(() => {
+      sessionsLoaded = true;
+    })
+    .catch(() => undefined);
+}
+
+function start(): void {
+  if (active) return;
+  active = true;
+  loadSessionLabels();
+  void fetchWorkerSnapshot();
+  timer = window.setInterval(() => {
+    if (workerFlight) return;
+    void fetchWorkerSnapshot();
+  }, 1000);
+}
+
+function stop(): void {
+  if (!active) return;
+  active = false;
   window.clearInterval(timer);
-});
+  timer = 0;
+}
+
+onMounted(start);
+onActivated(start);
+onDeactivated(stop);
+onUnmounted(stop);
 
 // ── 状态文本与样式映射 ─────────────────────────────────────────
 
@@ -122,7 +155,7 @@ async function onDisable(name: string): Promise<void> {
   try {
     await disableWorker(name);
     ElMessage.success(`已禁用 ${name}`);
-    await refresh();
+    await reloadWorkers();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "禁用失败");
   } finally {
@@ -136,7 +169,7 @@ async function onEnable(name: string): Promise<void> {
   try {
     await enableWorker(name);
     ElMessage.success(`已启用 ${name}`);
-    await refresh();
+    await reloadWorkers();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "启用失败");
   } finally {
@@ -165,7 +198,8 @@ async function onDelete(name: string): Promise<void> {
   try {
     await deleteWorker(name);
     ElMessage.success(`已删除 ${name}`);
-    await refresh();
+    await reloadWorkers();
+    await reloadSessionAccounts().catch(() => undefined);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "删除失败");
   } finally {

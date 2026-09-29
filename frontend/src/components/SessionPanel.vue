@@ -24,13 +24,13 @@ import { ElMessage } from "element-plus";
 import QRCode from "qrcode";
 import {
   cancelSessionLogin,
-  fetchSessionMeta,
   pollSessionLogin,
   startSessionLogin,
   submitSessionCode,
   submitSessionPassword,
 } from "../api";
-import type { SessionAccount, SessionLoginResult, SessionMode } from "../types";
+import { refreshSessionAccounts, reloadSessionAccounts, useSessionAccounts } from "../composables/useSessionAccounts";
+import type { SessionLoginResult, SessionMode } from "../types";
 
 // ── 事件声明 ───────────────────────────────────────────────────
 
@@ -45,8 +45,7 @@ const emit = defineEmits<{
 const loading = ref(false);
 
 /** 本地已有 session 文件名列表 */
-const existing = ref<string[]>([]);
-const accounts = ref<SessionAccount[]>([]);
+const { accounts, names: existing } = useSessionAccounts();
 const userAccounts = computed(() => accounts.value.filter((item) => item.kind === "user"));
 const botAccounts = computed(() => accounts.value.filter((item) => item.kind === "bot"));
 const unknownAccounts = computed(() => accounts.value.filter((item) => item.kind === "unknown"));
@@ -81,9 +80,7 @@ const form = reactive({
 /** 加载已有 Session 元数据与默认群组 chat_id */
 async function loadMeta(): Promise<void> {
   try {
-    const meta = await fetchSessionMeta();
-    existing.value = meta.items;
-    accounts.value = meta.accounts ?? [];
+    const meta = await refreshSessionAccounts();
     if (form.group_id == null && meta.default_group_id) {
       form.group_id = meta.default_group_id;
     }
@@ -104,7 +101,7 @@ function handleResult(result: SessionLoginResult): void {
   // 流程完结：登录成功
   if (result.done) {
     ElMessage.success(result.message || "已创建 session");
-    void loadMeta();
+    void reloadSessionAccounts();
     close();
     return;
   }

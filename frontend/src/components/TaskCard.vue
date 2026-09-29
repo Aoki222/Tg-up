@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 看板单卡。四种主体：封面 / 等待 / 已分配或上传中 / 失败。
+ * 看板单卡。封面 / 等待 / 上传中 / 过大 / 失败。
  */
 import type { BoardTask } from "../types";
 import {
@@ -11,17 +11,19 @@ import {
   isAlbumProgress,
 } from "../format";
 
-const { task, retrying, selected, selectable } = defineProps<{
+const { task, retrying, selected, selectable, dispatching } = defineProps<{
   task: BoardTask;
   retrying?: boolean;
   selected?: boolean;
   selectable?: boolean;
+  dispatching?: boolean;
 }>();
 
 const emit = defineEmits<{
   retry: [id: number];
   remove: [id: number];
   toggle: [id: number];
+  dispatch: [id: number];
 }>();
 
 function pendingHint(item: BoardTask): string | null {
@@ -39,6 +41,13 @@ function pendingHint(item: BoardTask): string | null {
     return text.length > 80 ? `${text.slice(0, 80)}…` : text;
   }
   return null;
+}
+
+function oversizedDetail(item: BoardTask): string | null {
+  // 默认提示已经说明在等个人号。只有另有失败原因时才再显示一行。
+  const text = item.error || item.message || "";
+  if (!text || text.includes("超过 2GB")) return null;
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
 }
 
 function speedLabel(item: BoardTask): string {
@@ -93,6 +102,31 @@ function speedLabel(item: BoardTask): string {
         </span>
       </div>
       <p v-if="task.assigned_worker && task.stage !== 'success'" class="worker">{{ task.assigned_worker }}</p>
+    </div>
+
+    <div v-else-if="task.status === 'oversized'" class="body">
+      <p class="hint">超过 2GB，等待个人号</p>
+      <p v-if="oversizedDetail(task)" class="warn">{{ oversizedDetail(task) }}</p>
+      <div class="fail-row">
+        <div class="fail-actions">
+          <button
+            type="button"
+            class="retry-btn"
+            :disabled="retrying"
+            @click="emit('dispatch', task.id)"
+          >
+            {{ dispatching ? "提交中" : "用个人号上传" }}
+          </button>
+          <button
+            type="button"
+            class="retry-btn danger"
+            :disabled="retrying"
+            @click="emit('remove', task.id)"
+          >
+            清除
+          </button>
+        </div>
+      </div>
     </div>
 
     <div v-else class="body">

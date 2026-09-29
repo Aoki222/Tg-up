@@ -7,6 +7,7 @@ destination / artifacts / policy / runtime 只是代码里的分组，落到 SQL
   preparing → pending → assigned → uploading → success
                               ↘ 失败未超次数回到 pending
                               ↘ 超限 → failed
+超过 Bot 上限的文件停在 oversized，不进 pending，只能手动交给个人号。
 没有 retrying。库里若还有旧的 retrying，读出来当 pending。
 
 policy 在入库那一刻从 upload.toml 拷贝。之后热更新只影响新任务。
@@ -21,16 +22,21 @@ from enum import StrEnum
 class TaskStatus(StrEnum):
     # preparing → pending → assigned → uploading → success | failed
     # 失败未超次数回到 pending；没有 retrying 这种多余状态
+    # oversized 不进调度，只能手动交给个人号
     PREPARING = "preparing"
     PENDING = "pending"
     ASSIGNED = "assigned"
     UPLOADING = "uploading"
     SUCCESS = "success"
     FAILED = "failed"
+    OVERSIZED = "oversized"
 
 
 def status_from_row(value: object) -> TaskStatus:
-    """无法识别的旧状态（例如 retrying）一律当成 pending，避免调度崩溃。"""
+    """无法识别的旧状态（例如 retrying）一律当成 pending，避免调度崩溃。
+
+    oversized 必须留在枚举里。落成 pending 的话，调度会把它分给 Bot。
+    """
     try:
         return TaskStatus(str(value))
     except ValueError:

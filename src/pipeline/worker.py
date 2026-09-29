@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..adapters.task_store import TaskRepository
+from ..domain import limits
 from ..domain.concurrency import ConcurrencyGate
 from ..domain.progress import make_progress
 from ..domain.settings_hub import SettingsHub
@@ -24,7 +25,14 @@ from ..logger import get_logger
 from ..ports.after_upload import AfterUpload
 from ..ports.progress import ProgressReporter
 from ..adapters.sessions import SessionPool
-from ..ports.transport import SendDisconnected, SendFailed, SendOk, SendRetryLater, Transport
+from ..ports.transport import (
+    SendDisconnected,
+    SendFailed,
+    SendOk,
+    SendOversized,
+    SendRetryLater,
+    Transport,
+)
 
 logger = get_logger(__name__)
 
@@ -43,8 +51,10 @@ class UploadWorker:
         progress_reporter: ProgressReporter | None = None,
         session_pool: SessionPool | None = None,
         session_path: Path | None = None,
+        account_kind: str = "unknown",
     ):
         self.worker_name = worker_name
+        self.account_kind = account_kind
         self.task_repository = task_repository
         self.transport = transport
         self.after_upload = after_upload
@@ -135,6 +145,12 @@ class UploadWorker:
             fresh = await self.task_repository.get_task_by_id(task.id)
             if fresh:
                 task = task.merge_row(fresh)
+            if self.account_kind != "user" and limits.telegram_bot_blocked(
+                task.file_size, task.destination.platform
+            ):
+                await self.task_repository.park_oversized(task.id, limits.OVERSIZED_REASON)
+                logger.warning("[%s] 超过 2GB，不由 Bot 上传: %s", self.worker_name, task.file_path)
+                return
             settings = self.settings_hub.get()
             async with self.concurrency_gate:
                 await self.task_repository.mark_task_uploading(task.id)
@@ -158,24 +174,35 @@ class UploadWorker:
                     if self.session_pool is not None:
                         self.session_pool.mark_disconnected(self.worker_name, result.reason)
                     await self.task_repository.release_task(task.id, f"disconnected: {result.reason}")
-                    self._emit_progress(task, 0, 1, "flood_wait", "连接断开，正在重试")
+                    if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
+                        self._emit_progress(task, 0, 1, "flood_wait", "连接断开，正在重试")
                     logger.warning("[%s] 连接断开，任务回队列: %s (%s)", self.worker_name, task.file_path, result.reason)
                 elif isinstance(result, SendRetryLater):
                     self.flood_wait_until = time.monotonic() + result.seconds
                     # 回 pending 且不 +retry_count；调度器会跳过 is_accepting()==False 的 worker
                     await self.task_repository.release_task(task.id, f"FloodWait {result.seconds}s")
-                    self._emit_progress(
-                        task, 0, 1, "flood_wait", f"FloodWait {result.seconds}s"
-                    )
+                    if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
+                        self._emit_progress(
+                            task, 0, 1, "flood_wait", f"FloodWait {result.seconds}s"
+                        )
                     logger.warning(
                         "[%s] FloodWait %ss，任务回队列且不计失败: %s",
                         self.worker_name,
                         result.seconds,
                         task.file_path,
                     )
+                elif isinstance(result, SendOversized):
+                    await self.task_repository.park_oversized(task.id, result.reason)
+                    logger.warning(
+                        "[%s] 超过分片上限，停在过大: %s (%s)",
+                        self.worker_name,
+                        task.file_path,
+                        result.reason,
+                    )
                 elif isinstance(result, SendFailed):
                     logger.error("[%s] 上传失败: %s (%s)", self.worker_name, task.file_path, result.reason)
-                    self._emit_progress(task, 0, 1, "failed", result.reason)
+                    if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
+                        self._emit_progress(task, 0, 1, "failed", result.reason)
                     await self._handle_upload_failure(task, result.reason)
         except asyncio.CancelledError:
             if self._aborting:
@@ -183,7 +210,8 @@ class UploadWorker:
             raise
         except Exception as error:
             logger.exception("[%s] 上传失败: %s", self.worker_name, task.file_path)
-            self._emit_progress(task, 0, 1, "failed", str(error))
+            if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
+                self._emit_progress(task, 0, 1, "failed", str(error))
             await self._handle_upload_failure(task, str(error))
         finally:
             self.task_queue.task_done()

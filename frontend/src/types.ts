@@ -33,8 +33,15 @@ export interface UploadProgress {
   eta_seconds: number;
 }
 
-/** 后端任务生命周期。看板四列：preparing / pending / assigned+uploading / failed */
-export type BoardStatus = "preparing" | "pending" | "assigned" | "uploading" | "success" | "failed";
+/** 后端任务生命周期。看板：封面 / 等待 / 上传中 / 过大 / 失败 */
+export type BoardStatus =
+  | "preparing"
+  | "pending"
+  | "assigned"
+  | "uploading"
+  | "oversized"
+  | "success"
+  | "failed";
 
 /** GET /api/tasks 返回的看板行，上传中会叠 ProgressHub 的字节与速度 */
 export interface BoardTask {
@@ -63,6 +70,7 @@ export interface BoardCounts {
   pending: number;
   assigned: number;
   uploading: number;
+  oversized: number;
   failed: number;
   success: number;
   success_today: number;

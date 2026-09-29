@@ -307,23 +307,27 @@ export async function fetchBoardTasks(): Promise<BoardSnapshot> {
   return res.data;
 }
 
-/**
- * 拉取当前仍在 uploading 的进度快照（含服务端速度）
- */
-export async function fetchProgressSnapshot(): Promise<UploadProgress[]> {
-  const res = await apiClient.get<{ items: UploadProgress[] }>("/api/progress");
-  return res.data.items;
+export async function retryBoardTask(taskId: number): Promise<string> {
+  const res = await apiClient.post<{ status: string }>(`/api/tasks/${taskId}/retry`);
+  return res.data.status;
 }
 
-export async function retryBoardTask(taskId: number): Promise<void> {
-  await apiClient.post(`/api/tasks/${taskId}/retry`);
+export async function dispatchOversizedTask(taskId: number): Promise<void> {
+  await apiClient.post(`/api/tasks/${taskId}/dispatch-user`);
 }
 
-export async function retryAllFailedTasks(): Promise<{ retried: number; skipped: number }> {
-  const res = await apiClient.post<{ ok: boolean; retried: number; skipped: number }>(
-    "/api/tasks/retry-failed",
-  );
-  return { retried: res.data.retried, skipped: res.data.skipped };
+export async function retryAllFailedTasks(): Promise<{
+  retried: number;
+  skipped: number;
+  parked: number;
+}> {
+  const res = await apiClient.post<{
+    ok: boolean;
+    retried: number;
+    skipped: number;
+    parked?: number;
+  }>("/api/tasks/retry-failed");
+  return { retried: res.data.retried, skipped: res.data.skipped, parked: res.data.parked ?? 0 };
 }
 
 export async function deleteFailedTask(taskId: number): Promise<void> {

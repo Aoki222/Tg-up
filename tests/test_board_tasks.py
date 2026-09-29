@@ -98,6 +98,7 @@ async def test_failed_board_is_capped(tmp_path: Path) -> None:
             "pending": 0,
             "assigned": 0,
             "uploading": 0,
+            "oversized": 0,
             "failed": 5,
             "success": 0,
             "success_today": 0,
@@ -230,9 +231,10 @@ async def test_requeue_all_failed_skips_missing_files(tmp_path: Path) -> None:
         )
         await repo.mark_task_failed(ok_id, 0, 0, "x")
         await repo.mark_task_failed(gone_id, 0, 0, "x")
-        retried, skipped = await repo.requeue_all_failed()
+        retried, skipped, parked = await repo.requeue_all_failed()
         assert retried == 1
         assert skipped == 1
+        assert parked == 0
         ok_row = await repo.get_task_by_id(ok_id)
         gone_row = await repo.get_task_by_id(gone_id)
         assert ok_row is not None and ok_row["status"] == "pending"

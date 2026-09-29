@@ -18,6 +18,10 @@ import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { fetchIdentity, getApiToken, restartProcess, saveIdentity, setApiToken } from "../api";
 import ConfigPanel from "../components/ConfigPanel.vue";
+import { useUnmatchedPolling } from "../composables/useUnmatched";
+
+defineOptions({ name: "SettingsPage" });
+useUnmatchedPolling();
 
 const sections = [
   { id: "routes", label: "路径" },
@@ -77,6 +81,13 @@ async function saveCredentials(): Promise<void> {
   try {
     await saveIdentity({ api_id: apiId.value, api_hash: apiHash.value.trim() });
     apiHash.value = "";
+    try {
+      const info = await fetchIdentity();
+      apiId.value = info.api_id;
+      apiHashMasked.value = info.api_hash_masked;
+    } catch {
+      // 写入已经成功。掩码没读回来时保留页面上原来的值。
+    }
     try {
       await ElMessageBox.confirm(
         "已写入 .env。是否立即重启进程让 API_ID / API_HASH 生效？",

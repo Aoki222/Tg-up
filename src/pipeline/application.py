@@ -52,6 +52,7 @@ from ..config import API_HASH, API_HOST, API_ID, API_PORT, PROJECT_DIR, SESSION_
 from ..database.connection import close_pool
 from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
+from ..domain.task import task_from_row
 from ..logger import get_logger
 from ..utils.topic_creactor import TopicCreator
 from .discover import FolderWatcher, iter_existing_files_many
@@ -306,11 +307,12 @@ class UploaderApplication:
                     progress_reporter=self.progress_reporter,
                     session_pool=session_pool,
                     session_path=session_path,
+                    account_kind=kind,
                 )
                 scheduler.register_worker(worker)
                 if self._task_group is not None:
                     self._task_group.create_task(worker.serve_forever())
-                logger.info("已加载 worker: %s", name)
+                logger.info("已加载 worker: %s (%s)", name, kind)
                 scheduler.request_reschedule()
 
             for name in list(scheduler.worker_map):
@@ -319,6 +321,48 @@ class UploaderApplication:
                 reason = "worker disabled" if name in self._disabled else "session file removed"
                 await self._unload_worker(name, reason=reason, in_flight_timeout=0)
                 logger.info("已卸载 worker: %s", name)
+
+    async def dispatch_oversized_to_user(self, task_id: int) -> str:
+        """把 oversized 交给当前最空闲的个人号。
+
+        返回 ok / not_found / not_oversized / missing_file / no_user / not_ready。
+        """
+        repository = self._repository
+        scheduler = self._scheduler
+        settings_hub = self._settings_hub
+        if repository is None or scheduler is None or settings_hub is None:
+            return "not_ready"
+        row = await repository.get_task_by_id(task_id)
+        if row is None:
+            return "not_found"
+        if str(row.get("status")) != "oversized":
+            return "not_oversized"
+        file_path = str(row.get("file_path") or "")
+        if not file_path or not Path(file_path).exists():
+            return "missing_file"
+        candidates = [
+            worker
+            for worker in scheduler.worker_map.values()
+            if getattr(worker, "account_kind", "unknown") == "user" and worker.is_accepting()
+        ]
+        if not candidates:
+            return "no_user"
+        counts = await repository.count_active_by_workers()
+        chosen = min(
+            candidates,
+            key=lambda worker: (int(counts.get(worker.worker_name, 0)), worker.worker_name),
+        )
+        if not await repository.claim_oversized(task_id, chosen.worker_name):
+            return "not_oversized"
+        fresh = await repository.get_task_by_id(task_id) or row
+        try:
+            await chosen.enqueue_task(task_from_row(fresh, settings_hub.policy_for_row(fresh)))
+        except Exception:
+            logger.exception("个人号入队失败 task=%s", task_id)
+            await repository.park_oversized(task_id, "个人号入队失败")
+            return "not_ready"
+        logger.info("过大文件交给个人号 task=%s worker=%s", task_id, chosen.worker_name)
+        return "ok"
 
     async def _list_chats(self) -> dict:
         """只读个人号的内存快照；首次无缓存时才触发一次 Telegram 全量同步。"""
@@ -401,6 +445,7 @@ class UploaderApplication:
             delete_worker=self.delete_worker,
             task_repository=self._repository,
             reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
+            dispatch_oversized=self.dispatch_oversized_to_user,
             restart_process=self.request_restart,
             chats_provider=self._list_chats,
             chats_sync=self._sync_chats,

@@ -13,10 +13,10 @@
 
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { fetchDialogChats, fetchSettings, fetchUnmatched, saveSettings, syncDialogChats } from "../api";
+import { fetchDialogChats, fetchSettings, saveSettings, syncDialogChats } from "../api";
 import type { DialogChat } from "../api";
-import type { UnmatchedFile } from "../types";
 import type { UploadConfig } from "../types";
+import { useUnmatchedFiles } from "../composables/useUnmatched";
 
 const { panel } = defineProps<{
   panel: "routes" | "telegram" | "drive" | "watch" | "process";
@@ -116,7 +116,7 @@ function samePath(left: string, right: string): boolean {
   return left.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === right.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
-const unmatchedFiles = ref<UnmatchedFile[]>([]);
+const { files: unmatchedFiles } = useUnmatchedFiles();
 
 function chatLabel(chatId: number): string {
   // 优先显示用户配置的别名，其次显示 Telegram 标题，最后回退到 chat_id。
@@ -305,18 +305,8 @@ async function submit(): Promise<void> {
   }
 }
 
-async function loadUnmatched(): Promise<void> {
-  // 加载未命中路由文件，帮助用户发现尚未配置的监听目录。
-  try {
-    unmatchedFiles.value = await fetchUnmatched();
-  } catch {
-    unmatchedFiles.value = [];
-  }
-}
-
 onMounted(() => {
   void load();
-  void loadUnmatched();
 });
 
 defineExpose({ dirty });
