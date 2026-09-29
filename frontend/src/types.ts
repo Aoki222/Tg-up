@@ -162,6 +162,34 @@ export interface ObserverPathInfo {
   error: string;
 }
 
+export interface FsRouteInfo {
+  matched: boolean;
+  is_explicit: boolean;
+  inherited_from?: string;
+  platform?: string;
+  dest_id?: string;
+  dest_name?: string;
+  chat_id?: number;
+  topic_enabled?: boolean;
+  name?: string;
+}
+
+export interface FsNode {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  has_children: boolean;
+  exists?: boolean;
+  is_root?: boolean;
+  size?: number;
+  ext?: string;
+  supported_ext?: boolean;
+  current_route?: FsRouteInfo;
+  task_status?: "not_ingested" | "pending" | "preparing" | "uploading" | "oversized" | "success" | "failed" | "unmatched" | string;
+  task_id?: number;
+  task_error?: string | null;
+}
+
 /** upload.toml 对应的完整配置负载 */
 export interface UploadConfig {
   /** Telegram 目标频道或群组 chat_id（通常以 -100 开头） */

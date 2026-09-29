@@ -61,6 +61,53 @@ def _chat_id_of(route) -> int:
     return 0
 
 
+def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
+    """检查一个目录或文件当前的路由归属、目标标识以及是专属还是继承。"""
+    active = [route for route in settings.routes if route.enabled and _route_dest(route)]
+    if not active:
+        return {"matched": False, "is_explicit": False}
+    route_map = {route.path.resolve(): route for route in active}
+    resolved = target_path.resolve()
+
+    # 1. 自身就是一条路由规则（针对目录）
+    route = route_map.get(resolved)
+    if route is not None:
+        topic_on = (
+            settings.topic_creation_enabled if route.topic_enabled is None else route.topic_enabled
+        )
+        return {
+            "matched": True,
+            "is_explicit": True,
+            "inherited_from": "",
+            "platform": route.platform,
+            "dest_id": _route_dest(route),
+            "chat_id": route.chat_id or _chat_id_of(route),
+            "topic_enabled": topic_on,
+            "name": route.name,
+        }
+
+    # 2. 自底向上回溯父级目录（继承规则）
+    for parent in resolved.parents:
+        parent_route = route_map.get(parent)
+        if parent_route is None:
+            continue
+        topic_on = (
+            settings.topic_creation_enabled if parent_route.topic_enabled is None else parent_route.topic_enabled
+        )
+        return {
+            "matched": True,
+            "is_explicit": False,
+            "inherited_from": str(parent_route.path),
+            "platform": parent_route.platform,
+            "dest_id": _route_dest(parent_route),
+            "chat_id": parent_route.chat_id or _chat_id_of(parent_route),
+            "topic_enabled": topic_on,
+            "name": parent_route.name,
+        }
+
+    return {"matched": False, "is_explicit": False}
+
+
 class IngestPolicy:
     """只根据当前 UploadSettings 做一次决议，不写库、不发消息。"""
 

@@ -13,11 +13,25 @@ import { createApp } from "vue";
 import ElementPlus from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import "element-plus/dist/index.css";
+import { QueryClient, VueQueryPlugin } from "@tanstack/vue-query";
 import App from "./App.vue";
 import router from "./router";
 import "./style.css";
 
 const app = createApp(App);
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
+
+app.use(VueQueryPlugin, { queryClient });
 
 // 配置 Element Plus 全局中文国际化
 app.use(ElementPlus, { locale: zhCn });

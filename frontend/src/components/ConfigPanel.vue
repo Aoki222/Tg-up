@@ -13,9 +13,11 @@
 
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { fetchDialogChats, fetchSettings, saveSettings, syncDialogChats } from "../api";
+import { useQueryClient } from "@tanstack/vue-query";
+import { fetchDialogChats, fetchFsNodes, fetchSettings, saveSettings, syncDialogChats } from "../api";
 import type { DialogChat } from "../api";
-import type { UploadConfig } from "../types";
+import type { FsNode, UploadConfig } from "../types";
+import { formatBytes } from "../format";
 import { useUnmatchedFiles } from "../composables/useUnmatched";
 
 const { panel } = defineProps<{
@@ -170,6 +172,44 @@ function setPathDest(path: string, key: string): void {
     });
   }
   editingPath.value = "";
+}
+
+function hasExplicitRoute(path: string): boolean {
+  return form.routes.some((item) => item.enabled && samePath(item.path, path));
+}
+
+const queryClient = useQueryClient();
+const treeRef = ref();
+
+async function loadFsNodes(node: any, resolve: (data: FsNode[]) => void): Promise<void> {
+  const targetPath = node.level === 0 ? "" : (node.data as FsNode).path;
+  try {
+    const items = await queryClient.fetchQuery({
+      queryKey: ["fs-nodes", targetPath],
+      queryFn: () => fetchFsNodes(targetPath),
+    });
+    resolve(items);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "获取目录结构失败");
+    resolve([]);
+  }
+}
+
+async function refreshFsNode(node: any, data: FsNode): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: ["fs-nodes", data.path] });
+  if (node) {
+    node.loaded = false;
+    node.expand();
+  }
+}
+
+async function refreshAllFsNodes(): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
+  if (treeRef.value?.store) {
+    treeRef.value.store.root.loaded = false;
+    treeRef.value.store.root.loadChildren();
+  }
+  ElMessage.success("目录结构与任务状态已刷新");
 }
 
 const showAddDrive = ref(false);
@@ -363,42 +403,114 @@ defineExpose({ dirty });
       </section>
 
       <section v-if="panel === 'routes'" class="section">
-        <p class="route-hint">左路径、右目标名称。未指定就是未命中，文件不会上传。</p>
+        <div class="route-head">
+          <span class="section-title">映射目录与文件路由</span>
+          <el-button size="small" @click="refreshAllFsNodes">全部刷新</el-button>
+        </div>
+        <p class="route-hint">可展开子目录查看内部文件；未配置专属目标的子目录默认继承上级规则。未命中规则的文件不会上传。</p>
         <div v-if="form.observer_paths.length === 0" class="route-empty">请先在「监听」里添加目录。</div>
-        <div v-for="path in form.observer_paths" :key="path" class="path-card">
-          <div class="path-left">{{ path }}</div>
-          <div class="path-right">
-            <template v-if="editingPath === path">
-              <el-select
-                class="path-select"
-                :model-value="pathDestKey(path)"
-                size="small"
-                @change="(value: string) => setPathDest(path, value)"
-              >
-                <el-option label="未命中" value="" />
-                <el-option-group v-if="form.chats.length" label="Telegram">
-                  <el-option
-                    v-for="chat in form.chats"
-                    :key="chat.chat_id"
-                    :label="chatLabel(chat.chat_id)"
-                    :value="`tg:${chat.chat_id}`"
-                  />
-                </el-option-group>
-                <el-option-group v-if="form.drive_folders.length" label="Google Drive">
-                  <el-option
-                    v-for="folder in form.drive_folders"
-                    :key="folder.folder_id"
-                    :label="folder.name.trim() || folder.folder_id"
-                    :value="`gd:${folder.folder_id}`"
-                  />
-                </el-option-group>
-              </el-select>
+        <div v-else class="fs-tree-wrapper">
+          <el-tree
+            ref="treeRef"
+            lazy
+            :load="loadFsNodes"
+            node-key="path"
+            :props="{ label: 'name', isLeaf: (data: FsNode) => !data.is_dir }"
+            class="fs-tree"
+          >
+            <template #default="{ node, data }">
+              <div class="tree-node-row">
+                <div class="node-left">
+                  <span v-if="data.is_dir" class="node-icon">📂</span>
+                  <span class="node-name" :class="{ 'is-root': data.is_root }" :title="data.path">
+                    {{ data.name }}
+                  </span>
+                  
+                  <span v-if="data.is_root" class="node-badge root-badge">监控根目录</span>
+
+                  <template v-if="!data.is_dir">
+                    <span class="file-size">{{ formatBytes(data.size || 0) }}</span>
+                    <span v-if="!data.supported_ext" class="file-ext-unsupported">未监听格式</span>
+                    <span v-else-if="data.task_status === 'uploading'" class="file-status status-uploading">上传中</span>
+                    <span v-else-if="data.task_status === 'success'" class="file-status status-success">已上传</span>
+                    <span v-else-if="data.task_status === 'pending' || data.task_status === 'preparing'" class="file-status status-pending">排队中</span>
+                    <span v-else-if="data.task_status === 'failed'" class="file-status status-failed" :title="data.task_error || '失败'">失败</span>
+                    <span v-else-if="data.task_status === 'unmatched'" class="file-status status-unmatched">未命中</span>
+                  </template>
+                </div>
+
+                <div v-if="data.is_dir" class="node-right" @click.stop>
+                  <template v-if="editingPath === data.path">
+                    <el-select
+                      class="path-select"
+                      :model-value="pathDestKey(data.path)"
+                      size="small"
+                      @change="(value: string) => setPathDest(data.path, value)"
+                    >
+                      <el-option label="跟随父级目录" value="" />
+                      <el-option-group v-if="form.chats.length" label="Telegram">
+                        <el-option
+                          v-for="chat in form.chats"
+                          :key="chat.chat_id"
+                          :label="chatLabel(chat.chat_id)"
+                          :value="`tg:${chat.chat_id}`"
+                        />
+                      </el-option-group>
+                      <el-option-group v-if="form.drive_folders.length" label="Google Drive">
+                        <el-option
+                          v-for="folder in form.drive_folders"
+                          :key="folder.folder_id"
+                          :label="folder.name.trim() || folder.folder_id"
+                          :value="`gd:${folder.folder_id}`"
+                        />
+                      </el-option-group>
+                    </el-select>
+                    <el-button size="small" text @click="editingPath = ''">取消</el-button>
+                  </template>
+                  <template v-else>
+                    <span
+                      v-if="hasExplicitRoute(data.path)"
+                      class="route-pill explicit"
+                      title="已为此目录配置专属规则"
+                    >
+                      专属: {{ pathDestLabel(data.path) }}
+                    </span>
+                    <span
+                      v-else-if="data.current_route?.matched"
+                      class="route-pill inherited"
+                      title="继承自上级目录规则"
+                    >
+                      继承: {{ data.current_route.dest_name || pathDestLabel(data.path) }}
+                    </span>
+                    <span v-else class="route-pill unmatched">未命中</span>
+
+                    <el-button size="small" text @click="editingPath = data.path">
+                      {{ hasExplicitRoute(data.path) ? '修改' : '自定义目标' }}
+                    </el-button>
+                    <el-button
+                      v-if="hasExplicitRoute(data.path) && !data.is_root"
+                      size="small"
+                      text
+                      type="danger"
+                      title="清除专属规则，恢复跟随父级"
+                      @click="setPathDest(data.path, '')"
+                    >
+                      恢复继承
+                    </el-button>
+                    <el-button
+                      size="small"
+                      text
+                      class="btn-refresh"
+                      title="刷新此目录"
+                      @click="refreshFsNode(node, data)"
+                    >
+                      🔄
+                    </el-button>
+                  </template>
+                </div>
+              </div>
             </template>
-            <template v-else>
-              <span class="map-id">{{ pathDestLabel(path) }}</span>
-              <el-button size="small" text @click="editingPath = path">修改</el-button>
-            </template>
-          </div>
+          </el-tree>
         </div>
         <div v-if="unmatchedFiles.length" class="unmatched">
           <div class="section-title later">未命中的文件</div>
@@ -767,6 +879,183 @@ defineExpose({ dirty });
   color: var(--bad);
   flex-shrink: 0;
   font-weight: 500;
+}
+
+.fs-tree-wrapper {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.fs-tree {
+  padding: 8px 10px;
+  background: transparent;
+  font-size: 13px;
+}
+
+:deep(.el-tree-node__content) {
+  height: auto !important;
+  min-height: 40px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+}
+
+:deep(.el-tree-node__content:hover) {
+  background-color: var(--hover);
+}
+
+.tree-node-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding-right: 4px;
+}
+
+.node-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.node-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.node-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-name.is-root {
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+}
+
+.node-badge {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.root-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(40, 153, 90, 0.25);
+  font-weight: 500;
+}
+
+.file-size {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, "SF Mono", monospace;
+  flex-shrink: 0;
+}
+
+.file-ext-unsupported {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+  flex-shrink: 0;
+}
+
+.file-status {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.status-uploading {
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+}
+
+.status-success {
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+}
+
+.status-pending {
+  background: #fffbeb;
+  color: #d97706;
+  border: 1px solid #fde68a;
+}
+
+.status-failed {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.status-unmatched {
+  background: #f3f4f6;
+  color: #4b5563;
+  border: 1px solid #e5e7eb;
+}
+
+.node-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.route-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.route-pill.explicit {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(40, 153, 90, 0.3);
+}
+
+.route-pill.inherited {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.route-pill.unmatched {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.btn-refresh {
+  font-size: 11px;
+  padding: 0 4px !important;
+  opacity: 0.65;
+  transition: opacity 0.15s ease;
+}
+
+.btn-refresh:hover {
+  opacity: 1;
 }
 
 @media (max-width: 900px) {

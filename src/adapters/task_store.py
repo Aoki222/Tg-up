@@ -569,3 +569,38 @@ class TaskRepository:
             cursor = await database.execute("DELETE FROM upload_tasks WHERE status = 'failed'")
             await database.commit()
             return cursor.rowcount
+
+    async def get_tasks_status_by_paths(self, file_paths: list[str]) -> dict[str, dict]:
+        """批量获取文件在 upload_tasks 和 unmatched_files 中的状态。"""
+        if not file_paths:
+            return {}
+        result: dict[str, dict] = {}
+        async with get_db() as database:
+            for offset in range(0, len(file_paths), 400):
+                chunk = file_paths[offset : offset + 400]
+                placeholders = ",".join("?" * len(chunk))
+                async with database.execute(
+                    f"""SELECT file_path, status, error_msg, id
+                        FROM upload_tasks
+                        WHERE file_path IN ({placeholders})
+                        ORDER BY id ASC""",
+                    chunk,
+                ) as cursor:
+                    for row in await cursor.fetchall():
+                        r = dict(row)
+                        result[r["file_path"]] = {
+                            "status": r.get("status") or "pending",
+                            "task_id": r.get("id"),
+                            "error": r.get("error_msg"),
+                        }
+                async with database.execute(
+                    f"""SELECT file_path
+                        FROM unmatched_files
+                        WHERE file_path IN ({placeholders})""",
+                    chunk,
+                ) as cursor:
+                    for row in await cursor.fetchall():
+                        fp = row["file_path"]
+                        if fp not in result:
+                            result[fp] = {"status": "unmatched"}
+        return result

@@ -13,6 +13,7 @@ import axios, { type AxiosError } from "axios";
 import { ElMessage } from "element-plus";
 import type {
   BoardSnapshot,
+  FsNode,
   ObserverPathInfo,
   SessionLoginResult,
   SessionMeta,
@@ -212,6 +213,16 @@ export async function saveSettings(payload: UploadConfig): Promise<UploadConfig>
     observer_paths: payload.observer_paths,
   });
   return normalizeSettings(res.data);
+}
+
+/**
+ * 递归/按需获取映射目录下的直接子文件夹与文件（支持任务状态与路由归属）
+ */
+export async function fetchFsNodes(path?: string): Promise<FsNode[]> {
+  const res = await apiClient.get<{ items: FsNode[]; path: string }>("/api/fs/nodes", {
+    params: path ? { path } : {},
+  });
+  return res.data.items;
 }
 
 export interface IdentityInfo {
