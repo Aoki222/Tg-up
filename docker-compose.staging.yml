@@ -1,0 +1,47 @@
+# ==============================================================================
+# VPS 测试环境 Docker Compose 配置
+# 镜像源：GitHub Container Registry (ghcr.io/aoki222/tg-up:staging)
+#
+# 快速开始：
+#   1. 复制 .env.example 为 .env 并配置参数：
+#      cp .env.example .env
+#   2. 拉取测试镜像：
+#      docker compose -f docker-compose.staging.yml pull
+#   3. 启动/平滑更新容器：
+#      docker compose -f docker-compose.staging.yml up -d --remove-orphans
+#   4. 查看控制台：http://<VPS_IP>:8000/
+# ==============================================================================
+
+services:
+  uploader-staging:
+    image: ghcr.io/aoki222/tg-up:staging
+    container_name: uploader-staging
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+    volumes:
+      - ./download:/app/download
+      - ./sessions:/app/sessions
+      - ./data:/app/data
+      - ./page:/app/page
+      - ./uploaded:/app/uploaded
+      - ./logs:/app/logs
+      # 宿主机外部下载目录挂载示例（如需要请取消注释）
+      # - /home/scrapy/data/download:/data/scrapy-download
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
