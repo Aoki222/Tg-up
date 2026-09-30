@@ -113,10 +113,7 @@ class UploadWorker:
         self.is_running = False
         if self._watch_task is not None:
             self._watch_task.cancel()
-        try:
-            self.task_queue.put_nowait(None)
-        except asyncio.QueueFull:
-            pass
+        # 先清空队列中的待处理任务
         while True:
             try:
                 queued_item = self.task_queue.get_nowait()
@@ -127,6 +124,11 @@ class UploadWorker:
                 continue
             await self.task_repository.release_task(queued_item.id, reason)
             self.task_queue.task_done()
+        # 清空后队列必有空位，放入停止哨兵
+        try:
+            self.task_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
         if not self.background_tasks:
             return
         pending = set(self.background_tasks)

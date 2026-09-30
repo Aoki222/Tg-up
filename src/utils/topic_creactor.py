@@ -56,6 +56,14 @@ class TopicCreator:
                 self._folder_locks[key] = lock
             return lock
 
+    async def _release_lock(self, chat_id: int, topic_path: str) -> None:
+        """锁无等待者时从字典中移除，避免内存泄漏。"""
+        key = (chat_id, topic_path)
+        async with self._locks_guard:
+            lock = self._folder_locks.get(key)
+            if lock is not None and not lock.locked():
+                del self._folder_locks[key]
+
     async def get_or_create_topic(self, fold_path: str, folder_name: str, chat_id: int) -> int:
         """按群组和目录路径复用话题，目录变化时创建新话题。"""
         topic_path = str(Path(fold_path).resolve())
@@ -68,25 +76,28 @@ class TopicCreator:
             raise TopicSessionUnavailable("没有可用的 Telegram session，无法创建话题")
 
         lock = await self._lock_for(chat_id, topic_path)
-        async with lock:
-            existing_topic_id = await self.task_repository.get_chat_topic(chat_id, topic_path)
-            if existing_topic_id is not None:
-                return existing_topic_id
+        try:
+            async with lock:
+                existing_topic_id = await self.task_repository.get_chat_topic(chat_id, topic_path)
+                if existing_topic_id is not None:
+                    return existing_topic_id
 
-            telegram_client = self.get_client()
-            if telegram_client is None:
-                raise TopicSessionUnavailable("没有可用的 Telegram session，无法创建话题")
+                telegram_client = self.get_client()
+                if telegram_client is None:
+                    raise TopicSessionUnavailable("没有可用的 Telegram session，无法创建话题")
 
-            result = await telegram_client(
-                CreateForumTopicRequest(
-                    peer=chat_id,
-                    title=folder_name,
+                result = await telegram_client(
+                    CreateForumTopicRequest(
+                        peer=chat_id,
+                        title=folder_name,
+                    )
                 )
-            )
-            topic_id = self._extract_topic_id(result)
-            await self.task_repository.save_chat_topic(chat_id, topic_id, topic_path)
-            logger.info("已创建群组话题 chat_id=%s topic_id=%s path=%s", chat_id, topic_id, topic_path)
-            return topic_id
+                topic_id = self._extract_topic_id(result)
+                await self.task_repository.save_chat_topic(chat_id, topic_id, topic_path)
+                logger.info("已创建群组话题 chat_id=%s topic_id=%s path=%s", chat_id, topic_id, topic_path)
+                return topic_id
+        finally:
+            await self._release_lock(chat_id, topic_path)
 
     async def _await_client(self):
         """同一轮等待只轮询一次。多个目录同时建话题时共用这次结果。"""

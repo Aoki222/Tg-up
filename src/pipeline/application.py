@@ -396,16 +396,16 @@ class UploaderApplication:
             return None, None, "请先在监控页用个人账号登录"
         users = []
         unknown = []
-        for name, client in pool.clients.items():
+        for name, client in list(pool.clients.items()):
             kind = _session_kind(pool.session_dir, name)
             if kind == "user":
                 users.append(client)
             elif kind == "unknown":
                 unknown.append(client)
         if users:
-            name = next(name for name, client in pool.clients.items() if client is users[0])
+            name = next(name for name, client in list(pool.clients.items()) if client is users[0])
             return name, users[0], ""
-        for name, client in pool.clients.items():
+        for name, client in list(pool.clients.items()):
             if client not in unknown:
                 continue
             try:

@@ -21,7 +21,7 @@ export function formatSpeed(bytesPerSec: number): string {
 export function formatETA(seconds: number): string {
   if (seconds < 0) return "--:--";
   if (seconds > 9 * 3600) return "> 9h";
-  if (seconds > 3600) {
+  if (seconds >= 3600) {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);

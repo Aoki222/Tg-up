@@ -13,7 +13,7 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, BackgroundTasks, Path as FastPath
 from pydantic import BaseModel, Field, field_validator
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -139,7 +139,7 @@ def create_api(
 
     # 停用一个 Worker：不再接新任务，在途的会放回 pending。
     @app.post("/api/workers/{name}/disable", dependencies=[Depends(require_token)])
-    async def disable_worker(name: str) -> dict:
+    async def disable_worker(name: str = FastPath(..., pattern=r"^[a-zA-Z0-9_.-]+$")) -> dict:
         op = app.state.disable_worker
         if op is None:
             raise HTTPException(status_code=503, detail="Worker 控制未就绪")
@@ -153,7 +153,7 @@ def create_api(
 
     # 重新启用一个被停用的 Worker。
     @app.post("/api/workers/{name}/enable", dependencies=[Depends(require_token)])
-    async def enable_worker(name: str) -> dict:
+    async def enable_worker(name: str = FastPath(..., pattern=r"^[a-zA-Z0-9_.-]+$")) -> dict:
         op = app.state.enable_worker
         if op is None:
             raise HTTPException(status_code=503, detail="Worker 控制未就绪")
@@ -167,7 +167,7 @@ def create_api(
 
     # 删除 sessions/<name>.session，并卸掉对应 Worker。
     @app.delete("/api/workers/{name}", dependencies=[Depends(require_token)])
-    async def delete_worker(name: str) -> dict:
+    async def delete_worker(name: str = FastPath(..., pattern=r"^[a-zA-Z0-9_.-]+$")) -> dict:
         op = app.state.delete_worker
         if op is None:
             raise HTTPException(status_code=503, detail="Worker 控制未就绪")
@@ -283,11 +283,11 @@ def create_api(
 
     # 先停发现和调度，再拉起新进程。凭据保存后由前端确认才调用。
     @app.post("/api/process/restart", dependencies=[Depends(require_token)])
-    async def restart_process() -> dict:
+    async def restart_process(background_tasks: BackgroundTasks) -> dict:
         op = app.state.restart_process
         if op is None:
             raise HTTPException(status_code=503, detail="重启未就绪")
-        op()
+        background_tasks.add_task(op)
         return {"ok": True}
 
     # 个人号已加入的群和频道，供设置页点选。没有用户号时 online 为 false。
@@ -406,9 +406,9 @@ def create_api(
                     if entry.name.startswith("."):
                         continue
                     try:
-                        if entry.is_dir(follow_symlinks=False):
+                        if entry.is_dir(follow_symlinks=True):
                             dir_items.append(entry)
-                        elif entry.is_file(follow_symlinks=False):
+                        elif entry.is_file(follow_symlinks=True):
                             file_entries.append(entry)
                     except OSError:
                         continue

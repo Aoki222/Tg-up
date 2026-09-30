@@ -45,6 +45,10 @@ def _ensure_configured() -> None:
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
+    # 压制第三方库日志噪音，只保留警告及以上
+    for _lib in ("uvicorn", "uvicorn.access", "telethon", "aiosqlite", "httpx", "httpcore"):
+        logging.getLogger(_lib).setLevel(logging.WARNING)
+
     _configured = True
 
 

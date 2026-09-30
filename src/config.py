@@ -8,6 +8,7 @@ sessions 目录只提供路径，里面的 *.session 由 SessionPool 运行中�
 """
 
 import os
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -47,31 +48,35 @@ def mask_api_hash(value: str) -> str:
     return f"{text[:4]}••••{text[-2:]}"
 
 
+_dotenv_lock = threading.Lock()
+
+
 def upsert_dotenv(updates: dict[str, str], path: Path | None = None) -> None:
     """只改给定键，其它行和注释原样保留。"""
-    target = path or ENV_PATH
-    lines: list[str] = []
-    if target.exists():
-        lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    with _dotenv_lock:
+        target = path or ENV_PATH
+        lines: list[str] = []
+        if target.exists():
+            lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
 
-    seen: set[str] = set()
-    rewritten: list[str] = []
-    for line in lines:
-        stripped = line.lstrip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            rewritten.append(line)
-            continue
-        key = stripped.split("=", 1)[0].strip()
-        if key in updates:
-            ending = "\n" if line.endswith("\n") else ""
-            rewritten.append(f"{key}={updates[key]}{ending}")
-            seen.add(key)
-        else:
-            rewritten.append(line)
+        seen: set[str] = set()
+        rewritten: list[str] = []
+        for line in lines:
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                rewritten.append(line)
+                continue
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                ending = "\n" if line.endswith("\n") else ""
+                rewritten.append(f"{key}={updates[key]}{ending}")
+                seen.add(key)
+            else:
+                rewritten.append(line)
 
-    if rewritten and not rewritten[-1].endswith("\n"):
-        rewritten.append("\n")
-    for key, value in updates.items():
-        if key not in seen:
-            rewritten.append(f"{key}={value}\n")
-    target.write_text("".join(rewritten), encoding="utf-8")
+        if rewritten and not rewritten[-1].endswith("\n"):
+            rewritten.append("\n")
+        for key, value in updates.items():
+            if key not in seen:
+                rewritten.append(f"{key}={value}\n")
+        target.write_text("".join(rewritten), encoding="utf-8")

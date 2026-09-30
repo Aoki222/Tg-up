@@ -90,7 +90,8 @@ apiClient.interceptors.response.use(
       message = error.response.data.detail;
     }
 
-    return Promise.reject(new Error(message));
+    error.message = message;
+    return Promise.reject(error);
   },
 );
 

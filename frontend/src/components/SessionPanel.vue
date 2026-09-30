@@ -145,27 +145,30 @@ async function showQr(result: SessionLoginResult): Promise<void> {
 
 function stopQrPoll(): void {
   // 进入密码/完成/关闭状态时停止轮询，避免继续访问已结束的 login_id。
-  window.clearInterval(qrTimer);
+  window.clearTimeout(qrTimer);
   qrTimer = 0;
 }
 
 function startQrPoll(): void {
-  // 前端不维持 WebSocket；每 1.5 秒读取一次后端 watcher 的最新状态。
+  // 前端不维持 WebSocket；用递归 setTimeout 避免请求堆积。
   stopQrPoll();
-  qrTimer = window.setInterval(async () => {
+  async function tick() {
     if (!loginId.value) return;
     try {
       const result = await pollSessionLogin(loginId.value);
       if (result.step === "qr") {
         await showQr(result);
+      } else {
+        handleResult(result);
         return;
       }
-      handleResult(result);
     } catch (error) {
-      stopQrPoll();
       ElMessage.error(error instanceof Error ? error.message : "二维码登录失败");
+      return;
     }
-  }, 1500);
+    qrTimer = window.setTimeout(tick, 1500);
+  }
+  qrTimer = window.setTimeout(tick, 1500);
 }
 
 /** 发起初始创建握手 */

@@ -89,7 +89,19 @@ async def get_db():
     if pool is None:
         raise RuntimeError("SQLite 连接池未打开")
     db = await pool.get()
+    _return_to_pool = True
     try:
         yield db
     finally:
-        await pool.put(db)
+        try:
+            if db.in_transaction:
+                await db.rollback()
+        except Exception:
+            logger.warning("归还连接前回滚失败，尝试关闭连接")
+            _return_to_pool = False
+            try:
+                await db.close()
+            except Exception:
+                pass
+        if _return_to_pool:
+            await pool.put(db)

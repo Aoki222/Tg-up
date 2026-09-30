@@ -409,7 +409,13 @@ class SessionLoginService:
             unlink_session(dest_base)
         if not tmp_file.exists():
             raise FileNotFoundError("临时 session 未生成")
-        tmp_file.replace(dest_file)
+        for _suffix in ("", "-wal", "-shm"):
+            _src = Path(str(tmp_file) + _suffix)
+            _dst = Path(str(dest_file) + _suffix)
+            if _src.exists():
+                _src.replace(_dst)
+            elif _dst.exists():
+                _dst.unlink()
         meta_path = self.session_dir / f"{name}.json"
         meta_path.write_text(
             json.dumps(

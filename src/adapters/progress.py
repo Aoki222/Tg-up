@@ -107,8 +107,11 @@ class ProgressHub:
             except asyncio.QueueFull:
                 try:
                     queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
                     queue.put_nowait(progress)
-                except Exception:
+                except asyncio.QueueFull:
                     stale.append(queue)
         for queue in stale:
             self.unsubscribe(queue)

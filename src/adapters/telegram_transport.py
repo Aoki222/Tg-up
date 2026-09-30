@@ -58,7 +58,7 @@ class _NamedFile:
 
     def read(self, size: int = -1):
         if size is None or size < 0:
-            raise OSError("拒绝一次性读取整个文件，请按块读取")
+            return self._fh.read()
         return self._fh.read(size)
 
     def seek(self, offset: int, whence: int = 0):

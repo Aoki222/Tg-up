@@ -63,9 +63,10 @@ async def wait_until_file_stable(
             logger.warning("等待文件稳定超时: %s", file_path)
             return None
         await asyncio.sleep(check_interval)
-        if not file_path.is_file():
+        try:
+            current_size = file_path.stat().st_size
+        except OSError:
             return None
-        current_size = file_path.stat().st_size
         if current_size == last_size:
             stable_hits += 1
         else:

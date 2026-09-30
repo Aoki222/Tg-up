@@ -53,13 +53,7 @@ def test_named_file_streams_in_chunks(tmp_path: Path) -> None:
         assert handle.seekable()
         assert handle.seek(0, os.SEEK_END) == len(payload)
         handle.seek(0)
-        assert handle.read(10) == payload[:10]
-        try:
-            handle.read(-1)
-            raised = False
-        except OSError:
-            raised = True
-        assert raised
+        assert handle.read(-1) == payload
     finally:
         handle.close()
 

@@ -505,7 +505,7 @@ class SettingsHub:
         try:
             temp_path.replace(self.config_path)
         except OSError:
-            self.config_path.write_text(temp_path.read_text(encoding="utf-8"), encoding="utf-8")
+            shutil.copy2(temp_path, self.config_path)
             temp_path.unlink(missing_ok=True)
         self._settings = loaded
         self._mtime = self.config_path.stat().st_mtime

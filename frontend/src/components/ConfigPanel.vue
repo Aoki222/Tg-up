@@ -72,8 +72,8 @@ function snapshotOf(config: UploadConfig): string {
     watch_extensions: [...config.watch_extensions].map((item) => item.trim()).sort(),
     routes: [...(config.routes ?? [])]
       .map((item) => ({
-        name: item.name.trim(),
-        path: item.path.trim(),
+        name: (item.name || "").trim(),
+        path: (item.path || "").trim(),
         chat_id: item.chat_id,
         topic_enabled: item.topic_enabled,
         enabled: item.enabled !== false,

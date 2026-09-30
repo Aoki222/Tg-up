@@ -8,8 +8,7 @@ import type { UnmatchedFile } from "../types";
 const files = ref<UnmatchedFile[]>([]);
 let timer = 0;
 let inflight = false;
-let ownerId = 0;
-let nextId = 0;
+let activeCount = 0;
 
 async function refresh(): Promise<void> {
   if (inflight) return;
@@ -33,26 +32,28 @@ export function useUnmatchedFiles() {
 }
 
 export function useUnmatchedPolling() {
-  const id = ++nextId;
   let running = false;
 
   function start(): void {
     if (running) return;
     running = true;
-    stopTimer();
-    ownerId = id;
-    void refresh();
-    timer = window.setInterval(() => {
+    activeCount++;
+    if (activeCount === 1) {
       void refresh();
-    }, 5000);
+      timer = window.setInterval(() => {
+        void refresh();
+      }, 5000);
+    }
   }
 
   function stop(): void {
     if (!running) return;
     running = false;
-    if (ownerId !== id) return;
-    ownerId = 0;
-    stopTimer();
+    activeCount--;
+    if (activeCount <= 0) {
+      activeCount = 0;
+      stopTimer();
+    }
   }
 
   onMounted(start);

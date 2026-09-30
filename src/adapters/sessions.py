@@ -73,7 +73,8 @@ class SessionPool:
         self.clients: dict[str, TelegramClient] = {}
         self.usernames: dict[str, str | None] = {}
         self.reconnect: dict[str, ReconnectStatus] = {}
-        self._connect_lock = asyncio.Lock()
+        self._name_locks: dict[str, asyncio.Lock] = {}
+        self._dict_lock = asyncio.Lock()
 
     def list_files(self) -> dict[str, Path]:
         """返回当前磁盘 session 快照，供 Application 对比并增删 Worker。"""
@@ -122,7 +123,20 @@ class SessionPool:
 
     async def ensure_client(self, name: str, session_path: Path) -> TelegramClient | None:
         """已在池里且已连接则复用。未到重试点则返回已有 client 或 None，不阻塞。"""
-        async with self._connect_lock:
+        # 短暂持锁：快速检查已连接的情况，获取 per-name 锁
+        async with self._dict_lock:
+            existing = self.clients.get(name)
+            if existing is not None and existing.is_connected():
+                status = self.reconnect.setdefault(name, ReconnectStatus())
+                status.attempt = 0
+                status.error = ""
+                status.next_at = 0.0
+                return existing
+            if name not in self._name_locks:
+                self._name_locks[name] = asyncio.Lock()
+            name_lock = self._name_locks[name]
+        # 长时间网络 I/O 在 per-name 锁内，不阻塞其他 session
+        async with name_lock:
             return await self._ensure_client_locked(name, session_path)
 
     async def _ensure_client_locked(self, name: str, session_path: Path) -> TelegramClient | None:
