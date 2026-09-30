@@ -3,6 +3,11 @@ name: Promote Staging to Latest
 on:
   workflow_dispatch:
     inputs:
+      source_tag:
+        description: '待晋级的源镜像标签 (默认 staging，可指定如 staging-bc825cd)'
+        required: true
+        default: 'staging'
+        type: string
       version:
         description: '发布版本号 Tag (可选，例如 v1.0.0。留空则仅发布 latest)'
         required: false
@@ -35,7 +40,14 @@ jobs:
           # 确保仓库路径全小写以符合 Docker 规范
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           IMAGE_BASE="ghcr.io/${REPO_LOWER}"
-          SOURCE_IMAGE="${IMAGE_BASE}:staging"
+
+          # 获取待晋级的源标签（默认为 staging，允许用户传入特定版本如 staging-bc825cd）
+          RAW_SOURCE_TAG="${{ inputs.source_tag }}"
+          SOURCE_TAG=$(echo "${RAW_SOURCE_TAG}" | xargs)
+          if [ -z "${SOURCE_TAG}" ]; then
+            SOURCE_TAG="staging"
+          fi
+          SOURCE_IMAGE="${IMAGE_BASE}:${SOURCE_TAG}"
 
           echo "==> 检查源测试镜像是否存在: ${SOURCE_IMAGE} ..."
           docker buildx imagetools inspect "${SOURCE_IMAGE}"
@@ -51,14 +63,14 @@ jobs:
             TAG_ARGS+=("--tag" "${IMAGE_BASE}:${VERSION}")
           fi
 
-          echo "==> 正在执行镜像晋级 (直接在 Registry 端创建 Tag，秒级发布，不重新构建)..."
+          echo "==> 正在执行镜像晋级 (基于 ${SOURCE_IMAGE} 在 Registry 端创建 Tag，秒级发布)..."
           docker buildx imagetools create "${TAG_ARGS[@]}" "${SOURCE_IMAGE}"
 
           echo "==> 晋级完成！"
 
           # 写入 GitHub Step Summary
           echo "### 🚀 镜像晋级成功 (Promotion Succeeded)" >> $GITHUB_STEP_SUMMARY
-          echo "- **源测试镜像**: \`${SOURCE_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **源测试镜像 (Source)**: \`${SOURCE_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **已晋级发布的正式 Tag**:" >> $GITHUB_STEP_SUMMARY
           echo "  - \`${IMAGE_BASE}:latest\`" >> $GITHUB_STEP_SUMMARY
           if [ -n "${VERSION}" ]; then

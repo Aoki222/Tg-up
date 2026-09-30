@@ -76,15 +76,17 @@ image: ghcr.io/aoki222/tg-up:staging-上一个提交短SHA
 
 ## 三、正式晋级发布（Promotion）
 
-当您在 VPS 上完成功能测试并确认当前 `:staging` 镜像工作正常后，即可将其晋级为正式版本：
+当您在 VPS 上完成功能测试并确认某个版本镜像工作正常后，即可将其晋级为正式生产版本：
 
 1. 打开 GitHub 仓库页面：`https://github.com/Aoki222/Tg-up/actions`
 2. 在左侧工作流列表中点击 **`Promote Staging to Latest`**。
-3. 点击右侧的 **`Run workflow`** 下拉按钮：
-   - **Branch**: 保持 `main`
+3. 点击右侧的 **`Run workflow`** 下拉按钮，可以看到两个输入项：
+   - **待晋级的源镜像标签 (Source Tag)**：
+     - **默认值**：`staging`（即晋级当前最新的测试镜像，例如 `staging-a6f9bc0`）。
+     - **指定历史/特定版本**：输入特定的 Tag，例如 **`staging-bc825cd`**。这样即使后续又有新代码推送到 main 刷新了 `:staging`，您也可以精准地将之前验证过的稳定版本发布为 `:latest`！
    - **发布版本号 Tag (可选)**：
      - 若只想更新 `:latest`：直接留空。
-     - 若同时需要固定版本号：输入版本号（例如 `v1.0.0` 或 `1.0.0`）。
+     - 若同时需要打上固定版本号：输入版本号（例如 `v1.0.0` 或 `1.0.0`）。
 4. 点击绿色的 **Run workflow** 按钮启动任务。
 
 ### 晋级原理解析
@@ -92,10 +94,10 @@ image: ghcr.io/aoki222/tg-up:staging-上一个提交短SHA
 ```bash
 docker buildx imagetools create \
   --tag ghcr.io/aoki222/tg-up:latest \
-  --tag ghcr.io/aoki222/tg-up:v1.0.0 \
-  ghcr.io/aoki222/tg-up:staging
+  [--tag ghcr.io/aoki222/tg-up:v1.0.0] \
+  ghcr.io/aoki222/tg-up:${SOURCE_TAG}
 ```
-- **纯 Registry 端操作**：直接由 GHCR 复制并生成镜像 Manifest 指针，**耗时仅 3~5 秒**。
+- **纯 Registry 端操作**：直接由 GHCR 基于指定的源镜像（无论最新的 `:staging` 还是特定的 `:staging-bc825cd`）复制并生成新的 Manifest 指针，**耗时仅 3~5 秒**。
 - **完全杜绝二次构建**：不拉取源码、不重新编译前端或打包 Python，确保正式生产环境运行的二进制内容与测试 VPS 上验证通过的内容 100% 字节一致。
 
 ---
