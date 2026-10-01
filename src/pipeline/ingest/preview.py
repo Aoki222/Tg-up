@@ -13,7 +13,7 @@ from ...adapters.task_store import TaskRepository
 from ...domain.settings_hub import SettingsHub
 from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
-from ...utils.video_preview import FirstFramePreview, GridPreview
+from ...utils.video_preview import FirstFramePreview, GridPreview, NoVideoStreamError
 
 logger = get_logger(__name__)
 
@@ -77,6 +77,9 @@ class PreviewPool:
                 await self._run(job)
         except asyncio.CancelledError:
             await self.task_repository.update_preview(job.task_id, None, False, "preview cancelled")
+        except (NoVideoStreamError, FileNotFoundError) as error:
+            await self.task_repository.update_preview(job.task_id, None, False, str(error))
+            logger.warning("预览跳过 task=%s: %s", job.task_id, error)
         except Exception as error:
             await self.task_repository.update_preview(job.task_id, None, False, str(error))
             logger.exception("预览生成失败 task=%s", job.task_id)

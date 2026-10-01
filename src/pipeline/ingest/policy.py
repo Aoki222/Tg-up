@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...domain.upload_settings import PreviewMode, UploadSettings
+from .filters import check_transient_file
 
 _PREVIEWABLE_SUFFIXES = frozenset({".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".webm", ".flv", ".ts", ".mpeg", ".mpg"})
 
@@ -27,6 +28,8 @@ class IngestDecision:
     matched: bool = False
     platform: str = ""
     dest_id: str = ""
+    is_transient: bool = False
+    transient_reason: str = ""
 
 
 def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[str, str, int, bool] | None:
@@ -113,6 +116,19 @@ class IngestPolicy:
 
     def decide(self, file_path: Path, settings: UploadSettings) -> IngestDecision:
         """用调用当下的 settings。同一文件稍后热更新了预览模式，已入库的不受影响。"""
+        transient_res = check_transient_file(file_path)
+        if transient_res.is_transient:
+            return IngestDecision(
+                need_single=False,
+                need_content=False,
+                chat_id=0,
+                topic_enabled=False,
+                allowed=False,
+                matched=False,
+                is_transient=True,
+                transient_reason=transient_res.reason,
+            )
+
         matched = match_folder_route(file_path, settings)
         suffix = file_path.suffix.lower()
         if matched is None:

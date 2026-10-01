@@ -81,8 +81,22 @@ class _FastMessageError(Exception):
 
 class TelegramTransport:
     """一个 session 一个实例，不要多个 Worker 共用同一个 client。"""
-    def __init__(self, telegram_client):
+
+    def __init__(self, telegram_client, sender_pool=None):
         self.telegram_client = telegram_client
+        self.sender_pool = sender_pool
+
+    async def invalidate_pool(self) -> None:
+        """主连接断开或网络异常时，将底层连接池中的连接置为脏并清理。"""
+        if self.sender_pool is not None and hasattr(self.sender_pool, "invalidate_all"):
+            res = self.sender_pool.invalidate_all()
+            if asyncio.iscoroutine(res):
+                await res
+
+    async def close(self) -> None:
+        """Worker 退出时关闭底层连接池。"""
+        if self.sender_pool is not None and hasattr(self.sender_pool, "close"):
+            await self.sender_pool.close()
 
     async def send(
         self,
@@ -165,6 +179,7 @@ class TelegramTransport:
                     path,
                     progress_callback=report,
                     max_workers=FAST_UPLOAD_WORKERS,
+                    sender_pool=self.sender_pool,
                 )
             except FloodWaitError:
                 raise

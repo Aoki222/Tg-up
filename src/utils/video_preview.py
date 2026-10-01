@@ -67,6 +67,10 @@ async def _kill_process(process: asyncio.subprocess.Process) -> None:
         pass
 
 
+class NoVideoStreamError(RuntimeError):
+    """媒体文件中无视频流，无法提取画面截图。"""
+
+
 async def run_ffmpeg_command(arguments: list[str], ffmpeg_path: str = "ffmpeg") -> None:
     """异步跑一条 ffmpeg；CancelledError 时 kill 子进程。"""
     command = [ffmpeg_path, "-y", *arguments]
@@ -84,6 +88,9 @@ async def run_ffmpeg_command(arguments: list[str], ffmpeg_path: str = "ffmpeg") 
         raise
     if process.returncode != 0:
         err = (stderr or b"").decode("utf-8", errors="replace")
+        if "does not contain any stream" in err:
+            logger.warning("媒体文件中无可用视频流，无法截图: %s", err[-300:])
+            raise NoVideoStreamError(f"媒体文件中无可用视频流: {err[-300:]}")
         logger.error("ffmpeg 失败：%s", err[-2000:])
         raise RuntimeError(f"ffmpeg 失败：{err[-500:]}")
 

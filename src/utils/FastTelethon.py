@@ -3,7 +3,7 @@ import hashlib
 import inspect
 import math
 import os
-from typing import AsyncGenerator, Awaitable, BinaryIO, Callable, Optional, Union
+from typing import Any, AsyncGenerator, Awaitable, BinaryIO, Callable, Optional, Union
 
 from telethon import TelegramClient, helpers
 from telethon.network import MTProtoSender
@@ -176,6 +176,7 @@ class FastTelethon:
         file: Union[str, BinaryIO],
         progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
         max_workers: int = 6,
+        sender_pool: Optional[Any] = None,
     ) -> TypeInputFile:
         """
         极速多连接并发分块上传
@@ -199,14 +200,30 @@ class FastTelethon:
         file_id = helpers.generate_random_long()
         hash_md5 = hashlib.md5()
 
-        senders, owned_senders = await _open_upload_senders(client, max(1, int(max_workers)))
+        desired_workers = min(total_parts, max(1, int(max_workers)))
+        owned_senders: list[MTProtoSender] = []
+        is_from_pool = False
+
+        if sender_pool is not None:
+            senders = await sender_pool.acquire(desired_workers)
+            if senders:
+                is_from_pool = True
+            else:
+                main = getattr(client, "_sender", None)
+                if main is None:
+                    raise RuntimeError("Telegram client 没有可用的上传连接")
+                senders = [main]
+        else:
+            senders, owned_senders = await _open_upload_senders(client, desired_workers)
+
         worker_count = len(senders)
         logger.info(
-            "FastTelethon 分块上传 name=%s size=%s parts=%s connections=%s",
+            "FastTelethon 分块上传 name=%s size=%s parts=%s connections=%s (pool=%s)",
             file_name,
             file_size,
             total_parts,
             worker_count,
+            is_from_pool,
         )
         queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=worker_count * 2)
         uploaded_bytes = 0
@@ -272,11 +289,14 @@ class FastTelethon:
         finally:
             if should_close:
                 file_handle.close()
-            for sender in owned_senders:
-                try:
-                    await sender.disconnect()
-                except Exception:
-                    logger.debug("关闭额外上传连接失败", exc_info=True)
+            if is_from_pool and sender_pool is not None:
+                await sender_pool.release(senders)
+            else:
+                for sender in owned_senders:
+                    try:
+                        await sender.disconnect()
+                    except Exception:
+                        logger.debug("关闭额外上传连接失败", exc_info=True)
 
         # 返回 Telegram 官方需要的 InputFile 凭证对象
         if is_big:
@@ -333,4 +353,5 @@ class FastTelethon:
 # 便捷别名导出，方便直接 import
 upload_file = FastTelethon.upload_file
 download_file = FastTelethon.download_file
+create_parallel_sender = _create_parallel_sender
 describe_error = describe_taskgroup_error

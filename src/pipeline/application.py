@@ -54,6 +54,7 @@ from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
 from ..domain.task import task_from_row
 from ..logger import get_logger
+from ..utils.sender_pool import SenderPool
 from ..utils.topic_creactor import TopicCreator
 from .discover import FolderWatcher, iter_existing_files_many
 from .ingest import FileIngestor, PreviewJob, PreviewPool
@@ -297,10 +298,11 @@ class UploaderApplication:
                         await self._channel_cache.attach_client(name, client)
                     except Exception:
                         logger.exception("注册 Telegram 群组事件失败: %s", name)
+                sender_pool = SenderPool(client, max_senders=6, idle_timeout=120.0)
                 worker = UploadWorker(
                     worker_name=name,
                     task_repository=repository,
-                    transport=TelegramTransport(client),
+                    transport=TelegramTransport(client, sender_pool=sender_pool),
                     after_upload=after_upload,
                     settings_hub=settings_hub,
                     on_task_finished=scheduler.request_reschedule,

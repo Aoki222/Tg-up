@@ -138,6 +138,11 @@ class UploadWorker:
             unfinished.cancel()
         if self.background_tasks:
             await asyncio.wait(self.background_tasks, timeout=2.0)
+        if hasattr(self.transport, "close"):
+            try:
+                await self.transport.close()
+            except Exception:
+                logger.debug("[%s] 关闭 transport 失败", self.worker_name, exc_info=True)
 
     async def process_single_task(self, task: Task) -> None:
         """执行单任务发送，并按 Transport 结果更新数据库、进度和重试状态。"""
@@ -175,6 +180,8 @@ class UploadWorker:
                 elif isinstance(result, SendDisconnected):
                     if self.session_pool is not None:
                         self.session_pool.mark_disconnected(self.worker_name, result.reason)
+                    if hasattr(self.transport, "invalidate_pool"):
+                        await self.transport.invalidate_pool()
                     await self.task_repository.release_task(task.id, f"disconnected: {result.reason}")
                     if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                         self._emit_progress(task, 0, 1, "flood_wait", "连接断开，正在重试")
@@ -275,6 +282,8 @@ class UploadWorker:
                         continue
                     pool.mark_disconnected(self.worker_name, "Telegram 连接已断开")
                     logger.warning("[%s] Telegram 连接已断开，开始重连", self.worker_name)
+                    if hasattr(self.transport, "invalidate_pool"):
+                        await self.transport.invalidate_pool()
                 if not pool.can_retry_now(self.worker_name):
                     status = pool.reconnect.get(self.worker_name)
                     wait = 1.0

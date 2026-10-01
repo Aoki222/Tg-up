@@ -112,6 +112,9 @@ class FileIngestor:
         path_key = str(file_path)
         settings = self.settings_hub.get()
         decision = self.ingest_policy.decide(file_path, settings)
+        if decision.is_transient:
+            logger.debug("跳过下载中间/临时文件 [%s]: %s", decision.transient_reason, file_path.name)
+            return None
         if not decision.allowed:
             existing = await self.task_repository.find_active_by_file_path(path_key)
             if existing:
@@ -153,6 +156,9 @@ class FileIngestor:
         # 写稳可能很久，热更新后的扩展名 / 封面 / 群要重新决议
         settings = self.settings_hub.get()
         decision = self.ingest_policy.decide(file_path, settings)
+        if decision.is_transient:
+            logger.debug("跳过下载中间/临时文件 [%s]: %s", decision.transient_reason, file_path.name)
+            return None
         if not decision.matched:
             if settings.watch_extensions and file_path.suffix.lower() not in settings.watch_extensions:
                 logger.info("跳过非目标文件: %s", file_path)
