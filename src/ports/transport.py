@@ -4,7 +4,7 @@
 - SendOk：拿到消息 id
 - SendRetryLater：FloodWait，任务没坏，账号要歇 seconds 秒
 - SendDisconnected：网络/断线，不计业务失败，走连接重试
-- SendFailed：文件/权限/超时等，走重试计数
+- SendFailed：文件/权限/超时等，走重试计数。retryable 为假时一次记 failed
 - SendOversized：分片超过 Bot 上限，停在 oversized，不换 Bot
 """
 
@@ -38,7 +38,10 @@ class SendDisconnected:
 
 @dataclass(frozen=True)
 class SendFailed:
+    """业务失败。源文件已经不在时 retryable 为假，一次记 failed，不再占着账号回队列。"""
+
     reason: str
+    retryable: bool = True
 
 
 @dataclass(frozen=True)

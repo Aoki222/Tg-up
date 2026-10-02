@@ -19,7 +19,7 @@ from ..domain import limits
 from ..domain.task import Task
 from ..logger import get_logger
 from ..ports.transport import SendDisconnected, SendFailed, SendOk, SendOversized, SendResult, SendRetryLater
-from ..utils.FastTelethon import describe_taskgroup_error, upload_file as fast_upload_file
+from ..utils.FastTelethon import UploadInterrupted, describe_taskgroup_error, upload_file as fast_upload_file
 
 logger = get_logger(__name__)
 
@@ -85,6 +85,7 @@ class TelegramTransport:
     def __init__(self, telegram_client, sender_pool=None):
         self.telegram_client = telegram_client
         self.sender_pool = sender_pool
+        self._partial: dict[str, UploadInterrupted] = {}
 
     async def invalidate_pool(self) -> None:
         """主连接断开或网络异常时，将底层连接池中的连接置为脏并清理。"""
@@ -109,7 +110,7 @@ class TelegramTransport:
         if not video_path:
             return SendFailed("缺少视频路径")
         if not Path(video_path).exists():
-            return SendFailed(f"文件不存在: {video_path}")
+            return SendFailed(f"文件不存在: {video_path}", retryable=False)
 
         files = [video_path]
         page_path = task.artifacts.page_path
@@ -121,14 +122,33 @@ class TelegramTransport:
 
         for attempt in range(1, FAST_UPLOAD_ATTEMPTS + 1):
             try:
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     self._send_fast(task, files, on_progress),
                     timeout=timeout_seconds,
                 )
+                self._partial.pop(video_path, None)
+                return result
+            except UploadInterrupted as interrupted:
+                if _is_parts_invalid(interrupted):
+                    self._partial.pop(video_path, None)
+                    return SendOversized(limits.PARTS_INVALID_REASON)
+                self._partial[video_path] = interrupted
+                logger.warning(
+                    "FastTelethon 连接断开，已保留 %s/%s 个分片，等重连后继续: %s",
+                    len(interrupted.done),
+                    interrupted.total_parts,
+                    video_path,
+                )
+                await self.invalidate_pool()
+                return SendDisconnected(str(interrupted))
             except _FastUploadError as error:
                 if _is_parts_invalid(error):
                     logger.warning("文件分片超过 Telegram 上限，停止重试: %s", error)
                     return SendOversized(limits.PARTS_INVALID_REASON)
+                if _is_disconnect_error(error):
+                    logger.warning("FastTelethon 连接断开，任务回队列，不立刻重传: %s", error)
+                    await self.invalidate_pool()
+                    return SendDisconnected(str(error))
                 logger.warning(
                     "FastTelethon 分块上传失败，第 %s/%s 次: %s",
                     attempt,
@@ -138,6 +158,7 @@ class TelegramTransport:
                 if attempt < FAST_UPLOAD_ATTEMPTS:
                     continue
                 logger.warning("FastTelethon 连续失败，回退原生 send_file: %s", video_path)
+                self._partial.pop(video_path, None)
                 return await self._send_native(task, files, timeout_seconds, on_progress)
             except _FastMessageError as error:
                 if len(files) > 1:
@@ -173,6 +194,13 @@ class TelegramTransport:
                 if on_progress is not None:
                     on_progress(base + current, total_size)
 
+            saved = self._partial.get(path)
+            file_size = Path(path).stat().st_size
+            resume_id = None
+            resume_parts: set[int] | None = None
+            if saved is not None and saved.file_size == file_size and saved.done:
+                resume_id = saved.file_id
+                resume_parts = set(saved.done)
             try:
                 handle = await fast_upload_file(
                     self.telegram_client,
@@ -180,7 +208,11 @@ class TelegramTransport:
                     progress_callback=report,
                     max_workers=FAST_UPLOAD_WORKERS,
                     sender_pool=self.sender_pool,
+                    file_id=resume_id,
+                    skip_parts=resume_parts,
                 )
+            except UploadInterrupted:
+                raise
             except FloodWaitError:
                 raise
             except Exception as error:
@@ -390,9 +422,8 @@ def _is_album_invalid(error: BaseException) -> bool:
 
 
 def _is_disconnect_error(error: BaseException) -> bool:
-    if isinstance(error, (ConnectionError, OSError, BrokenPipeError, ConnectionResetError)):
-        return True
-    text = str(error).lower()
+    seen: set[int] = set()
+    stack: list[BaseException] = [error]
     needles = (
         "disconnect",
         "not connected",
@@ -405,7 +436,27 @@ def _is_disconnect_error(error: BaseException) -> bool:
         "name or service not known",
         "temporary failure",
     )
-    return any(item in text for item in needles)
+    while stack:
+        current = stack.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if isinstance(current, ConnectionError):
+            return True
+        text = str(current).lower()
+        if any(item in text for item in needles):
+            return True
+        cause = current.__cause__
+        if isinstance(cause, BaseException):
+            stack.append(cause)
+        context = current.__context__
+        if isinstance(context, BaseException):
+            stack.append(context)
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            stack.extend(item for item in nested if isinstance(item, BaseException))
+    return False
 
 
 def _classify_send_error(error: BaseException, prefix: str) -> SendResult:

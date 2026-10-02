@@ -50,6 +50,74 @@ def describe_taskgroup_error(error: BaseException) -> str:
     return f"{name}: {text}" if text else name
 
 
+def _consume_future_exception(future: asyncio.Future) -> None:
+    """连接断开时 Telethon 会把异常写进 Future。取消上传任务时要把这个异常读出来。"""
+
+    def _read(item: asyncio.Future) -> None:
+        if item.cancelled():
+            return
+        item.exception()
+
+    if future.done():
+        _read(future)
+    else:
+        future.add_done_callback(_read)
+
+
+def _is_connection_failure(error: BaseException) -> bool:
+    seen: set[int] = set()
+    stack: list[BaseException] = [error]
+    while stack:
+        current = stack.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if isinstance(current, ConnectionError):
+            return True
+        text = str(current).lower()
+        if any(
+            item in text
+            for item in (
+                "disconnect",
+                "not connected",
+                "connection reset",
+                "connection closed",
+                "server closed",
+            )
+        ):
+            return True
+        cause = current.__cause__
+        if isinstance(cause, BaseException):
+            stack.append(cause)
+        context = current.__context__
+        if isinstance(context, BaseException):
+            stack.append(context)
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            stack.extend(item for item in nested if isinstance(item, BaseException))
+    return False
+
+
+class UploadInterrupted(Exception):
+    """分块传到一半连接断了。file_id 和已完成分片可以在同一账号上接着传。"""
+
+    def __init__(
+        self,
+        file_id: int,
+        total_parts: int,
+        file_size: int,
+        done: set[int],
+        cause: BaseException,
+    ) -> None:
+        super().__init__(describe_taskgroup_error(cause))
+        self.file_id = file_id
+        self.total_parts = total_parts
+        self.file_size = file_size
+        self.done = set(done)
+        self.cause = cause
+
+
 async def _create_parallel_sender(client: TelegramClient) -> MTProtoSender:
     """同一 DC 上再建一条独立 TCP，复用当前 session 的 auth_key。"""
     dc_id = client.session.dc_id
@@ -177,6 +245,8 @@ class FastTelethon:
         progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
         max_workers: int = 6,
         sender_pool: Optional[Any] = None,
+        file_id: Optional[int] = None,
+        skip_parts: Optional[set[int]] = None,
     ) -> TypeInputFile:
         """
         极速多连接并发分块上传
@@ -197,7 +267,11 @@ class FastTelethon:
 
         total_parts = math.ceil(file_size / CHUNK_SIZE) if file_size else 1
         is_big = file_size > 10 * 1024 * 1024  # > 10MB
-        file_id = helpers.generate_random_long()
+        done_parts = {index for index in (skip_parts or set()) if 0 <= index < total_parts}
+        if file_id is None or not done_parts:
+            file_id = helpers.generate_random_long()
+            done_parts = set()
+        completed: set[int] = set(done_parts)
         hash_md5 = hashlib.md5()
 
         desired_workers = min(total_parts, max(1, int(max_workers)))
@@ -258,10 +332,19 @@ class FastTelethon:
                             file_part=part_idx,
                             bytes=chunk_data,
                         )
-                    result = await sender.send(req)
+                    pending = sender.send(req)
+                    try:
+                        result = await pending
+                    except asyncio.CancelledError:
+                        if asyncio.isfuture(pending):
+                            _consume_future_exception(pending)
+                        raise
+                    if asyncio.isfuture(pending):
+                        _consume_future_exception(pending)
                     if not result:
                         raise RuntimeError(f"分块 {part_idx}/{total_parts} 上传失败")
                     async with lock:
+                        completed.add(part_idx)
                         uploaded_bytes += len(chunk_data)
                         await report_progress(uploaded_bytes)
                 finally:
@@ -274,6 +357,11 @@ class FastTelethon:
                     raise OSError("读取文件分块失败")
                 if not is_big and chunk:
                     hash_md5.update(chunk)
+                if part_index in done_parts:
+                    async with lock:
+                        uploaded_bytes += len(chunk)
+                        await report_progress(uploaded_bytes)
+                    continue
                 await queue.put((part_index, chunk or b""))
             for _ in range(worker_count):
                 await queue.put(None)
@@ -285,6 +373,14 @@ class FastTelethon:
                         group.create_task(upload_worker(sender))
                     group.create_task(produce())
             except BaseExceptionGroup as error:
+                if _is_connection_failure(error):
+                    raise UploadInterrupted(
+                        file_id,
+                        total_parts,
+                        file_size,
+                        completed,
+                        error,
+                    ) from error
                 raise RuntimeError(describe_taskgroup_error(error)) from error
         finally:
             if should_close:

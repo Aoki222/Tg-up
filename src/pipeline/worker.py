@@ -5,6 +5,7 @@
 - 调 Transport 发送
 - FloodWait：任务回 pending、不增加失败次数，本 worker 暂停接新活
 - 普通失败：retry_count+1，超限才 failed
+- 源文件已不在，或仍是下载分轨：一次记 failed，不再回队列占名额
 - 成功后按任务自己的 policy 做本地收尾（删/留/归档）
 
 serve_forever 只分发、不等上传结束；Queue.join() 等的是 process_single_task 里的 task_done。
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..adapters.task_store import TaskRepository
+from .ingest.filters import check_transient_file
 from ..domain import limits
 from ..domain.concurrency import ConcurrencyGate
 from ..domain.progress import make_progress
@@ -158,6 +160,14 @@ class UploadWorker:
                 await self.task_repository.park_oversized(task.id, limits.OVERSIZED_REASON)
                 logger.warning("[%s] 超过 2GB，不由 Bot 上传: %s", self.worker_name, task.file_path)
                 return
+            transient = check_transient_file(Path(task.artifacts.video_path or task.file_path))
+            if transient.is_transient:
+                reason = transient.reason or "临时文件，不上传"
+                logger.warning("[%s] 跳过临时文件，不再重试: %s (%s)", self.worker_name, task.file_path, reason)
+                if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
+                    self._emit_progress(task, 0, 1, "failed", reason)
+                await self._handle_upload_failure(task, reason, retryable=False)
+                return
             settings = self.settings_hub.get()
             async with self.concurrency_gate:
                 await self.task_repository.mark_task_uploading(task.id)
@@ -210,9 +220,11 @@ class UploadWorker:
                     )
                 elif isinstance(result, SendFailed):
                     logger.error("[%s] 上传失败: %s (%s)", self.worker_name, task.file_path, result.reason)
+                    if not result.retryable:
+                        logger.warning("[%s] 不再重试: %s", self.worker_name, result.reason)
                     if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                         self._emit_progress(task, 0, 1, "failed", result.reason)
-                    await self._handle_upload_failure(task, result.reason)
+                    await self._handle_upload_failure(task, result.reason, retryable=result.retryable)
         except asyncio.CancelledError:
             if self._aborting:
                 await self.task_repository.release_task(task.id, self._abort_reason or "worker aborted")
@@ -306,9 +318,20 @@ class UploadWorker:
         if remaining > 0:
             await asyncio.sleep(remaining)
 
-    async def _handle_upload_failure(self, task: Task, error_message: str) -> None:
-        """业务失败才 +1。未超限回 pending 清空归属，超限才 failed。"""
+    async def _handle_upload_failure(
+        self,
+        task: Task,
+        error_message: str,
+        *,
+        retryable: bool = True,
+    ) -> None:
+        """业务失败才 +1。未超限回 pending 清空归属，超限才 failed。
+
+        源文件已不在、或仍是下载分轨时直接记 failed，避免占着这个账号连试多次。
+        """
         next_retry = task.retry_count + 1
+        if not retryable:
+            next_retry = max(next_retry, task.policy.max_retries)
         await self.task_repository.mark_task_failed(
             task.id,
             next_retry,

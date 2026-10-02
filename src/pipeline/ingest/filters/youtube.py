@@ -4,6 +4,7 @@
 1. YouTube DASH 音视频分轨中间件:
    - 4K/1080p 纯视频轨 (无音频): 如 name.f401.mp4, name.f137.mp4
    - Opus 纯音频轨 (无画面): 如 name.f251.webm, name.f140.m4a
+   - 同名冲突时 yt-dlp 会在格式号后加 -1、-2: 如 name.f251-1.webm
 2. yt-dlp ffmpeg 合并过渡临时文件:
    - 如 name.temp.webm, name.temp.mp4
 """
@@ -14,9 +15,9 @@ from pathlib import Path
 
 from .base import FilterResult, TransientFilter
 
-# 匹配 YouTube DASH 格式分轨: .f<数字>.<音视频常见后缀>
+# 匹配 YouTube DASH 格式分轨: .f<数字>.<后缀>，以及同名冲突的 .f<数字>-1.<后缀>
 _YT_DASH_SPLIT_REGEX = re.compile(
-    r"\.f(?P<fid>\d+)\.(?P<ext>mp4|webm|mkv|mov|m4a|mp3|opus|ogg|flv)$",
+    r"\.f(?P<fid>\d+)(?P<dup>-\d+)?\.(?P<ext>mp4|webm|mkv|mov|m4a|mp3|opus|ogg|flv)$",
     re.IGNORECASE,
 )
 
@@ -40,15 +41,16 @@ class YouTubeFilter(TransientFilter):
     def check(self, file_path: Path) -> FilterResult | None:
         name = file_path.name
 
-        # 1. 检查 YouTube DASH 分轨（如 .f401.mp4, .f251.webm）
+        # 1. 检查 YouTube DASH 分轨（如 .f401.mp4, .f251.webm, .f251-1.webm）
         dash_match = _YT_DASH_SPLIT_REGEX.search(name)
         if dash_match:
             fid = dash_match.group("fid")
+            dup = dash_match.group("dup") or ""
             ext = dash_match.group("ext")
             return FilterResult(
                 is_transient=True,
                 source_platform=self.source_id,
-                reason=f"YouTube DASH 音视频分轨中间件 (.f{fid}.{ext})",
+                reason=f"YouTube DASH 音视频分轨中间件 (.f{fid}{dup}.{ext})",
             )
 
         # 2. 检查合并过渡临时文件（如 .temp.webm）

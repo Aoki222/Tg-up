@@ -1,9 +1,9 @@
+import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 from telethon.tl.types import InputFileBig
-
-import os
 
 from src.adapters.telegram_transport import (
     TelegramTransport,
@@ -13,8 +13,8 @@ from src.adapters.telegram_transport import (
     _rename_input_file,
 )
 from src.domain.task import AfterSuccess, Task, TaskArtifacts, TaskDestination, TaskPolicy, TaskStatus
-from src.ports.transport import SendOk, SendOversized
-from src.utils.FastTelethon import describe_taskgroup_error
+from src.ports.transport import SendDisconnected, SendFailed, SendOk, SendOversized
+from src.utils.FastTelethon import UploadInterrupted, _consume_future_exception, describe_taskgroup_error
 
 
 def test_telegram_upload_name_maps_m4v_to_mp4() -> None:
@@ -129,4 +129,79 @@ async def test_file_parts_invalid_does_not_fall_back_to_native(tmp_path: Path, m
     result = await TelegramTransport(client).send(_task(video), timeout_seconds=30)
     assert isinstance(result, SendOversized)
     assert calls["fast"] == 1
+    assert client.calls == []
+
+
+async def test_disconnect_does_not_retry_or_fall_back_to_native(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video-bytes")
+    calls = {"fast": 0}
+
+    async def fail_fast(*_args, **_kwargs):
+        calls["fast"] += 1
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+    monkeypatch.setattr("src.adapters.telegram_transport.fast_upload_file", fail_fast)
+    client = _FakeClient()
+    result = await TelegramTransport(client).send(_task(video), timeout_seconds=30)
+    assert isinstance(result, SendDisconnected)
+    assert calls["fast"] == 1
+    assert client.calls == []
+
+
+async def test_reconnect_resumes_finished_parts(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video-bytes" * 20)
+    seen: list[tuple[int | None, set[int]]] = []
+
+    async def fake_upload(*_args, **kwargs):
+        file_id = kwargs.get("file_id")
+        skip_parts = set(kwargs.get("skip_parts") or ())
+        seen.append((file_id, skip_parts))
+        if len(seen) == 1:
+            raise UploadInterrupted(
+                99,
+                10,
+                video.stat().st_size,
+                {0, 1, 2, 3},
+                ConnectionResetError(104, "Connection reset by peer"),
+            )
+        return InputFileBig(id=file_id or 1, parts=10, name="clip.mp4")
+
+    monkeypatch.setattr("src.adapters.telegram_transport.fast_upload_file", fake_upload)
+    client = _FakeClient()
+    transport = TelegramTransport(client)
+    first = await transport.send(_task(video), timeout_seconds=30)
+    assert isinstance(first, SendDisconnected)
+    assert client.calls == []
+    second = await transport.send(_task(video), timeout_seconds=30)
+    assert isinstance(second, SendOk)
+    assert seen[0] == (None, set())
+    assert seen[1] == (99, {0, 1, 2, 3})
+
+
+async def test_consume_future_exception_marks_retrieved() -> None:
+    future = asyncio.get_running_loop().create_future()
+    future.set_exception(ConnectionResetError(104, "Connection reset by peer"))
+    _consume_future_exception(future)
+    assert isinstance(future.exception(), ConnectionResetError)
+
+
+async def test_missing_file_fails_without_sending(tmp_path: Path) -> None:
+    missing = tmp_path / "gone.webm"
+    task = Task(
+        id=1,
+        file_path=str(missing),
+        file_name=missing.name,
+        file_size=8,
+        destination=TaskDestination(chat_id=-100, dest_id="-100"),
+        artifacts=TaskArtifacts(video_path=str(missing)),
+        policy=TaskPolicy(need_preview=False, after_success=AfterSuccess.KEEP, max_retries=3),
+        status=TaskStatus.UPLOADING,
+    )
+    client = _FakeClient()
+    result = await TelegramTransport(client).send(task, timeout_seconds=30)
+    assert isinstance(result, SendFailed)
+    assert result.retryable is False
+    assert "文件不存在" in result.reason
     assert client.calls == []

@@ -44,6 +44,20 @@ def test_youtube_dash_intermediate_files_detected() -> None:
     assert is_transient_file(Path("audio.f140.m4a")) is True
 
 
+def test_youtube_dash_duplicate_suffix_detected() -> None:
+    # yt-dlp 同名冲突会写成 .f251-1.webm，仍是 Opus 音轨，不是合成后的正片
+    res = check_transient_file(Path("/downloads/ydl/养眼身材.f251-1.webm"))
+    assert res.is_transient is True
+    assert res.source_platform == "youtube"
+    assert "f251-1" in res.reason
+
+    assert is_transient_file(Path("video.f137-2.mp4")) is True
+
+    # 正片文件名里的连字符，以及格式号后面不是纯数字的名字，不能当成重复后缀
+    assert is_transient_file(Path("养眼身材-1.webm")) is False
+    assert is_transient_file(Path("clip.f251-extra.webm")) is False
+
+
 def test_youtube_temp_merge_files_detected() -> None:
     res = check_transient_file(Path("/downloads/ydl/觉醒 👄M字唇的模特.temp.webm"))
     assert res.is_transient is True
