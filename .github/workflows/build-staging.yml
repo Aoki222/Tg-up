@@ -136,6 +136,21 @@ jobs:
           echo "host=$HOST" >> $GITHUB_OUTPUT
           echo "user=$USER" >> $GITHUB_OUTPUT
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copy docker-compose.staging.yml to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ steps.conn.outputs.host }}
+          port: ${{ steps.conn.outputs.port }}
+          username: ${{ steps.conn.outputs.user }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          source: "docker-compose.staging.yml"
+          target: "${{ secrets.VPS_DEPLOY_PATH }}"
+          overwrite: true
+
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -149,6 +164,11 @@ jobs:
             set -e
             echo "==> 1. 进入 VPS 部署目录..."
             cd ${{ secrets.VPS_DEPLOY_PATH }}
+
+            if [ -d ".git" ]; then
+              echo "==> 发现 git 仓库，拉取最新代码..."
+              git pull || true
+            fi
 
             echo "==> 2. 拉取最新 staging 镜像..."
             docker compose -f docker-compose.staging.yml pull
