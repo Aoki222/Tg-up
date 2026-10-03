@@ -78,8 +78,31 @@ def test_unit_change_resets_speed(monkeypatch) -> None:
     clock["t"] += 0.5
     hub.report(_upload(1, 0.4, 2))
     snap = hub.snapshot()[0]
-    assert snap.speed_bps == 0
+    # 文件个数不把已经量到的字节速度清掉，剩余时间对相册没有意义
+    assert snap.speed_bps == 1_000_000
+    assert snap.eta_seconds == -1
     assert snap.total == 2
+
+    clock["t"] += 0.5
+    hub.report(_upload(1, 800_000, 1_000_000))
+    resumed = hub.snapshot()[0]
+    # 相册样本没有移动字节窗口：dt=1s，db=300_000
+    # 0.55 * 1_000_000 + 0.45 * 300_000 = 685_000
+    assert abs(resumed.speed_bps - 685_000) < 1
+
+
+def test_fast_chunks_still_measure_speed(monkeypatch) -> None:
+    hub = ProgressHub()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("src.adapters.progress.time.monotonic", lambda: clock["t"])
+    hub.report(_upload(1, 0, 1_000_000))
+    clock["t"] += 0.125
+    hub.report(_upload(1, 100_000, 1_000_000))
+    assert hub.snapshot()[0].speed_bps == 0
+    clock["t"] += 0.125
+    hub.report(_upload(1, 200_000, 1_000_000))
+    # 两次都不到 0.2 秒，但窗口从第一笔一直累积到 0.25 秒
+    assert hub.snapshot()[0].speed_bps == 800_000
 
 
 def test_terminal_stage_clears_snapshot(monkeypatch) -> None:

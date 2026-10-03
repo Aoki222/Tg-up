@@ -146,8 +146,14 @@ class TelegramTransport:
                     logger.warning("文件分片超过 Telegram 上限，停止重试: %s", error)
                     return SendOversized(limits.PARTS_INVALID_REASON)
                 if _is_disconnect_error(error):
-                    logger.warning("FastTelethon 连接断开，任务回队列，不立刻重传: %s", error)
+                    logger.warning("FastTelethon 连接断开，保持已完成分片，不立刻重传: %s", error)
                     await self.invalidate_pool()
+                    return SendDisconnected(str(error))
+                if video_path in self._partial:
+                    logger.warning(
+                        "续传失败，保留已完成分片，不退回原生上传: %s",
+                        error,
+                    )
                     return SendDisconnected(str(error))
                 logger.warning(
                     "FastTelethon 分块上传失败，第 %s/%s 次: %s",

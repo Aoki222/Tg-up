@@ -47,9 +47,24 @@ docker compose -f docker-compose.staging.yml pull
 docker compose -f docker-compose.staging.yml up -d
 ```
 
-### 2.2 日常平滑更新（有新代码推送到 main 之后）
-当 GitHub Actions 完成 `build-staging.yml` 构建后，在 VPS 运行以下命令即可无缝切换最新镜像：
+### 2.2 日常全自动部署（Push 后自动生效）
+现在，代码推送到 `main` 分支后，流水线已配置**全自动部署**：
+1. `build-staging.yml` 构建完镜像并推送到 GHCR 后，会通过 SSH 连接 VPS 自动执行更新命令。
+2. **默认行为**：无需人工登录 VPS，代码推送后 2~3 分钟内 VPS 自动完成更新与热重启。
 
+#### 💡 如何选择“不部署到 VPS”？
+如果您某次 push 仅想打包测试镜像，但不想立刻影响正在测试的 VPS，支持以下灵活控制方式：
+- **方式一（Git Commit 标记）**：在提交信息中包含 **`[skip deploy]`** 或 **`[no deploy]`**，例如：
+  ```bash
+  git commit -m "fix: 临时修复某些内容 [skip deploy]"
+  git push origin main
+  ```
+  工作流会完成单测与镜像推送，但会自动跳过 VPS 远程部署。
+- **方式二（GitHub 页面手动运行）**：在 Actions 页面手动运行 `Build & Push Staging Image` 时，取消勾选 **`Deploy to VPS`** 即可。
+- **方式三（仓库全局开关）**：在 GitHub 设置仓库变量 `AUTO_DEPLOY_STAGING = false`，可临时全局关闭自动部署。
+
+### 2.3 手动拉取更新（备用方式）
+如果未开启自动部署，仍可手动在 VPS 运行以下命令更新：
 ```bash
 # 1. 静默拉取最新 staging 镜像层
 docker compose -f docker-compose.staging.yml pull

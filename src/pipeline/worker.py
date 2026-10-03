@@ -6,6 +6,7 @@
 - FloodWait：任务回 pending、不增加失败次数，本 worker 暂停接新活
 - 普通失败：retry_count+1，超限才 failed
 - 源文件已不在，或仍是下载分轨：一次记 failed，不再回队列占名额
+- 短暂停线：任务留在本账号，卡片保持上传中；多次重连仍失败才回等待队列
 - 成功后按任务自己的 policy 做本地收尾（删/留/归档）
 
 serve_forever 只分发、不等上传结束；Queue.join() 等的是 process_single_task 里的 task_done。
@@ -26,7 +27,7 @@ from ..domain.task import Task
 from ..logger import get_logger
 from ..ports.after_upload import AfterUpload
 from ..ports.progress import ProgressReporter
-from ..adapters.sessions import SessionPool
+from ..adapters.sessions import RECONNECT_MAX_ATTEMPTS, SessionPool
 from ..ports.transport import (
     SendDisconnected,
     SendFailed,
@@ -73,6 +74,8 @@ class UploadWorker:
         self.session_pool = session_pool
         self.session_path = session_path
         self._watch_task: asyncio.Task | None = None
+        # task_id -> (已传字节, 总字节)。断线时用它保持进度，不发 0/1。
+        self._byte_progress: dict[int, tuple[float, float]] = {}
 
     def is_accepting(self) -> bool:
         """调度器用：停机、FloodWait 或正在重连时不要再往这个账号塞任务。"""
@@ -172,6 +175,7 @@ class UploadWorker:
             async with self.concurrency_gate:
                 await self.task_repository.mark_task_uploading(task.id)
                 self._emit_progress(task, 0, max(task.file_size, 1), "uploading")
+                resume_failures = 0
                 result = await self.transport.send(
                     task,
                     settings.upload_timeout_seconds,
@@ -179,6 +183,17 @@ class UploadWorker:
                         task, current, total, "uploading"
                     ),
                 )
+                while isinstance(result, SendDisconnected):
+                    resume_failures += 1
+                    if await self._hold_through_disconnect(task, result.reason, resume_failures):
+                        return
+                    result = await self.transport.send(
+                        task,
+                        settings.upload_timeout_seconds,
+                        on_progress=lambda current, total: self._emit_progress(
+                            task, current, total, "uploading"
+                        ),
+                    )
                 if isinstance(result, SendOk):
                     await self.task_repository.mark_task_succeeded(task.id, result.message_id)
                     self._emit_progress(task, 1, 1, "success", "上传成功")
@@ -187,15 +202,6 @@ class UploadWorker:
                     except Exception:
                         logger.exception("[%s] 上传后收尾失败: %s", self.worker_name, task.file_path)
                     logger.info("[%s] 上传成功: %s", self.worker_name, task.file_path)
-                elif isinstance(result, SendDisconnected):
-                    if self.session_pool is not None:
-                        self.session_pool.mark_disconnected(self.worker_name, result.reason)
-                    if hasattr(self.transport, "invalidate_pool"):
-                        await self.transport.invalidate_pool()
-                    await self.task_repository.release_task(task.id, f"disconnected: {result.reason}")
-                    if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
-                        self._emit_progress(task, 0, 1, "flood_wait", "连接断开，正在重试")
-                    logger.warning("[%s] 连接断开，任务回队列: %s (%s)", self.worker_name, task.file_path, result.reason)
                 elif isinstance(result, SendRetryLater):
                     self.flood_wait_until = time.monotonic() + result.seconds
                     # 回 pending 且不 +retry_count；调度器会跳过 is_accepting()==False 的 worker
@@ -242,6 +248,76 @@ class UploadWorker:
                 except Exception:
                     logger.exception("[%s] 唤醒调度器失败", self.worker_name)
 
+    def _upload_anchor(self, task: Task) -> tuple[float, float]:
+        saved = self._byte_progress.get(task.id)
+        if saved is not None:
+            return saved
+        return 0.0, float(max(task.file_size, 1))
+
+    def _client_is_connected(self) -> bool:
+        pool = self.session_pool
+        if pool is None:
+            return False
+        client = pool.clients.get(self.worker_name)
+        return (
+            client is not None
+            and client.is_connected()
+            and not pool.is_reconnecting(self.worker_name)
+        )
+
+    async def _wait_until_connected(self) -> bool:
+        """等到这个账号重新连上。一轮次数用尽或没有 session 时返回 False。"""
+        pool = self.session_pool
+        path = self.session_path
+        if pool is None or path is None:
+            return False
+        failures = 0
+        while self.is_running and failures < RECONNECT_MAX_ATTEMPTS:
+            if self._client_is_connected():
+                return True
+            if not pool.can_retry_now(self.worker_name):
+                status = pool.reconnect.get(self.worker_name)
+                wait = 0.3
+                if status is not None:
+                    wait = max(0.2, min(5.0, status.next_at - time.monotonic()))
+                await asyncio.sleep(wait)
+                failures += 1
+                continue
+            restored = await pool.ensure_client(self.worker_name, path)
+            if (
+                restored is not None
+                and restored.is_connected()
+                and not pool.is_reconnecting(self.worker_name)
+            ):
+                return True
+            failures += 1
+            await asyncio.sleep(0.2)
+        return False
+
+    async def _hold_through_disconnect(self, task: Task, reason: str, failures: int) -> bool:
+        """断线后留在本账号续传。返回 True 表示已经放弃并放回等待队列。"""
+        client_up = self._client_is_connected()
+        if not client_up and self.session_pool is not None:
+            self.session_pool.mark_disconnected(self.worker_name, reason)
+        if not client_up and hasattr(self.transport, "invalidate_pool"):
+            await self.transport.invalidate_pool()
+        current, total = self._upload_anchor(task)
+        if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
+            self._emit_progress(task, current, total, "uploading", "正在重连")
+        logger.warning(
+            "[%s] 连接断开，保持上传并等待重连: %s (%s)",
+            self.worker_name,
+            task.file_path,
+            reason,
+        )
+        if failures >= RECONNECT_MAX_ATTEMPTS or not await self._wait_until_connected():
+            await self.task_repository.release_task(task.id, f"disconnected: {reason}")
+            if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
+                self._emit_progress(task, current, total, "flood_wait", "重连失败，已回队列")
+            logger.warning("[%s] 重连多次失败，任务回队列: %s", self.worker_name, task.file_path)
+            return True
+        return False
+
     def _emit_progress(
         self,
         task: Task,
@@ -251,6 +327,10 @@ class UploadWorker:
         message: str = "",
     ) -> None:
         """同步上报。Telethon progress_callback 也可能从这里进来，不要 await。"""
+        if stage == "uploading" and total > 32:
+            self._byte_progress[task.id] = (float(current), float(total))
+        elif stage in {"success", "failed"}:
+            self._byte_progress.pop(task.id, None)
         if self.progress_reporter is None:
             return
         try:

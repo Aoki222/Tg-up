@@ -351,6 +351,7 @@ class FastTelethon:
                     queue.task_done()
 
         async def produce() -> None:
+            nonlocal uploaded_bytes
             for part_index in range(total_parts):
                 chunk = file_handle.read(CHUNK_SIZE)
                 if not chunk and file_size:

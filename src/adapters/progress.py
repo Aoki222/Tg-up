@@ -64,21 +64,28 @@ class ProgressHub:
 
         now = time.monotonic()
         previous = self._speed_state.get(progress.task_id)
-        speed = 0.0
-        if previous is not None:
-            last_t, last_current, last_total, last_speed = previous
-            if last_total != progress.total or is_album_units(progress.current, progress.total):
-                speed = 0.0
-            else:
-                dt = now - last_t
-                db = progress.current - last_current
-                if dt >= 0.2 and db > 0:
-                    instant = db / dt
-                    speed = instant if last_speed <= 0 else (0.55 * last_speed + 0.45 * instant)
-                else:
-                    speed = last_speed
+        # 相册回调的单位是文件个数。不参与字节速度，也不清掉已经量到的速度。
+        if is_album_units(progress.current, progress.total):
+            speed = previous[3] if previous is not None else 0.0
+            return replace(progress, speed_bps=round(speed, 1), eta_seconds=-1.0)
 
-        self._speed_state[progress.task_id] = (now, progress.current, progress.total, speed)
+        if previous is None:
+            self._speed_state[progress.task_id] = (now, progress.current, progress.total, 0.0)
+            return replace(progress, speed_bps=0.0, eta_seconds=-1.0)
+
+        last_t, last_current, last_total, last_speed = previous
+        if last_total != progress.total:
+            self._speed_state[progress.task_id] = (now, progress.current, progress.total, 0.0)
+            return replace(progress, speed_bps=0.0, eta_seconds=-1.0)
+
+        speed = last_speed
+        dt = now - last_t
+        db = progress.current - last_current
+        # 窗口没满就保持起点。每个分片都重置的话，高速上传永远凑不满 0.2 秒。
+        if dt >= 0.2 and db > 0:
+            instant = db / dt
+            speed = instant if last_speed <= 0 else (0.55 * last_speed + 0.45 * instant)
+            self._speed_state[progress.task_id] = (now, progress.current, progress.total, speed)
         remaining = max(0.0, progress.total - progress.current)
         eta = remaining / speed if speed > 0 else -1.0
         return replace(progress, speed_bps=round(speed, 1), eta_seconds=eta)

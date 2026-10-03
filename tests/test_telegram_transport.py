@@ -14,7 +14,12 @@ from src.adapters.telegram_transport import (
 )
 from src.domain.task import AfterSuccess, Task, TaskArtifacts, TaskDestination, TaskPolicy, TaskStatus
 from src.ports.transport import SendDisconnected, SendFailed, SendOk, SendOversized
-from src.utils.FastTelethon import UploadInterrupted, _consume_future_exception, describe_taskgroup_error
+from src.utils.FastTelethon import (
+    UploadInterrupted,
+    _consume_future_exception,
+    describe_taskgroup_error,
+    upload_file,
+)
 
 
 def test_telegram_upload_name_maps_m4v_to_mp4() -> None:
@@ -205,3 +210,60 @@ async def test_missing_file_fails_without_sending(tmp_path: Path) -> None:
     assert result.retryable is False
     assert "文件不存在" in result.reason
     assert client.calls == []
+
+
+class _ResumePool:
+    async def acquire(self, count: int):
+        return [object() for _ in range(count)]
+
+    async def release(self, senders) -> None:
+        return None
+
+
+async def test_skipped_parts_count_as_uploaded_bytes(tmp_path: Path) -> None:
+    payload = b"a" * 1000
+    path = tmp_path / "track.webm"
+    path.write_bytes(payload)
+    seen: list[int] = []
+
+    def on_progress(current: int, _total: int) -> None:
+        seen.append(current)
+
+    result = await upload_file(
+        None,
+        str(path),
+        progress_callback=on_progress,
+        max_workers=1,
+        sender_pool=_ResumePool(),
+        file_id=99,
+        skip_parts={0},
+    )
+    assert seen == [len(payload)]
+    assert result.id == 99
+    assert result.parts == 1
+
+
+async def test_resume_failure_keeps_parts_and_skips_native(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video-bytes" * 20)
+    calls = {"fast": 0}
+
+    async def fail_fast(*_args, **_kwargs):
+        calls["fast"] += 1
+        raise RuntimeError("UnboundLocalError: cannot access local variable 'uploaded_bytes'")
+
+    monkeypatch.setattr("src.adapters.telegram_transport.fast_upload_file", fail_fast)
+    client = _FakeClient()
+    transport = TelegramTransport(client)
+    transport._partial[str(video)] = UploadInterrupted(
+        99,
+        10,
+        video.stat().st_size,
+        {0, 1, 2},
+        RuntimeError("peer reset"),
+    )
+    result = await transport.send(_task(video), timeout_seconds=30)
+    assert isinstance(result, SendDisconnected)
+    assert calls["fast"] == 1
+    assert client.calls == []
+    assert set(transport._partial[str(video)].done) == {0, 1, 2}

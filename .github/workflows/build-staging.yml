@@ -8,6 +8,13 @@ on:
       - '**.md'
       - 'docs/**'
       - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: '是否部署到测试 VPS (Deploy to VPS)'
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -99,3 +106,48 @@ jobs:
           echo "- **SHA 追溯 Tag**: \`ghcr.io/${REPO_LOWER}:staging-${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> ⚠️ **安全机制**：此阶段绝对不打 \`:latest\` 标签。VPS 手动验证无误后，请在 Actions 页面触发 \`promote-latest.yml\` 晋级发布。" >> $GITHUB_STEP_SUMMARY
+
+  deploy-staging:
+    name: Deploy to Test VPS
+    needs: build-staging
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.deploy == true) ||
+      (github.event_name == 'push' &&
+       !contains(github.event.head_commit.message, '[skip deploy]') &&
+       !contains(github.event.head_commit.message, '[no deploy]') &&
+       !contains(github.event.head_commit.message, '[skip-deploy]') &&
+       vars.AUTO_DEPLOY_STAGING != 'false')
+    steps:
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          script_stop: true
+          script: |
+            set -e
+            echo "==> 1. 进入 VPS 部署目录..."
+            cd ${{ secrets.VPS_DEPLOY_PATH }}
+
+            echo "==> 2. 拉取最新 staging 镜像..."
+            docker compose -f docker-compose.staging.yml pull
+
+            echo "==> 3. 平滑更新并重启服务..."
+            docker compose -f docker-compose.staging.yml up -d --remove-orphans
+
+            echo "==> 4. 清理旧版本孤儿镜像..."
+            docker image prune -f
+
+            echo "==> 5. 检查当前容器状态..."
+            docker compose -f docker-compose.staging.yml ps
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "### 🚀 测试 VPS 自动部署执行完成" >> $GITHUB_STEP_SUMMARY
+          echo "- **部署目标主机**: \`${{ secrets.VPS_HOST }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **服务状态**: 镜像已拉取并平滑重启" >> $GITHUB_STEP_SUMMARY

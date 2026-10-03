@@ -51,10 +51,9 @@ function oversizedDetail(item: BoardTask): string | null {
 }
 
 function speedLabel(item: BoardTask): string {
-  // 将实时速度转换为展示文案，区分尚未测出速度和确实为零。
+  // 还没凑满一个测速窗口时速度是 0，显示测算中，不写成 0 B/s。
   if (item.speed_bps > 0) return formatSpeed(item.speed_bps);
-  if (item.percent <= 0) return "测算中";
-  return "0 B/s";
+  return "测算中";
 }
 </script>
 

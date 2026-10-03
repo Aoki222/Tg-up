@@ -1,8 +1,10 @@
 /**
- * 看板数据：1 秒轮询 /api/tasks 决定列归属，SSE 叠字节与速度。
+ * 看板数据：1 秒轮询 /api/tasks 决定列归属和计数。
+ * 字节、百分比、速度只跟 SSE。轮询带回的更旧进度不覆盖界面。
  */
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { fetchBoardTasks, openProgressStream } from "../api";
+import { isAlbumProgress } from "../format";
 import type { BoardCounts, BoardTask, UploadProgress } from "../types";
 
 const EMPTY_COUNTS: BoardCounts = {
@@ -76,6 +78,37 @@ export function useTaskBoard() {
     };
   }
 
+  function hasByteProgress(task: BoardTask): boolean {
+    return task.total > 32 && !isAlbumProgress(task.current, task.total) && task.current > 0;
+  }
+
+  function keepByteProgress(existing: BoardTask, current: number, total: number): boolean {
+    // 文件个数和更旧的字节数不能把已经显示的字节进度打回去。
+    if (!hasByteProgress(existing)) return false;
+    if (isAlbumProgress(current, total)) return true;
+    return current < existing.current;
+  }
+
+  function mergePolled(incoming: BoardTask): BoardTask {
+    // 轮询负责状态和列。同一次上传里，实时推流已经写过的进度留在界面上。
+    const existing = items.value.find((item) => item.id === incoming.id);
+    if (!existing || existing.stage == null) return incoming;
+    const restarted =
+      (existing.status === "pending" || existing.status === "failed") &&
+      (incoming.status === "uploading" || incoming.status === "assigned");
+    if (restarted) return incoming;
+    return {
+      ...incoming,
+      percent: existing.percent,
+      current: existing.current,
+      total: existing.total,
+      speed_bps: existing.speed_bps,
+      eta_seconds: existing.eta_seconds,
+      stage: existing.stage,
+      message: existing.message,
+    };
+  }
+
   function applyProgress(progress: UploadProgress): void {
     // 合并实时进度；成功任务短暂保留为 ghost，等待下一次数据库快照确认。
     if (progress.stage === "success") {
@@ -125,6 +158,20 @@ export function useTaskBoard() {
           ? "pending"
           : existing.status;
 
+    // 仍在上传中时，更旧的字节或相册回调不能把条打回去。
+    // 任务已经回到等待后再开始，新的 0 是另一次上传，要接受。
+    const restart =
+      progress.current <= 0 && existing.status !== "uploading" && existing.status !== "assigned";
+    if (keepByteProgress(existing, progress.current, progress.total) && !restart) {
+      upsert({
+        ...existing,
+        status: nextStatus,
+        assigned_worker: progress.worker_name || existing.assigned_worker,
+        message: progress.message || existing.message,
+      });
+      return;
+    }
+
     upsert({
       ...existing,
       status: nextStatus,
@@ -145,7 +192,7 @@ export function useTaskBoard() {
     boardFlight = true;
     try {
       const data = await fetchBoardTasks();
-      const byId = new Map(data.items.map((item) => [item.id, item]));
+      const byId = new Map(data.items.map((item) => [item.id, mergePolled(item)]));
       const now = Date.now();
       for (const [id, ghost] of [...ghosts.entries()]) {
         if (now >= ghost.hideAt || byId.has(id)) {
