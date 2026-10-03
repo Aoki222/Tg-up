@@ -32,7 +32,7 @@ GitHub Container Registry (`ghcr.io`) 默认可能为私有（Private）。
 
 ## 二、VPS 测试环境部署与平滑更新
 
-VPS 测试端已提供专门的配置文件：`docker-compose.staging.yml`。
+VPS 测试端直接使用现有的 compose 文件（`compose.yml` 或 `docker-compose.yml`），且其中配置的镜像指向 `ghcr.io/aoki222/tg-up:staging`。
 
 ### 2.1 首次部署
 ```bash
@@ -41,10 +41,10 @@ cp .env.example .env
 nano .env   # 填入 API_ID, API_HASH 等配置
 
 # 2. 拉取 staging 镜像
-docker compose -f docker-compose.staging.yml pull
+docker compose pull
 
 # 3. 启动容器
-docker compose -f docker-compose.staging.yml up -d
+docker compose up -d
 ```
 
 ### 2.2 日常全自动部署（Push 后自动生效）
@@ -67,25 +67,25 @@ docker compose -f docker-compose.staging.yml up -d
 如果未开启自动部署，仍可手动在 VPS 运行以下命令更新：
 ```bash
 # 1. 静默拉取最新 staging 镜像层
-docker compose -f docker-compose.staging.yml pull
+docker compose pull
 
 # 2. 平滑重启（仅在镜像 hash 发生变化时重建并替换容器）
-docker compose -f docker-compose.staging.yml up -d --remove-orphans
+docker compose up -d --remove-orphans
 
 # 3. 检查容器状态与健康检查（等待约 20s 进入 healthy 状态）
-docker compose -f docker-compose.staging.yml ps
+docker compose ps
 
 # 4. 查看实时运行日志
-docker compose -f docker-compose.staging.yml logs -f --tail=100
+docker compose logs -f --tail=100
 ```
 
-### 2.3 测试环境回滚（如测试发现重大 Bug）
+### 2.4 测试环境回滚（如测试发现重大 Bug）
 每次构建除了打 `:staging` 外，流水线还会打一个 SHA 追溯标签（例如 `:staging-7abc123`）。
-若当前 `:staging` 有问题需要快速退回到上一版本，只需临时编辑 `docker-compose.staging.yml`：
+若当前 `:staging` 有问题需要快速退回到上一版本，只需临时编辑 compose 文件：
 ```yaml
 image: ghcr.io/aoki222/tg-up:staging-上一个提交短SHA
 ```
-然后执行 `docker compose -f docker-compose.staging.yml up -d` 即可秒级回退。
+然后执行 `docker compose up -d` 即可秒级回退。
 
 ---
 
