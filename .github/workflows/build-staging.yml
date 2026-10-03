@@ -119,12 +119,29 @@ jobs:
        !contains(github.event.head_commit.message, '[skip-deploy]') &&
        vars.AUTO_DEPLOY_STAGING != 'false')
     steps:
+      - name: Sanitize Connection Parameters
+        id: conn
+        run: |
+          RAW_PORT="${{ secrets.VPS_PORT }}"
+          PORT=$(echo "${RAW_PORT}" | tr -d '\r\n[:space:]')
+          if [ -z "$PORT" ]; then PORT="22"; fi
+
+          RAW_HOST="${{ secrets.VPS_HOST }}"
+          HOST=$(echo "${RAW_HOST}" | tr -d '\r\n[:space:]')
+
+          RAW_USER="${{ secrets.VPS_USER }}"
+          USER=$(echo "${RAW_USER}" | tr -d '\r\n[:space:]')
+
+          echo "port=$PORT" >> $GITHUB_OUTPUT
+          echo "host=$HOST" >> $GITHUB_OUTPUT
+          echo "user=$USER" >> $GITHUB_OUTPUT
+
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.VPS_HOST }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          username: ${{ secrets.VPS_USER }}
+          host: ${{ steps.conn.outputs.host }}
+          port: ${{ steps.conn.outputs.port }}
+          username: ${{ steps.conn.outputs.user }}
           key: ${{ secrets.VPS_SSH_KEY }}
           password: ${{ secrets.VPS_PASSWORD }}
           script_stop: true
