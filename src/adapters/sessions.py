@@ -16,6 +16,7 @@ from pathlib import Path
 
 from telethon import TelegramClient
 
+from ..domain.telegram_credentials import credentials_ready
 from ..logger import get_logger
 
 logger = get_logger(__name__)
@@ -68,13 +69,42 @@ class SessionPool:
 
     def __init__(self, session_dir: Path, api_id: int, api_hash: str):
         self.session_dir = session_dir
-        self.api_id = api_id
-        self.api_hash = api_hash
+        self.api_id = int(api_id)
+        self.api_hash = (api_hash or "").strip()
         self.clients: dict[str, TelegramClient] = {}
         self.usernames: dict[str, str | None] = {}
         self.reconnect: dict[str, ReconnectStatus] = {}
         self._name_locks: dict[str, asyncio.Lock] = {}
         self._dict_lock = asyncio.Lock()
+        # 凭据更换后，旧 session 授权失败只提示一次，避免两秒循环刷屏。
+        self._sessions_need_relogin = False
+
+    @property
+    def configured(self) -> bool:
+        return credentials_ready(self.api_id, self.api_hash)
+
+    def classify_credentials(self, api_id: int, api_hash: str) -> str:
+        """same：值没变。activated：从空变成可用。replaced：原来可用的凭据变了。"""
+        new_id = int(api_id)
+        new_hash = (api_hash or "").strip()
+        if new_id == self.api_id and new_hash == self.api_hash:
+            return "same"
+        if not self.configured and credentials_ready(new_id, new_hash):
+            return "activated"
+        return "replaced"
+
+    async def replace_credentials(self, api_id: int, api_hash: str) -> str:
+        """换上新凭据。值相同则不断开。真正换了 API 时断开已有客户端，不删 session 文件。"""
+        outcome = self.classify_credentials(api_id, api_hash)
+        if outcome == "same":
+            return outcome
+        self.api_id = int(api_id)
+        self.api_hash = (api_hash or "").strip()
+        if outcome == "replaced":
+            self._sessions_need_relogin = True
+            await self.disconnect_all()
+            self.reconnect.clear()
+        return outcome
 
     def list_files(self) -> dict[str, Path]:
         """返回当前磁盘 session 快照，供 Application 对比并增删 Worker。"""
@@ -123,6 +153,8 @@ class SessionPool:
 
     async def ensure_client(self, name: str, session_path: Path) -> TelegramClient | None:
         """已在池里且已连接则复用。未到重试点则返回已有 client 或 None，不阻塞。"""
+        if not self.configured:
+            return None
         # 短暂持锁：快速检查已连接的情况，获取 per-name 锁
         async with self._dict_lock:
             existing = self.clients.get(name)
@@ -162,7 +194,10 @@ class SessionPool:
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
                 status.auth_failed = True
                 status.error = "session 未授权"
-                logger.warning("[%s] 未授权, 跳过: %s", name, session_path)
+                if self._sessions_need_relogin:
+                    logger.warning("[%s] 该会话属于旧的 API_ID，需要重新登录", name)
+                else:
+                    logger.warning("[%s] 未授权, 跳过: %s", name, session_path)
                 await client.disconnect()
                 self.clients.pop(name, None)
                 return None

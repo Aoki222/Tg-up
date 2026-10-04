@@ -48,10 +48,11 @@ from ..adapters.task_store import TaskRepository
 from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
 from ..api.workers import snapshot_workers
-from ..config import API_HASH, API_HOST, API_ID, API_PORT, PROJECT_DIR, SESSION_DIR
+from ..config import API_HOST, API_PORT, PROJECT_DIR, SESSION_DIR
 from ..database.connection import close_pool
 from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
+from ..domain.telegram_credentials import TelegramCredentials, load_telegram_credentials
 from ..domain.task import task_from_row
 from ..logger import get_logger
 from ..utils.sender_pool import SenderPool
@@ -90,6 +91,8 @@ class UploaderApplication:
         self._finished = False
         self._bg_tasks: list[asyncio.Task] = []
         self._logged_no_session = False
+        self._logged_unconfigured = False
+        self._session_login = None
         self._channel_cache = TelegramChannelCache()
 
     async def run(self) -> None:
@@ -112,7 +115,9 @@ class UploaderApplication:
         if recovered:
             logger.warning("启动时回收未完成任务: %s", recovered)
 
-        session_pool = SessionPool(SESSION_DIR, API_ID, API_HASH)
+        credentials = load_telegram_credentials(PROJECT_DIR)
+        logger.info("Telegram 凭据来源: %s", credentials.source)
+        session_pool = SessionPool(SESSION_DIR, credentials.api_id, credentials.api_hash)
         scheduler = UploadScheduler(repository, settings_hub)
         self._session_pool = session_pool
         self._scheduler = scheduler
@@ -198,11 +203,18 @@ class UploaderApplication:
                 await self._sync_sessions(
                     session_pool, scheduler, repository, after_upload, settings_hub
                 )
-                if not scheduler.worker_map and not self._stop.is_set():
+                if not session_pool.configured:
+                    self._logged_no_session = False
+                    if not self._logged_unconfigured and not self._stop.is_set():
+                        logger.info("尚未配置 Telegram 凭据，控制台已就绪，保存后会自动连接")
+                        self._logged_unconfigured = True
+                elif not scheduler.worker_map and not self._stop.is_set():
+                    self._logged_unconfigured = False
                     if not self._logged_no_session:
                         logger.info("sessions/ 下暂无可用 session，放入 *.session 后会自动加载")
                         self._logged_no_session = True
                 else:
+                    self._logged_unconfigured = False
                     self._logged_no_session = False
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=2)
@@ -270,59 +282,72 @@ class UploaderApplication:
     ) -> None:
         """按磁盘 session 和禁用名单同步 Worker，连接 SessionPool、Scheduler 与任务回收。"""
         async with self._session_lock:
-            discovered = session_pool.list_files()
-            for name, session_path in discovered.items():
-                if name in self._disabled:
-                    if name in scheduler.worker_map:
-                        await self._unload_worker(name, reason="worker disabled", in_flight_timeout=0)
-                    continue
-                if name in scheduler.worker_map:
-                    continue
-                client = await session_pool.ensure_client(name, session_path)
-                if client is None:
-                    continue
-                kind = _session_kind(session_pool.session_dir, name)
-                if kind == "unknown":
-                    try:
-                        me = await client.get_me()
-                        kind = "bot" if me is not None and getattr(me, "bot", False) else "user"
-                    except Exception:
-                        kind = "unknown"
-                if kind == "user" and not self._channel_cache.has_account(name):
-                    try:
-                        await self._channel_cache.full_sync(name, client)
-                    except Exception:
-                        logger.exception("首次同步 Telegram 群组失败: %s", name)
-                if kind == "user":
-                    try:
-                        await self._channel_cache.attach_client(name, client)
-                    except Exception:
-                        logger.exception("注册 Telegram 群组事件失败: %s", name)
-                sender_pool = SenderPool(client, max_senders=6, idle_timeout=120.0)
-                worker = UploadWorker(
-                    worker_name=name,
-                    task_repository=repository,
-                    transport=TelegramTransport(client, sender_pool=sender_pool),
-                    after_upload=after_upload,
-                    settings_hub=settings_hub,
-                    on_task_finished=scheduler.request_reschedule,
-                    progress_reporter=self.progress_reporter,
-                    session_pool=session_pool,
-                    session_path=session_path,
-                    account_kind=kind,
-                )
-                scheduler.register_worker(worker)
-                if self._task_group is not None:
-                    self._task_group.create_task(worker.serve_forever())
-                logger.info("已加载 worker: %s (%s)", name, kind)
-                scheduler.request_reschedule()
+            await self._sync_sessions_locked(
+                session_pool, scheduler, repository, after_upload, settings_hub
+            )
 
-            for name in list(scheduler.worker_map):
-                if name in discovered and name not in self._disabled:
-                    continue
-                reason = "worker disabled" if name in self._disabled else "session file removed"
-                await self._unload_worker(name, reason=reason, in_flight_timeout=0)
-                logger.info("已卸载 worker: %s", name)
+    async def _sync_sessions_locked(
+        self,
+        session_pool: SessionPool,
+        scheduler: UploadScheduler,
+        repository: TaskRepository,
+        after_upload: ConfigurableAfterUpload,
+        settings_hub: SettingsHub,
+    ) -> None:
+        """调用方已持有 _session_lock。"""
+        discovered = session_pool.list_files()
+        for name, session_path in discovered.items():
+            if name in self._disabled:
+                if name in scheduler.worker_map:
+                    await self._unload_worker(name, reason="worker disabled", in_flight_timeout=0)
+                continue
+            if name in scheduler.worker_map:
+                continue
+            client = await session_pool.ensure_client(name, session_path)
+            if client is None:
+                continue
+            kind = _session_kind(session_pool.session_dir, name)
+            if kind == "unknown":
+                try:
+                    me = await client.get_me()
+                    kind = "bot" if me is not None and getattr(me, "bot", False) else "user"
+                except Exception:
+                    kind = "unknown"
+            if kind == "user" and not self._channel_cache.has_account(name):
+                try:
+                    await self._channel_cache.full_sync(name, client)
+                except Exception:
+                    logger.exception("首次同步 Telegram 群组失败: %s", name)
+            if kind == "user":
+                try:
+                    await self._channel_cache.attach_client(name, client)
+                except Exception:
+                    logger.exception("注册 Telegram 群组事件失败: %s", name)
+            sender_pool = SenderPool(client, max_senders=6, idle_timeout=120.0)
+            worker = UploadWorker(
+                worker_name=name,
+                task_repository=repository,
+                transport=TelegramTransport(client, sender_pool=sender_pool),
+                after_upload=after_upload,
+                settings_hub=settings_hub,
+                on_task_finished=scheduler.request_reschedule,
+                progress_reporter=self.progress_reporter,
+                session_pool=session_pool,
+                session_path=session_path,
+                account_kind=kind,
+            )
+            scheduler.register_worker(worker)
+            if self._task_group is not None:
+                self._task_group.create_task(worker.serve_forever())
+            logger.info("已加载 worker: %s (%s)", name, kind)
+            scheduler.request_reschedule()
+
+        for name in list(scheduler.worker_map):
+            if name in discovered and name not in self._disabled:
+                continue
+            reason = "worker disabled" if name in self._disabled else "session file removed"
+            await self._unload_worker(name, reason=reason, in_flight_timeout=0)
+            logger.info("已卸载 worker: %s", name)
 
     async def dispatch_oversized_to_user(self, task_id: int) -> str:
         """把 oversized 交给当前最空闲的个人号。
@@ -429,6 +454,43 @@ class UploaderApplication:
             return ""
         return await resolve_chat_title(client, chat_id)
 
+    async def apply_credentials(self, credentials: TelegramCredentials) -> str:
+        """把新凭据注入会话池和登录服务。值没变则不断开；从空到有则立刻连；换了 API 则卸掉旧客户端。"""
+        login = self._session_login
+        pool = self._session_pool
+        if pool is None:
+            if login is not None:
+                login.replace_credentials(credentials.api_id, credentials.api_hash)
+            return "same"
+        pending = pool.classify_credentials(credentials.api_id, credentials.api_hash)
+        scheduler = self._scheduler
+        async with self._session_lock:
+            if login is not None:
+                login.replace_credentials(credentials.api_id, credentials.api_hash)
+            if pending == "replaced" and scheduler is not None:
+                for name in list(scheduler.worker_map):
+                    await self._unload_worker(name, reason="credentials replaced", in_flight_timeout=0)
+                logger.warning("该会话属于旧的 API_ID，需要重新登录")
+            outcome = await pool.replace_credentials(credentials.api_id, credentials.api_hash)
+            if outcome == "activated":
+                logger.info("Telegram 凭据已生效，开始连接会话")
+            if outcome != "same":
+                repository = self._repository
+                after_upload = self._after_upload
+                settings_hub = self._settings_hub
+                if (
+                    scheduler is not None
+                    and repository is not None
+                    and after_upload is not None
+                    and settings_hub is not None
+                ):
+                    await self._sync_sessions_locked(
+                        pool, scheduler, repository, after_upload, settings_hub
+                    )
+        if outcome == "replaced" and login is not None:
+            await login.discard_pending()
+        return outcome
+
     async def _serve_api(self) -> None:
         """在流水线进程内启动 FastAPI，向 Vue 暴露控制、看板和 SSE 数据。"""
         import uvicorn
@@ -453,6 +515,11 @@ class UploaderApplication:
             chats_sync=self._sync_chats,
             chat_resolver=self._resolve_chat_title,
         )
+        self._session_login = api.state.session_login
+        pool = self._session_pool
+        if pool is not None and self._session_login is not None:
+            self._session_login.replace_credentials(pool.api_id, pool.api_hash)
+        api.state.apply_credentials = self.apply_credentials
         config = uvicorn.Config(
             api,
             host=API_HOST,

@@ -1,7 +1,33 @@
 <script setup lang="ts">
+import { onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
+import { fetchSystemVersion } from "./api";
+import { useTelegramIdentity } from "./composables/useTelegramIdentity";
+import type { SystemVersionInfo } from "./types";
 
 const route = useRoute();
+const { configured, refresh } = useTelegramIdentity();
+
+const versionInfo = ref<SystemVersionInfo>({
+  current_version: "",
+  remote_version: null,
+  has_update: false,
+  commit_message: "",
+  commit_url: "",
+});
+
+async function loadVersion(): Promise<void> {
+  try {
+    versionInfo.value = await fetchSystemVersion();
+  } catch {
+    // 忽略异常，降级显示
+  }
+}
+
+onMounted(() => {
+  void refresh();
+  void loadVersion();
+});
 /**
  * @file App.vue
  * @description 应用根外壳组件 (Shell Component)
@@ -58,8 +84,47 @@ const route = useRoute();
           <span class="pulse-dot"></span>
           <span class="status-label">在线</span>
         </div>
+
+        <!-- 版本与更新指示器 (纯展示型无一键更新) -->
+        <template v-if="versionInfo.current_version">
+          <div class="nav-divider"></div>
+          <div class="version-section">
+            <el-tooltip
+              v-if="versionInfo.has_update"
+              effect="dark"
+              placement="bottom"
+            >
+              <template #content>
+                <div class="version-tooltip-content">
+                  <div class="version-tooltip-title">发现新提交 ({{ versionInfo.remote_version }})</div>
+                  <div v-if="versionInfo.commit_message" class="version-tooltip-msg">
+                    {{ versionInfo.commit_message }}
+                  </div>
+                  <a
+                    v-if="versionInfo.commit_url"
+                    :href="versionInfo.commit_url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="version-tooltip-link"
+                  >
+                    前往 GitHub 查看变更 →
+                  </a>
+                </div>
+              </template>
+              <el-badge is-dot class="version-badge">
+                <span class="version-tag update-available">{{ versionInfo.current_version }}</span>
+              </el-badge>
+            </el-tooltip>
+            <span v-else class="version-tag">{{ versionInfo.current_version }}</span>
+          </div>
+        </template>
       </div>
     </header>
+
+    <p v-if="configured === false" class="setup-banner">
+      欢迎使用！请先配置 API_ID / API_HASH 以激活传输服务
+      <router-link to="/settings/account">去配置</router-link>
+    </p>
 
     <!-- ── 居中通透大画幅主视口 ── -->
     <main class="main-viewport">
@@ -107,6 +172,26 @@ const route = useRoute();
 
 .floating-island:hover {
   border-color: rgba(0, 0, 0, 0.12);
+}
+
+.setup-banner {
+  flex-shrink: 0;
+  margin: 10px 24px 0;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.setup-banner a {
+  margin-left: 8px;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
 }
 
 .brand {
@@ -190,6 +275,38 @@ const route = useRoute();
   animation: pulse-glow 2.2s infinite ease-in-out;
 }
 
+.version-section {
+  display: flex;
+  align-items: center;
+  user-select: none;
+}
+
+.version-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 2px 7px;
+  border-radius: 6px;
+  letter-spacing: 0.3px;
+  font-weight: 500;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.version-tag.update-available {
+  color: #c2410c;
+  background: rgba(234, 88, 12, 0.1);
+  cursor: pointer;
+}
+
+.version-badge :deep(.el-badge__content.is-dot) {
+  top: 1px;
+  right: 1px;
+  background-color: #f97316;
+  border: 1.5px solid #ffffff;
+  box-shadow: 0 0 6px rgba(249, 115, 22, 0.5);
+}
+
 /* ── 居中大画幅主视口 ── */
 .main-viewport {
   width: 100%;
@@ -220,7 +337,8 @@ const route = useRoute();
     max-width: 100%;
   }
 
-  .system-status {
+  .system-status,
+  .version-section {
     display: none;
   }
 
@@ -273,5 +391,39 @@ const route = useRoute();
     box-shadow: 0 -8px 32px rgba(18, 30, 20, 0.16);
     padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
+}
+
+/* ── 统一版本更新浮层样式 ── */
+.version-tooltip-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 260px;
+  padding: 2px;
+}
+
+.version-tooltip-title {
+  font-weight: 600;
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.version-tooltip-msg {
+  font-size: 11px;
+  color: #d1d5db;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.version-tooltip-link {
+  font-size: 11px;
+  color: #60a5fa;
+  text-decoration: none;
+  margin-top: 4px;
+  display: inline-block;
+}
+
+.version-tooltip-link:hover {
+  text-decoration: underline;
 }
 </style>

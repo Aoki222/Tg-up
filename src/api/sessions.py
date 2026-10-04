@@ -1,4 +1,4 @@
-"""创建 session 的请求体。api_id / api_hash 不出现在这里，始终用进程 .env。"""
+"""创建 session 的请求体。api_id / api_hash 不出现在这里，用当前进程里的 Telegram 凭据。"""
 
 from __future__ import annotations
 
@@ -39,4 +39,5 @@ def login_payload(result: LoginResult) -> dict:
         "message": result.message,
         "qr_url": result.qr_url,
         "qr_image": result.qr_image,
+        "qr_expires_in": result.qr_expires_in,
     }

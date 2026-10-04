@@ -8,8 +8,11 @@ Vue 构建产物在 frontend/dist，由本模块托管 / 和 /assets。
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
+import time
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
@@ -21,9 +24,10 @@ from fastapi.staticfiles import StaticFiles
 
 from ..adapters.progress import ProgressHub
 from ..adapters.session_login import SessionLoginService
-from ..config import API_HASH, API_ID, API_TOKEN, SESSION_DIR, TELEGRAM_PROXY, mask_api_hash, upsert_dotenv
+from ..config import API_TOKEN, PROJECT_DIR, SESSION_DIR, TELEGRAM_PROXY, mask_api_hash
 from ..domain.progress import UploadProgress
 from ..domain.settings_hub import SettingsHub
+from ..domain.telegram_credentials import load_telegram_credentials, merge_submitted_hash, save_telegram_credentials
 from ..pipeline.ingest.policy import inspect_path_route
 from .sessions import SessionCodeBody, SessionPasswordBody, SessionStartBody, login_payload
 from .settings import SettingsPayload
@@ -48,6 +52,30 @@ class IdentityPayload(BaseModel):
 
 
 DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+_version_cache: dict[str, object] = {
+    "checked_at": 0.0,
+    "data": None,
+}
+_VERSION_CACHE_TTL = 1800.0
+
+
+def _fetch_github_commit_sync() -> dict | None:
+    url = "https://api.github.com/repos/Aoki222/Tg-up/commits/main"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Tg-up-App",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            if resp.status == 200:
+                return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    return None
 
 
 def api_token_ok(authorization: str | None, access_token: str | None) -> bool:
@@ -99,7 +127,11 @@ def create_api(
     app.state.chats_provider = chats_provider
     app.state.chats_sync = chats_sync
     app.state.chat_resolver = chat_resolver
-    app.state.session_login = SessionLoginService(SESSION_DIR, API_ID, API_HASH, TELEGRAM_PROXY)
+    app.state.apply_credentials = None
+    initial = load_telegram_credentials(PROJECT_DIR)
+    app.state.session_login = SessionLoginService(
+        SESSION_DIR, initial.api_id, initial.api_hash, TELEGRAM_PROXY
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -110,12 +142,12 @@ def create_api(
 
     @app.middleware("http")
     async def protect_api(request: Request, call_next):
-        """除 /api/health 外，/api/* 在配置了 API_TOKEN 时都要令牌。OPTIONS 放行给 CORS。"""
+        """除 /api/health 与 /api/system/version 外，/api/* 在配置了 API_TOKEN 时都要令牌。OPTIONS 放行给 CORS。"""
         path = request.url.path
         if (
             request.method != "OPTIONS"
             and path.startswith("/api/")
-            and path != "/api/health"
+            and path not in ("/api/health", "/api/system/version")
             and not api_token_ok(
                 request.headers.get("authorization"),
                 request.query_params.get("access_token"),
@@ -131,6 +163,55 @@ def create_api(
     @app.get("/api/health")
     async def health() -> dict:
         return {"ok": True}
+
+    # 当前版本与远程更新检查（30分钟内存缓存，不鉴权）
+    @app.get("/api/system/version")
+    async def get_system_version() -> dict:
+        current_raw = (os.getenv("APP_VERSION") or "local_dev").strip()
+        is_dev = current_raw in ("local_dev", "dev", "")
+        current_version = "dev" if is_dev else (current_raw[:7] if len(current_raw) >= 7 else current_raw)
+
+        now = time.monotonic()
+        cached_data = _version_cache.get("data")
+        last_check = float(_version_cache.get("checked_at") or 0.0)
+        if cached_data is not None and (now - last_check) < _VERSION_CACHE_TTL:
+            return dict(cached_data)
+
+        remote_json = await asyncio.to_thread(_fetch_github_commit_sync)
+        if not remote_json:
+            result = {
+                "current_version": current_version,
+                "remote_version": None,
+                "has_update": False,
+                "commit_message": "",
+                "commit_url": "https://github.com/Aoki222/Tg-up",
+            }
+            if cached_data is not None:
+                return dict(cached_data)
+            return result
+
+        remote_sha = str(remote_json.get("sha") or "")
+        remote_short = remote_sha[:7] if len(remote_sha) >= 7 else remote_sha
+        commit_info = remote_json.get("commit") or {}
+        raw_msg = str(commit_info.get("message") or "")
+        commit_msg = raw_msg.splitlines()[0] if raw_msg else ""
+        html_url = str(remote_json.get("html_url") or f"https://github.com/Aoki222/Tg-up/commit/{remote_sha}")
+
+        has_update = False
+        if not is_dev and remote_sha:
+            if not remote_sha.startswith(current_raw) and not current_raw.startswith(remote_sha):
+                has_update = True
+
+        result = {
+            "current_version": current_version,
+            "remote_version": remote_short,
+            "has_update": has_update,
+            "commit_message": commit_msg,
+            "commit_url": html_url,
+        }
+        _version_cache["checked_at"] = now
+        _version_cache["data"] = result
+        return result
 
     # 当前已加载的 Session Worker：在线、队列、限流、是否禁用。
     @app.get("/api/workers")
@@ -189,7 +270,7 @@ def create_api(
             "items": service.list_saved(),
             "accounts": service.list_accounts(),
             "default_group_id": default_group,
-            "api_configured": True,
+            "api_configured": service.configured,
         }
 
     # 开始登录。mode=bot 用 Token；user 发验证码；qr 返回 tg://login 链接。
@@ -260,26 +341,39 @@ def create_api(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return login_payload(result)
 
-    # 当前进程的 API_ID，以及掩码后的 API_HASH。不回完整 hash。
+    # 当前凭据来源，以及掩码后的 API_HASH。不回完整 hash。
     @app.get("/api/identity")
     async def get_identity() -> dict:
+        current = load_telegram_credentials(PROJECT_DIR)
         return {
-            "api_id": API_ID,
-            "api_hash_masked": mask_api_hash(API_HASH),
-            "configured": bool(API_ID and API_HASH),
+            "api_id": current.api_id,
+            "api_hash_masked": mask_api_hash(current.api_hash) if current.api_hash else "",
+            "configured": current.configured,
+            "source": current.source,
         }
 
-    # 把 API_ID / API_HASH 写入 .env。不热更新，需重启后生效。
+    # 写入 data/telegram.json，并热注入当前进程。不改 .env，也不要求重启。
     @app.put("/api/identity", dependencies=[Depends(require_token)])
     async def put_identity(payload: IdentityPayload) -> dict:
-        updates = {"API_ID": str(payload.api_id)}
-        if payload.api_hash:
-            hashed = payload.api_hash
-            if len(hashed) < 16:
-                raise HTTPException(status_code=400, detail="API_HASH 长度不足")
-            updates["API_HASH"] = hashed
-        upsert_dotenv(updates)
-        return {"ok": True, "restart_required": True}
+        current = load_telegram_credentials(PROJECT_DIR)
+        try:
+            api_hash = merge_submitted_hash(payload.api_hash, current.api_hash)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        saved = save_telegram_credentials(PROJECT_DIR, payload.api_id, api_hash)
+        callback = app.state.apply_credentials
+        hot = False
+        if callback is not None:
+            result = callback(saved)
+            if inspect.isawaitable(result):
+                await result
+            hot = True
+        return {
+            "ok": True,
+            "hot_reloaded": hot,
+            "restart_required": False,
+            "source": saved.source,
+        }
 
     # 先停发现和调度，再拉起新进程。凭据保存后由前端确认才调用。
     @app.post("/api/process/restart", dependencies=[Depends(require_token)])

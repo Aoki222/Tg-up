@@ -23,6 +23,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -40,6 +41,7 @@ from ..logger import get_logger
 logger = get_logger(__name__)
 
 _PENDING_TTL_SECONDS = 300.0
+_UNCONFIGURED = "请先在系统设置中配置 Telegram API_ID 与 API_HASH"
 
 
 def sqlite_path(base: Path) -> Path:
@@ -80,6 +82,7 @@ class LoginResult:
     message: str = ""
     qr_url: str = ""
     qr_image: str = ""
+    qr_expires_in: int = 0
 
 
 @dataclass
@@ -105,13 +108,33 @@ class SessionLoginService:
 
     def __init__(self, session_dir: Path, api_id: int, api_hash: str, proxy_url: str | None = None):
         self.session_dir = session_dir
-        self.api_id = api_id
-        self.api_hash = api_hash
+        self.api_id = int(api_id)
+        self.api_hash = (api_hash or "").strip()
         self.proxy = parse_proxy(proxy_url)
         self._cleanup_orphan_qr_sessions()
         self._pending: dict[str, PendingLogin] = {}
         self._finished: dict[str, LoginResult] = {}
         self._lock = asyncio.Lock()
+
+    @property
+    def configured(self) -> bool:
+        return self.api_id > 0 and bool(self.api_hash)
+
+    def replace_credentials(self, api_id: int, api_hash: str) -> None:
+        self.api_id = int(api_id)
+        self.api_hash = (api_hash or "").strip()
+
+    def _require_credentials(self) -> None:
+        if not self.configured:
+            raise ValueError(_UNCONFIGURED)
+
+    async def discard_pending(self) -> None:
+        """凭据更换后丢掉还在进行的登录，避免用旧 API_ID 把 session 存下来。"""
+        async with self._lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for item in pending:
+            await self._discard(item)
 
     def _cleanup_orphan_qr_sessions(self) -> None:
         """服务重启时删除上次未正常取消的二维码临时 session。"""
@@ -155,6 +178,7 @@ class SessionLoginService:
 
     async def start_bot(self, bot_token: str, group_id: int | None, force: bool) -> LoginResult:
         """校验 Bot Token，并把一次性 Bot 登录交给统一保存流程。"""
+        self._require_credentials()
         token = bot_token.strip()
         if ":" not in token:
             raise ValueError("Bot Token 格式应为 <id>:<secret>")
@@ -162,6 +186,7 @@ class SessionLoginService:
 
     async def start_user(self, phone: str, group_id: int | None, force: bool) -> LoginResult:
         """建立手机号登录客户端并发送验证码，后续由 submit_code 继续完成登录。"""
+        self._require_credentials()
         normalized = phone.replace(" ", "").replace("-", "")
         if normalized and not normalized.startswith("+"):
             normalized = "+" + normalized
@@ -195,11 +220,12 @@ class SessionLoginService:
             done=False,
             step="code",
             login_id=login_id,
-            message=f"验证码已发到 {normalized}",
+            message=f"验证码已发到 Telegram 应用，不是短信。账号 {normalized}",
         )
 
     async def start_qr(self, group_id: int | None, force: bool) -> LoginResult:
         """现场连接 Telegram、申请二维码，并把客户端交给后台 watcher 持续等待扫码。"""
+        self._require_credentials()
         login_id = uuid.uuid4().hex[:12]
         tmp_base = self.session_dir / f"_tmp_qr_{login_id}"
         self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -253,7 +279,8 @@ class SessionLoginService:
         qr_login = pending.qr_login
         while pending.login_id in self._pending and qr_login is not None:
             try:
-                await qr_login.wait(timeout=8)
+                # 等到这张码本身过期再换，倒计时和 Telegram 的有效期一致。
+                await qr_login.wait()
             except asyncio.TimeoutError:
                 try:
                     await qr_login.recreate()
@@ -284,6 +311,7 @@ class SessionLoginService:
             message="用已登录的 Telegram 扫描二维码",
             qr_url=pending.qr_url,
             qr_image=_qr_png(pending.qr_url),
+            qr_expires_in=_qr_expires_in(pending.qr_login),
         )
 
     async def submit_code(self, login_id: str, code: str) -> LoginResult:
@@ -442,6 +470,14 @@ class SessionLoginService:
             pending.watcher.cancel()
         await _safe_disconnect(pending.client)
         unlink_session(pending.tmp_base)
+
+
+def _qr_expires_in(qr_login: object | None) -> int:
+    expires = getattr(qr_login, "expires", None)
+    if not isinstance(expires, datetime):
+        return 0
+    now = datetime.now(expires.tzinfo) if expires.tzinfo is not None else datetime.now()
+    return max(0, int((expires - now).total_seconds()))
 
 
 def _qr_png(url: str) -> str:

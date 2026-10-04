@@ -52,9 +52,12 @@ const unknownAccounts = computed(() => accounts.value.filter((item) => item.kind
 
 /** 当前状态机所处的步骤 */
 const step = ref<"form" | "code" | "password" | "qr">("form");
+const apiConfigured = ref<boolean | null>(null);
 const qrUrl = ref("");
 const qrImage = ref("");
+const qrSecondsLeft = ref(0);
 let qrTimer = 0;
+let qrClock = 0;
 
 /** 服务端返回的登录事务标识 login_id */
 const loginId = ref("");
@@ -81,6 +84,7 @@ const form = reactive({
 async function loadMeta(): Promise<void> {
   try {
     const meta = await refreshSessionAccounts();
+    apiConfigured.value = meta.api_configured;
     if (form.group_id == null && meta.default_group_id) {
       form.group_id = meta.default_group_id;
     }
@@ -117,6 +121,7 @@ function handleResult(result: SessionLoginResult): void {
   // 步进到两步验证密码输入
   if (result.step === "password") {
     stopQrPoll();
+    stopQrClock();
     loginId.value = result.login_id || "";
     step.value = "password";
     ElMessage.info(result.message || "请输入两步验证密码");
@@ -131,11 +136,30 @@ function handleResult(result: SessionLoginResult): void {
   }
 }
 
+function stopQrClock(): void {
+  window.clearInterval(qrClock);
+  qrClock = 0;
+}
+
+function armQrCountdown(seconds: number): void {
+  stopQrClock();
+  const total = Math.max(0, Math.floor(seconds));
+  qrSecondsLeft.value = total;
+  if (total <= 0) return;
+  const started = Date.now();
+  qrClock = window.setInterval(() => {
+    const left = total - Math.floor((Date.now() - started) / 1000);
+    qrSecondsLeft.value = Math.max(0, left);
+    if (left <= 0) stopQrClock();
+  }, 250);
+}
+
 async function showQr(result: SessionLoginResult): Promise<void> {
   // 后端可能在二维码过期后返回新 URL；只有 URL 变化时才重新绘制。
   const url = result.qr_url || "";
   if (!url || url === qrUrl.value) return;
   qrUrl.value = url;
+  armQrCountdown(result.qr_expires_in ?? 0);
   qrImage.value = await QRCode.toDataURL(url, {
     width: 260,
     margin: 2,
@@ -173,6 +197,10 @@ function startQrPoll(): void {
 
 /** 发起初始创建握手 */
 async function start(): Promise<void> {
+  if (apiConfigured.value === false) {
+    ElMessage.warning("尚未配置 Telegram API 凭据，无法添加账号");
+    return;
+  }
   // 发起登录请求。QR 模式下请求会等待现场 connect() 和 qr_login() 完成，期间显示 loading。
   loading.value = true;
   try {
@@ -218,10 +246,27 @@ async function sendPassword(): Promise<void> {
   }
 }
 
+/** 取消当前手机号登录，回到表单修改号码。 */
+async function backToPhone(): Promise<void> {
+  stopQrPoll();
+  stopQrClock();
+  const activeLoginId = loginId.value;
+  loginId.value = "";
+  code.value = "";
+  password.value = "";
+  qrUrl.value = "";
+  qrImage.value = "";
+  qrSecondsLeft.value = 0;
+  form.mode = "user";
+  step.value = "form";
+  await cancelActiveLogin(activeLoginId);
+}
+
 /** 重置状态并关闭弹窗 */
 async function close(): Promise<void> {
   // 重置前端状态；当前登录连接的释放由后端 pending 生命周期负责。
   stopQrPoll();
+  stopQrClock();
   const activeLoginId = loginId.value;
   await cancelActiveLogin(activeLoginId);
   step.value = "form";
@@ -230,6 +275,7 @@ async function close(): Promise<void> {
   password.value = "";
   qrUrl.value = "";
   qrImage.value = "";
+  qrSecondsLeft.value = 0;
   emit("close");
 }
 
@@ -249,6 +295,11 @@ watch(
   () => form.mode,
   (mode) => {
     if (mode === "qr" && step.value === "form" && !loading.value) {
+      if (apiConfigured.value === false) {
+        ElMessage.warning("尚未配置 Telegram API 凭据，无法添加账号");
+        form.mode = "bot";
+        return;
+      }
       step.value = "qr";
       qrImage.value = "";
       void start();
@@ -261,6 +312,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   stopQrPoll();
+  stopQrClock();
   // 遮罩点击或父组件 v-if 卸载不会调用 close()，这里必须主动取消后端 pending。
   void cancelActiveLogin(loginId.value);
 });
@@ -276,6 +328,17 @@ onUnmounted(() => {
     </template>
 
     <el-alert
+      v-if="apiConfigured === false"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="banner"
+    >
+      <template #title>尚未配置 Telegram API 凭据，无法添加账号</template>
+      <router-link to="/settings/account">前往账号设置</router-link>
+    </el-alert>
+    <el-alert
+      v-else
       title="登录过程由服务端直接与 Telegram MTProto 交互完成。生成后约 2 秒会被系统自动探测拉起为活跃 Worker，无需重启进程。"
       type="info"
       show-icon
@@ -339,7 +402,7 @@ onUnmounted(() => {
         <el-checkbox v-model="form.force">允许覆盖已存在的同名 Session</el-checkbox>
       </el-form-item>
 
-      <el-button type="primary" :loading="loading" @click="start">开始创建登录</el-button>
+      <el-button type="primary" :loading="loading" :disabled="apiConfigured === false" @click="start">开始创建登录</el-button>
     </el-form>
 
     <div v-else-if="step === 'qr'" class="qr-box">
@@ -351,16 +414,26 @@ onUnmounted(() => {
         <img v-if="qrImage" class="qr-image" :src="qrImage" alt="Telegram 登录二维码" />
         <p v-else class="qr-hint">正在生成二维码…</p>
       </template>
-      <p class="qr-hint">打开 Telegram，进入设置、设备，扫描这个二维码。过期后会自动换一张。</p>
+      <p class="qr-hint">打开 Telegram，进入 设置 → 设备 → 关联桌面设备，扫描这个二维码。</p>
+      <p v-if="qrSecondsLeft > 0" class="qr-hint">这张二维码将在 {{ qrSecondsLeft }} 秒后更换。</p>
+      <p v-else class="qr-hint">过期后会自动换一张。</p>
       <el-button @click="close">取消</el-button>
     </div>
 
     <!-- 步骤 2：提交手机验证码 -->
     <el-form v-else-if="step === 'code'" label-position="top">
-      <el-form-item label="短信 / Telegram 官方服务通知验证码">
+      <el-alert
+        title="🔔 Telegram 验证码已发送至您其他已登录客户端的服务通知（非手机短信），请打开 Telegram 查收。"
+        type="info"
+        show-icon
+        :closable="false"
+        class="banner"
+      />
+      <el-form-item label="Telegram 验证码">
         <el-input v-model="code" maxlength="8" placeholder="输入 5~8 位验证码" />
       </el-form-item>
       <el-button type="primary" :loading="loading" @click="sendCode">提交验证码</el-button>
+      <el-button @click="backToPhone">返回修改手机号</el-button>
       <el-button @click="close">取消</el-button>
     </el-form>
 
@@ -370,6 +443,7 @@ onUnmounted(() => {
         <el-input v-model="password" show-password placeholder="输入两步验证密码" />
       </el-form-item>
       <el-button type="primary" :loading="loading" @click="sendPassword">提交密码</el-button>
+      <el-button @click="backToPhone">返回修改手机号</el-button>
       <el-button @click="close">取消</el-button>
     </el-form>
   </el-card>

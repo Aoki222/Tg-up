@@ -261,6 +261,8 @@ export interface SessionLoginResult {
   qr_url?: string;
   /** 二维码 PNG 的 base64 */
   qr_image?: string;
+  /** 这张二维码还剩多少秒，由服务端按 Telegram 的过期时间计算 */
+  qr_expires_in?: number;
 }
 
 /** 现有 Session 元数据信息（用于添加弹窗展示与默认群组预填） */
@@ -270,6 +272,17 @@ export interface SessionMeta {
   accounts: SessionAccount[];
   /** 默认绑定的目标群组 chat_id（来自配置） */
   default_group_id: number | null;
-  /** 环境变量是否已正确配置 API_ID 与 API_HASH */
+  /** 当前进程是否已配置 Telegram API_ID 与 API_HASH */
   api_configured: boolean;
 }
+
+/** 系统版本与远程更新信息（用于前端展示更新徽标，纯展示无一键更新） */
+export interface SystemVersionInfo {
+  current_version: string;
+  remote_version: string | null;
+  has_update: boolean;
+  commit_message: string;
+  commit_url: string;
+  checked_at?: number;
+}
+

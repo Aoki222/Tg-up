@@ -24,10 +24,14 @@ COPY --from=frontend /web/dist ./frontend/dist
 RUN chmod +x /app/docker-entrypoint.sh \
     && uv sync --frozen --no-dev
 
+ARG BUILD_SHA="local_dev"
+
 ENV PYTHONUNBUFFERED=1 \
     API_HOST=0.0.0.0 \
     API_PORT=8000 \
+    APP_VERSION=${BUILD_SHA} \
     PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
+

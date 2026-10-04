@@ -1,6 +1,6 @@
 """upload.toml 的加载与热更新。
 
-和 .env 分开：.env 是进程身份（API），改完要重启；
+Telegram 凭据在 data/telegram.json，由设置页热注入，不写进这份 toml。
 upload.toml 是上传策略，保存后约 2 秒生效。
 
 热更新是整份替换冻结对象。解析失败则保持上一份，避免坏文件把服务弄死。

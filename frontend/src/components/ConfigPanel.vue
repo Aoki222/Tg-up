@@ -18,6 +18,7 @@ import { fetchDialogChats, fetchFsNodes, fetchSettings, saveSettings, syncDialog
 import type { DialogChat } from "../api";
 import type { FsNode, UploadConfig } from "../types";
 import { formatBytes } from "../format";
+import { ENABLE_GOOGLE_DRIVE } from "../features";
 import { useUnmatchedFiles } from "../composables/useUnmatched";
 
 const { panel } = defineProps<{
@@ -386,7 +387,7 @@ defineExpose({ dirty });
         </div>
       </section>
 
-      <section v-if="panel === 'drive'" class="section">
+      <section v-if="ENABLE_GOOGLE_DRIVE && panel === 'drive'" class="section">
         <div class="route-head">
           <span class="section-title">文件夹</span>
           <el-button size="small" @click="showAddDrive = true; newDriveName = ''; newDriveId = ''">添加</el-button>
@@ -456,7 +457,7 @@ defineExpose({ dirty });
                           :value="`tg:${chat.chat_id}`"
                         />
                       </el-option-group>
-                      <el-option-group v-if="form.drive_folders.length" label="Google Drive">
+                      <el-option-group v-if="ENABLE_GOOGLE_DRIVE && form.drive_folders.length" label="Google Drive">
                         <el-option
                           v-for="folder in form.drive_folders"
                           :key="folder.folder_id"

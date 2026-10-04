@@ -18,6 +18,7 @@ import type {
   SessionLoginResult,
   SessionMeta,
   SessionMode,
+  SystemVersionInfo,
   UnmatchedFile,
   UploadConfig,
   UploadProgress,
@@ -230,6 +231,7 @@ export interface IdentityInfo {
   api_id: number;
   api_hash_masked: string;
   configured: boolean;
+  source?: string;
 }
 
 export async function fetchIdentity(): Promise<IdentityInfo> {
@@ -239,7 +241,7 @@ export async function fetchIdentity(): Promise<IdentityInfo> {
 }
 
 export async function saveIdentity(payload: { api_id: number; api_hash: string }): Promise<void> {
-  // 保存进程身份配置；后端会返回需要重启的结果。
+  // 写入 data/telegram.json，并由当前进程热注入，不需要重启。
   await apiClient.put("/api/identity", payload);
 }
 
@@ -388,3 +390,9 @@ export function openProgressStream(
 
   return source;
 }
+
+export async function fetchSystemVersion(): Promise<SystemVersionInfo> {
+  const res = await apiClient.get<SystemVersionInfo>("/api/system/version");
+  return res.data;
+}
+

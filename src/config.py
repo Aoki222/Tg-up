@@ -1,9 +1,12 @@
-"""系统配置（进程身份），import 时读一次 .env。
+"""系统配置，import 时读一次 .env。
 
-放这里的：API_ID / API_HASH、数据库路径、session 目录、控制台监听地址。
-改这些必须重启进程。
+放这里的：数据库路径、session 目录、控制台监听地址。
+监听地址和数据库路径改完要重启。
 
-不要放目标群、封面模式、删不删文件——那些在 upload.toml，由 SettingsHub 热更新。
+Telegram API_ID / API_HASH 不在这里卡住启动。运行时以 data/telegram.json 为准，
+文件不完整才回落到下面这两个环境变量快照。详见 domain.telegram_credentials。
+
+不要把凭据放进 upload.toml。目标群、封面模式、删不删文件由 SettingsHub 热更新。
 sessions 目录只提供路径，里面的 *.session 由 SessionPool 运行中反复扫描。
 """
 
@@ -30,8 +33,20 @@ def get_required_env(name: str) -> str:
     return value
 
 
-API_ID = int(get_required_env("API_ID"))
-API_HASH = get_required_env("API_HASH")
+def _env_api_id() -> int:
+    raw = (os.getenv("API_ID") or "").strip()
+    if not raw:
+        return 0
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+# import 时的环境变量快照。网页保存的凭据在 data/telegram.json，不回写这两个名字。
+API_ID = _env_api_id()
+API_HASH = (os.getenv("API_HASH") or "").strip()
 
 # 进度页 / SSE。Vue 开发时也可跨域打这个地址
 API_HOST = os.getenv("API_HOST", "127.0.0.1")

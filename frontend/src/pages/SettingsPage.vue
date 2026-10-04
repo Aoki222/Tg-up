@@ -15,15 +15,17 @@
 
 import { computed, ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
-import { ElMessage, ElMessageBox } from "element-plus";
-import { fetchIdentity, getApiToken, restartProcess, saveIdentity, setApiToken } from "../api";
+import { ElMessage } from "element-plus";
+import { getApiToken, saveIdentity, setApiToken } from "../api";
 import ConfigPanel from "../components/ConfigPanel.vue";
+import { useTelegramIdentity } from "../composables/useTelegramIdentity";
 import { useUnmatchedPolling } from "../composables/useUnmatched";
+import { ENABLE_GOOGLE_DRIVE } from "../features";
 
 defineOptions({ name: "SettingsPage" });
 useUnmatchedPolling();
 
-const sections = [
+const allSections = [
   { id: "routes", label: "路径" },
   { id: "telegram", label: "Telegram" },
   { id: "drive", label: "Google Drive" },
@@ -32,15 +34,23 @@ const sections = [
   { id: "account", label: "账号" },
 ] as const;
 
-type SettingsSection = (typeof sections)[number]["id"];
+const sections = allSections.filter((item) => ENABLE_GOOGLE_DRIVE || item.id !== "drive");
+
+type PanelId = "routes" | "telegram" | "drive" | "watch" | "process";
 
 const route = useRoute();
 const tomlDirty = ref(false);
-const section = computed<SettingsSection>(() => {
+const section = computed(() => {
   const value = String(route.params.section || "routes");
-  return sections.some((item) => item.id === value) ? (value as SettingsSection) : "routes";
+  return sections.some((item) => item.id === value) ? value : "routes";
 });
-const configPanelId = computed(() => (section.value === "account" ? "routes" : section.value));
+const configPanelId = computed<PanelId>(() => {
+  if (section.value === "telegram" || section.value === "watch" || section.value === "process") {
+    return section.value;
+  }
+  if (section.value === "drive" && ENABLE_GOOGLE_DRIVE) return "drive";
+  return "routes";
+});
 
 // ── 响应式状态 ─────────────────────────────────────────────────
 
@@ -49,6 +59,7 @@ const apiHash = ref("");
 const apiHashMasked = ref("");
 const identitySaving = ref(false);
 const showHash = ref(false);
+const { refresh: refreshIdentity } = useTelegramIdentity();
 
 /** 当前输入的 Token 文本值（初始从 localStorage 读取） */
 const tokenInput = ref("");
@@ -62,14 +73,14 @@ const saved = ref(false);
 // 页面挂载时自动读取当前生效的本地 Token
 onMounted(() => {
   tokenInput.value = getApiToken();
-  void fetchIdentity()
-    .then((info) => {
-      apiId.value = info.api_id;
-      apiHashMasked.value = info.api_hash_masked;
-    })
-    .catch((error) => {
-      ElMessage.error(error instanceof Error ? error.message : "读取 Telegram 凭据失败");
-    });
+  void refreshIdentity().then((info) => {
+    if (!info) {
+      ElMessage.error("读取 Telegram 凭据失败");
+      return;
+    }
+    apiId.value = info.api_id;
+    apiHashMasked.value = info.api_hash_masked;
+  });
 });
 
 async function saveCredentials(): Promise<void> {
@@ -81,29 +92,12 @@ async function saveCredentials(): Promise<void> {
   try {
     await saveIdentity({ api_id: apiId.value, api_hash: apiHash.value.trim() });
     apiHash.value = "";
-    try {
-      const info = await fetchIdentity();
+    const info = await refreshIdentity();
+    if (info) {
       apiId.value = info.api_id;
       apiHashMasked.value = info.api_hash_masked;
-    } catch {
-      // 写入已经成功。掩码没读回来时保留页面上原来的值。
     }
-    try {
-      await ElMessageBox.confirm(
-        "已写入 .env。是否立即重启进程让 API_ID / API_HASH 生效？",
-        "重启进程",
-        { confirmButtonText: "立即重启", cancelButtonText: "稍后手动启动", type: "warning" },
-      );
-    } catch {
-      ElMessage.success("已保存，下次手动启动后生效");
-      return;
-    }
-    ElMessage.success("正在重启");
-    try {
-      await restartProcess();
-    } catch {
-      // 进程退出时请求可能被掐断
-    }
+    ElMessage.success("凭据已保存，当前进程已立即生效");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "保存凭据失败");
   } finally {
@@ -140,7 +134,7 @@ function clearToken(): void {
     <!-- 页面标题与导读 -->
     <div class="page-header">
       <h2 class="page-title">系统配置</h2>
-      <p class="page-desc">投递、监听、处理写入 upload.toml。账号写入 .env 或本机 Token。</p>
+      <p class="page-desc">投递、监听、处理写入 upload.toml。Telegram 凭据写入 data/telegram.json，保存后立即生效。</p>
     </div>
 
     <div class="settings-layout">
@@ -165,10 +159,10 @@ function clearToken(): void {
       />
 
       <section v-if="section === 'account'" class="block first">
-      <h3 class="block-title">Telegram 凭据 (.env)</h3>
+      <h3 class="block-title">Telegram 凭据</h3>
       <p class="hint">
         来自 <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a>。
-        保存后写入项目根目录 <code>.env</code>，不热更新。不改 API_HASH 请留空。
+        保存后写入 <code>data/telegram.json</code>，当前进程立即使用，不必重启。不改 API_HASH 请留空。
       </p>
       <div class="creds-grid">
         <el-form-item label="API_ID">
