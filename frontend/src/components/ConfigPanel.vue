@@ -48,6 +48,7 @@ const form = reactive<UploadConfig>({
   page_dir: "page",
   archive_dir: "uploaded",
   preview: "first_frame",
+  caption_template: "",
   topic_creation_enabled: true,
   after_success: "keep",
   auto_slice: false,
@@ -78,6 +79,8 @@ function snapshotOf(config: UploadConfig): string {
         path: (item.path || "").trim(),
         chat_id: item.chat_id,
         topic_enabled: item.topic_enabled,
+        caption_template: item.caption_template ?? null,
+        preview: item.preview ?? null,
         enabled: item.enabled !== false,
         platform: item.platform || "telegram",
         dest_id: item.dest_id || (item.chat_id ? String(item.chat_id) : ""),
@@ -114,6 +117,10 @@ const dialogChats = ref<DialogChat[]>([]);
 const dialogReason = ref("");
 const chatQuery = ref("");
 const editingPath = ref("");
+const stylePath = ref("");
+const styleCaptionMode = ref<"inherit" | "none" | "custom">("inherit");
+const styleCaption = ref("");
+const stylePreview = ref<"inherit" | "off" | "first_frame" | "grid">("inherit");
 
 function samePath(left: string, right: string): boolean {
   // 统一斜杠、去掉末尾分隔符并忽略大小写，用于匹配目录路由。
@@ -169,11 +176,43 @@ function setPathDest(path: string, key: string): void {
       name: "",
       path,
       topic_enabled: null,
+      caption_template: null,
+      preview: null,
       enabled: true,
       ...next,
     });
   }
   editingPath.value = "";
+}
+
+function openRouteStyle(path: string): void {
+  const route = form.routes.find((item) => samePath(item.path, path));
+  if (!route) return;
+  if (route.caption_template == null) {
+    styleCaptionMode.value = "inherit";
+    styleCaption.value = "";
+  } else if (route.caption_template === "") {
+    styleCaptionMode.value = "none";
+    styleCaption.value = "";
+  } else {
+    styleCaptionMode.value = "custom";
+    styleCaption.value = route.caption_template;
+  }
+  stylePreview.value = route.preview ?? "inherit";
+  stylePath.value = path;
+}
+
+function applyRouteStyle(): void {
+  const route = form.routes.find((item) => samePath(item.path, stylePath.value));
+  if (!route) {
+    stylePath.value = "";
+    return;
+  }
+  if (styleCaptionMode.value === "inherit") route.caption_template = null;
+  else if (styleCaptionMode.value === "none") route.caption_template = "";
+  else route.caption_template = styleCaption.value.slice(0, 2000);
+  route.preview = stylePreview.value === "inherit" ? null : stylePreview.value;
+  stylePath.value = "";
 }
 
 function hasExplicitRoute(path: string): boolean {
@@ -490,6 +529,14 @@ defineExpose({ dirty });
                       {{ hasExplicitRoute(data.path) ? '修改' : '自定义目标' }}
                     </el-button>
                     <el-button
+                      v-if="hasExplicitRoute(data.path)"
+                      size="small"
+                      text
+                      @click="openRouteStyle(data.path)"
+                    >
+                      说明与封面
+                    </el-button>
+                    <el-button
                       v-if="hasExplicitRoute(data.path) && !data.is_root"
                       size="small"
                       text
@@ -572,6 +619,15 @@ defineExpose({ dirty });
               <el-option label="网格缩略图" value="grid" />
             </el-select>
           </el-form-item>
+          <el-form-item label="默认说明" class="wide">
+            <el-input
+              v-model="form.caption_template"
+              type="textarea"
+              :rows="2"
+              maxlength="2000"
+              placeholder="路由都没写说明时使用。留空表示不写说明。"
+            />
+          </el-form-item>
           <el-form-item label="封面临时目录">
             <el-input v-model="form.page_dir" />
           </el-form-item>
@@ -603,6 +659,46 @@ defineExpose({ dirty });
         </div>
       </section>
     </el-form>
+
+    <el-dialog
+      :model-value="stylePath !== ''"
+      title="说明与封面"
+      width="440px"
+      append-to-body
+      @close="stylePath = ''"
+    >
+      <p class="route-hint">没写就沿目录往上找。都没写时，说明用默认说明，封面用上面的封面模式。</p>
+      <el-form label-position="top">
+        <el-form-item label="说明">
+          <el-select v-model="styleCaptionMode" class="grow">
+            <el-option label="跟随上一级" value="inherit" />
+            <el-option label="不要说明" value="none" />
+            <el-option label="自己写" value="custom" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="styleCaptionMode === 'custom'" label="说明模板">
+          <el-input
+            v-model="styleCaption"
+            type="textarea"
+            :rows="3"
+            maxlength="2000"
+            placeholder="{folder} {stem}"
+          />
+        </el-form-item>
+        <el-form-item label="封面">
+          <el-select v-model="stylePreview" class="grow">
+            <el-option label="跟随上一级" value="inherit" />
+            <el-option label="关闭" value="off" />
+            <el-option label="首帧截图" value="first_frame" />
+            <el-option label="网格缩略图" value="grid" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="stylePath = ''">取消</el-button>
+        <el-button type="primary" @click="applyRouteStyle">保存</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="showAddChat" title="选择群或频道" width="440px" append-to-body>
       <p v-if="dialogReason" class="route-hint">{{ dialogReason }}</p>
@@ -852,6 +948,10 @@ defineExpose({ dirty });
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0 16px;
+}
+
+.wide {
+  grid-column: 1 / -1;
 }
 
 .grow {

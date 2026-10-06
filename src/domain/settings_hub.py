@@ -58,6 +58,7 @@ def render_upload_toml(payload: dict) -> str:
         f"page_dir = {_toml_string(str(payload.get('page_dir') or 'page'))}\n"
         f"archive_dir = {_toml_string(str(payload.get('archive_dir') or 'uploaded'))}\n"
         f"preview = {_toml_string(str(payload.get('preview') or 'off'))}\n"
+        f"caption_template = {_toml_string(str(payload.get('caption_template') or '')[:2000])}\n"
         f"topic_creation_enabled = {topic}\n"
         f"after_success = {_toml_string(str(payload.get('after_success') or 'keep'))}\n"
         f"auto_slice = {'true' if payload.get('auto_slice') else 'false'}\n"
@@ -111,6 +112,11 @@ def _render_routes(payload: dict) -> str:
             block += "topic_enabled = true\n"
         elif topic is False:
             block += "topic_enabled = false\n"
+        if "caption_template" in item and item.get("caption_template") is not None:
+            block += f"caption_template = {_toml_string(str(item.get('caption_template') or '')[:2000])}\n"
+        preview = item.get("preview", None)
+        if preview:
+            block += f"preview = {_toml_string(str(preview))}\n"
         enabled = item.get("enabled", True)
         if enabled is False:
             block += "enabled = false\n"
@@ -285,6 +291,17 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
         topic_enabled = None if topic_raw is None else _as_bool(topic_raw, True)
         enabled_raw = item.get("enabled", True)
         enabled = True if enabled_raw is None else _as_bool(enabled_raw, True)
+        if "caption_template" in item and item.get("caption_template") is not None:
+            caption_template = str(item.get("caption_template") or "")[:2000]
+        else:
+            caption_template = None
+        preview_raw = item.get("preview", None)
+        route_preview = None
+        if preview_raw not in (None, ""):
+            try:
+                route_preview = PreviewMode(str(preview_raw))
+            except ValueError:
+                logger.warning("路由封面模式无效，改为跟随上级: %s", path)
         routes.append(
             FolderRoute(
                 path=path,
@@ -294,6 +311,8 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 enabled=enabled,
                 platform=platform,
                 dest_id=dest_id,
+                caption_template=caption_template,
+                preview=route_preview,
             )
         )
     return tuple(routes)
@@ -389,6 +408,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         chat_id = int(chat_id_raw)
 
     preview = PreviewMode(str(data.get("preview", "off")))
+    caption_template = str(data.get("caption_template") or "")[:2000]
     after_success = AfterSuccess(str(data.get("after_success", "keep")))
 
     return UploadSettings(
@@ -406,6 +426,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         stable_timeout_seconds=max(1.0, float(data.get("stable_timeout_seconds", 1800))),
         watch_extensions=_as_watch_extensions(data),
         routes=_as_routes(data),
+        caption_template=caption_template,
         chats=_as_chats(data),
         drive_folders=_as_drive_folders(data),
         auto_slice=_as_bool(data.get("auto_slice"), False),
@@ -463,6 +484,7 @@ class SettingsHub:
             "page_dir": _rel_path(self.project_dir, settings.page_dir),
             "archive_dir": _rel_path(self.project_dir, settings.archive_dir),
             "preview": settings.preview.value,
+            "caption_template": settings.caption_template,
             "topic_creation_enabled": settings.topic_creation_enabled,
             "after_success": settings.after_success.value,
             "auto_slice": settings.auto_slice,
@@ -481,6 +503,8 @@ class SettingsHub:
                     "enabled": route.enabled,
                     "platform": route.platform,
                     "dest_id": route.dest_id or (str(route.chat_id) if route.chat_id else ""),
+                    "caption_template": route.caption_template,
+                    "preview": None if route.preview is None else route.preview.value,
                 }
                 for route in settings.routes
             ],

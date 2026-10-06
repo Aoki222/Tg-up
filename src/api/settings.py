@@ -28,6 +28,8 @@ class FolderRoutePayload(BaseModel):
     enabled: bool = True
     platform: Literal["telegram", "gdrive"] = "telegram"
     dest_id: str = ""
+    caption_template: str | None = None
+    preview: Literal["off", "first_frame", "grid"] | None = None
 
     @field_validator("path")
     @classmethod
@@ -41,6 +43,13 @@ class FolderRoutePayload(BaseModel):
     @classmethod
     def dest_strip(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("caption_template")
+    @classmethod
+    def caption_limit(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > 2000:
+            raise ValueError("说明模板最长 2000 字")
+        return value
 
     @model_validator(mode="after")
     def fill_destination(self):
@@ -73,7 +82,15 @@ class SettingsPayload(BaseModel):
     page_dir: str = "page"
     archive_dir: str = "uploaded"
     preview: Literal["off", "first_frame", "grid"] = "off"
+    caption_template: str = ""
     topic_creation_enabled: bool = True
+
+    @field_validator("caption_template")
+    @classmethod
+    def global_caption_limit(cls, value: str) -> str:
+        if len(value) > 2000:
+            raise ValueError("说明模板最长 2000 字")
+        return value
     after_success: Literal["keep", "delete", "move_to_archive"] = "keep"
     auto_slice: bool = False
     # 账号级上传并发固定为 1，文件内部并发由 FastTelethon 负责。

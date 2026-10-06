@@ -32,6 +32,9 @@ class FolderRoute:
     enabled: bool = True
     platform: str = "telegram"
     dest_id: str = ""
+    # None 表示这项没写，继续往上继承。空字符串表示明确不要说明。
+    caption_template: str | None = None
+    preview: PreviewMode | None = None
 
 
 @dataclass(frozen=True)
@@ -71,3 +74,5 @@ class UploadSettings:
     drive_folders: tuple[DriveFolder, ...] = ()
     # 新发现的过大视频按最少段数自动切片。已经停在「过大」里的不补切。
     auto_slice: bool = False
+    # 路由都没写说明时用这份。空字符串表示不写说明。
+    caption_template: str = ""

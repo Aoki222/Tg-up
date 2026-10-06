@@ -38,6 +38,8 @@ def test_render_and_load_routes_roundtrip(tmp_path: Path, monkeypatch) -> None:
                     "path": str(movies),
                     "chat_id": -100111,
                     "topic_enabled": False,
+                    "caption_template": "{stem}",
+                    "preview": "grid",
                 },
                 {
                     "name": "跟随",
@@ -55,10 +57,17 @@ def test_render_and_load_routes_roundtrip(tmp_path: Path, monkeypatch) -> None:
     by_name = {route.name: route for route in settings.routes}
     assert by_name["电影"].chat_id == -100111
     assert by_name["电影"].topic_enabled is False
+    assert by_name["电影"].caption_template == "{stem}"
+    assert by_name["电影"].preview.value == "grid"
     assert by_name["跟随"].topic_enabled is None
+    assert by_name["跟随"].caption_template is None
+    assert by_name["跟随"].preview is None
+    assert settings.caption_template == ""
     assert "topic_enabled" not in text.split("[[routes]]")[-1] or "跟随" in text
     follow_block = text.split("name = \"跟随\"", 1)[1].split("[[routes]]")[0]
     assert "topic_enabled" not in follow_block
+    assert "caption_template" not in follow_block
+    assert "preview" not in follow_block
 
 
 def test_render_chats_and_disabled_route(tmp_path: Path, monkeypatch) -> None:

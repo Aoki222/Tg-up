@@ -142,11 +142,14 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
     ...data,
     observer_paths: paths,
     observer_path_infos: infos,
+    caption_template: data.caption_template ?? "",
     routes: (data.routes ?? []).map((item) => ({
       ...item,
       enabled: item.enabled !== false,
       platform: item.platform || "telegram",
       dest_id: item.dest_id || (item.chat_id ? String(item.chat_id) : ""),
+      caption_template: item.caption_template ?? null,
+      preview: item.preview ?? null,
     })),
     chats: (data.chats ?? []).map((item) => ({
       chat_id: item.chat_id,

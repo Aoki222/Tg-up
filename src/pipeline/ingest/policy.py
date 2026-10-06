@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ...domain.caption import find_route, resolve_preview
 from ...domain.upload_settings import PreviewMode, UploadSettings
 from .filters import check_transient_file
 
@@ -34,18 +35,11 @@ class IngestDecision:
 
 def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[str, str, int, bool] | None:
     """父目录哈希回溯。没有启用中的规则，或祖先都不在表里，返回 None，不回退全局群。"""
-    active = [route for route in settings.routes if route.enabled and _route_dest(route)]
-    if not active:
+    route = find_route(file_path, settings)
+    if route is None:
         return None
-    route_map = {route.path.resolve(): route for route in active}
-    for parent in file_path.resolve().parents:
-        route = route_map.get(parent)
-        if route is None:
-            continue
-        topic_on = (
-            settings.topic_creation_enabled if route.topic_enabled is None else route.topic_enabled
-        )
-        return route.platform, _route_dest(route), route.chat_id or _chat_id_of(route), topic_on
+    topic_on = settings.topic_creation_enabled if route.topic_enabled is None else route.topic_enabled
+    return route.platform, _route_dest(route), route.chat_id or _chat_id_of(route), topic_on
 
 
 def _route_dest(route) -> str:
@@ -153,9 +147,10 @@ class IngestPolicy:
                 dest_id=dest_id,
             )
 
+        preview = resolve_preview(file_path, settings)
         previewable = suffix in _PREVIEWABLE_SUFFIXES and platform == "telegram"
-        need_single = previewable and settings.preview is PreviewMode.FIRST_FRAME
-        need_content = previewable and settings.preview is PreviewMode.GRID
+        need_single = previewable and preview is PreviewMode.FIRST_FRAME
+        need_content = previewable and preview is PreviewMode.GRID
         return IngestDecision(
             need_single=need_single,
             need_content=need_content,

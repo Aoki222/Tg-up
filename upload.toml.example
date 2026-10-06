@@ -11,8 +11,13 @@ observer_paths = ["download"]
 page_dir = "page"
 archive_dir = "uploaded"
 
-# off | first_frame | grid
+# off | first_frame | grid。路由没写 preview 时用这个。
 preview = "first_frame"
+
+# 路由都没写说明时用这份。空字符串表示不写说明。
+# 占位符：{file_name} {stem} {ext} {folder} {rel_path} {route} {size} {date}
+# {{ 和 }} 写成字面花括号。
+caption_template = ""
 
 topic_creation_enabled = true
 
@@ -33,6 +38,8 @@ watch_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "m4v"]
 
 # 可选。按文件夹分流到不同群/频道；未命中用上面的 chat_id。
 # 子目录自动匹配最近的父目录规则。省略 topic_enabled 则跟随全局。
+# 省略 caption_template / preview 则沿目录往上找，都没写再用上面的全局值。
+# caption_template = "" 表示这个目录明确不要说明。
 # [[chats]]
 # chat_id = -1001111111111
 # alias = "电影频道"

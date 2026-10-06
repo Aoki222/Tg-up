@@ -70,11 +70,16 @@ def segment_filename(source: Path, index: int, count: int, extension: str) -> st
 
 
 def part_caption(caption: str, index: int, count: int) -> str:
-    """每段说明末尾带（2/6）。Telegram 说明最长 1024。"""
+    """每段说明末尾带（2/6）。正文太长时先截正文，段号留在 1024 字以内。"""
     mark = f"（{index}/{count}）"
     base = (caption or "").strip()
-    text = mark if not base else f"{base}\n{mark}"
-    return text[:1024]
+    if not base:
+        return mark[:1024]
+    suffix = f"\n{mark}"
+    room = 1024 - len(suffix)
+    if room <= 0:
+        return mark[:1024]
+    return f"{base[:room]}{suffix}"
 
 
 def container_extension(video_codec: str | None, audio_codec: str | None) -> str:

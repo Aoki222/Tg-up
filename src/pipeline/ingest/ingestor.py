@@ -16,6 +16,7 @@ from pathlib import Path
 from ...adapters.task_store import TaskRepository
 from ...domain import limits
 from ...domain.settings_hub import SettingsHub
+from ...domain.caption import build_ingest_caption
 from ...domain.task import TaskStatus
 from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
@@ -180,6 +181,8 @@ class FileIngestor:
 
         file_name = file_path.name
         folder_name = file_path.parent.name
+        if not caption:
+            caption = build_ingest_caption(file_path, settings, file_size)
         folder_path = str(file_path.parent.resolve())
         need_preview = decision.need_single or decision.need_content
         policy = self.settings_hub.policy_for_new_task(need_preview)

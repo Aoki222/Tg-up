@@ -20,6 +20,11 @@ permissions:
   contents: read
   packages: write
 
+# 同一分支只保留最新一次。新的推送会取消还在排队或进行中的构建和部署。
+concurrency:
+  group: build-staging-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Run Unit Tests & Build Check

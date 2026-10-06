@@ -39,7 +39,9 @@ def test_names_caption_and_which_files_can_be_sliced() -> None:
     assert segment_filename(Path("电影.mkv"), 2, 6, ".mp4") == "电影.part02-of-06.mp4"
     assert part_caption("原说明", 2, 6) == "原说明\n（2/6）"
     assert part_caption("", 1, 2) == "（1/2）"
-    assert len(part_caption("字" * 2000, 1, 2)) == 1024
+    long = part_caption("字" * 2000, 1, 2)
+    assert len(long) == 1024
+    assert long.endswith("（1/2）")
     assert is_sliceable_video("a.MP4")
     assert not is_sliceable_video("archive.zip")
 

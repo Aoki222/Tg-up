@@ -147,6 +147,10 @@ export interface FolderRouteItem {
   enabled: boolean;
   platform: string;
   dest_id: string;
+  /** null 跟随上一级。空字符串表示这个目录不要说明。 */
+  caption_template: string | null;
+  /** null 跟随上一级。 */
+  preview: PreviewMode | null;
 }
 
 export interface UnmatchedFile {
@@ -210,6 +214,8 @@ export interface UploadConfig {
   archive_dir: string;
   /** 封面生成模式 */
   preview: PreviewMode;
+  /** 路由都没写说明时使用。空字符串表示不写说明。 */
+  caption_template: string;
   /** 是否自动在群组论坛（Forum）中按文件名/特征创建新 Topic */
   topic_creation_enabled: boolean;
   /** 上传成功后的本地文件处理动作 */

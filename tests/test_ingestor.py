@@ -285,3 +285,29 @@ async def test_existing_task_is_kept_when_route_no_longer_matches(tmp_path: Path
     result = await ingestor.handle_new_file(video)
     assert result == 7
     assert repo.tasks == []
+
+
+async def test_blank_caption_is_rendered_from_the_route(tmp_path: Path) -> None:
+    shown = _video(tmp_path, "Show.mp4")
+    kept = _video(tmp_path, "Kept.mp4")
+    past = time.time() - 60
+    os.utime(shown, (past, past))
+    os.utime(kept, (past, past))
+    repo = FakeRepo()
+    hub = FakeHub(
+        _settings(
+            routes=(
+                FolderRoute(
+                    path=tmp_path.resolve(),
+                    chat_id=-100,
+                    dest_id="-100",
+                    caption_template="{stem}",
+                ),
+            ),
+        )
+    )
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=1)
+    await ingestor.handle_new_file(shown)
+    await ingestor.handle_new_file(kept, "手工说明")
+    assert repo.tasks[0]["caption"] == "Show"
+    assert repo.tasks[1]["caption"] == "手工说明"
