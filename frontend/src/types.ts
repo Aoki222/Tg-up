@@ -65,8 +65,8 @@ export interface BoardTask {
   message: string;
   /** 过大视频能否切片。压缩包为 false。 */
   sliceable: boolean;
-  /** idle / queued / cutting / uploading / failed / blocked */
-  slice_phase: "idle" | "queued" | "cutting" | "uploading" | "failed" | "blocked";
+  /** idle / queued / cutting / released / uploading / failed / blocked */
+  slice_phase: "idle" | "queued" | "cutting" | "released" | "uploading" | "failed" | "blocked";
   /** 按时长平均切时的最少段数。不能再少。 */
   slice_min_parts: number | null;
 }

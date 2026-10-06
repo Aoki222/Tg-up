@@ -121,3 +121,45 @@ def test_terminal_stage_clears_snapshot(monkeypatch) -> None:
         )
     )
     assert hub.snapshot() == []
+
+
+def test_non_uploading_stage_is_not_kept(monkeypatch) -> None:
+    hub = ProgressHub()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("src.adapters.progress.time.monotonic", lambda: clock["t"])
+    queue = hub.subscribe()
+    hub.report(_upload(7, 10, 100))
+    hub.report(
+        make_progress(
+            task_id=7,
+            worker_name="bot",
+            file_name="a.mp4",
+            current=10,
+            total=100,
+            stage="flood_wait",
+            message="重连失败，已回队列",
+        )
+    )
+    assert hub.snapshot() == []
+    stages = [queue.get_nowait().stage, queue.get_nowait().stage]
+    assert stages == ["uploading", "flood_wait"]
+
+
+def test_forget_drops_uploading_progress(monkeypatch) -> None:
+    hub = ProgressHub()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("src.adapters.progress.time.monotonic", lambda: clock["t"])
+    hub.report(_upload(3, 10, 100))
+    hub.forget([3, 99])
+    assert hub.snapshot() == []
+
+
+def test_snapshot_expires_stale_uploading(monkeypatch) -> None:
+    hub = ProgressHub()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("src.adapters.progress.time.monotonic", lambda: clock["t"])
+    hub.report(_upload(4, 10, 100))
+    clock["t"] += 30
+    assert hub.snapshot()[0].task_id == 4
+    clock["t"] += 31
+    assert hub.snapshot() == []

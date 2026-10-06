@@ -130,6 +130,7 @@ class UploadWorker:
                 self.task_queue.task_done()
                 continue
             await self.task_repository.release_task(queued_item.id, reason)
+            self._forget_progress(queued_item.id)
             self.task_queue.task_done()
         # 清空后队列必有空位，放入停止哨兵
         try:
@@ -163,6 +164,7 @@ class UploadWorker:
                 task.file_size, task.destination.platform
             ):
                 await self.task_repository.park_oversized(task.id, limits.OVERSIZED_REASON)
+                self._forget_progress(task.id)
                 logger.warning("[%s] 超过 2GB，不由 Bot 上传: %s", self.worker_name, task.file_path)
                 return
             transient = check_transient_file(Path(task.artifacts.video_path or task.file_path))
@@ -171,6 +173,8 @@ class UploadWorker:
                 logger.warning("[%s] 跳过临时文件，不再重试: %s (%s)", self.worker_name, task.file_path, reason)
                 if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                     self._emit_progress(task, 0, 1, "failed", reason)
+                else:
+                    self._forget_progress(task.id)
                 await self._handle_upload_failure(task, reason, retryable=False)
                 return
             settings = self.settings_hub.get()
@@ -198,20 +202,19 @@ class UploadWorker:
                     )
                 if isinstance(result, SendOk):
                     await self.task_repository.mark_task_succeeded(task.id, result.message_id)
+                    self._emit_progress(task, 1, 1, "success", "上传成功")
+                    try:
+                        await self.after_upload.handle(task)
+                    except Exception:
+                        logger.exception("[%s] 上传后收尾失败: %s", self.worker_name, task.file_path)
                     if task.parent_id:
                         await self._notify_slice(task, "success")
-                        logger.info("[%s] 切片段上传成功: %s", self.worker_name, task.file_path)
-                    else:
-                        self._emit_progress(task, 1, 1, "success", "上传成功")
-                        try:
-                            await self.after_upload.handle(task)
-                        except Exception:
-                            logger.exception("[%s] 上传后收尾失败: %s", self.worker_name, task.file_path)
-                        logger.info("[%s] 上传成功: %s", self.worker_name, task.file_path)
+                    logger.info("[%s] 上传成功: %s", self.worker_name, task.file_path)
                 elif isinstance(result, SendRetryLater):
                     self.flood_wait_until = time.monotonic() + result.seconds
                     # 回 pending 且不 +retry_count；调度器会跳过 is_accepting()==False 的 worker
                     await self.task_repository.release_task(task.id, f"FloodWait {result.seconds}s")
+                    self._forget_progress(task.id)
                     if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                         self._emit_progress(
                             task, 0, 1, "flood_wait", f"FloodWait {result.seconds}s"
@@ -224,6 +227,7 @@ class UploadWorker:
                     )
                 elif isinstance(result, SendOversized):
                     if task.parent_id:
+                        self._emit_progress(task, 0, 1, "failed", result.reason)
                         await self.task_repository.mark_task_failed(
                             task.id,
                             task.policy.max_retries,
@@ -233,6 +237,7 @@ class UploadWorker:
                         await self._notify_slice(task, "failed")
                     else:
                         await self.task_repository.park_oversized(task.id, result.reason)
+                        self._forget_progress(task.id)
                     logger.warning(
                         "[%s] 超过分片上限，停在过大: %s (%s)",
                         self.worker_name,
@@ -245,16 +250,21 @@ class UploadWorker:
                         logger.warning("[%s] 不再重试: %s", self.worker_name, result.reason)
                     if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                         self._emit_progress(task, 0, 1, "failed", result.reason)
+                    else:
+                        self._forget_progress(task.id)
                     await self._handle_upload_failure(task, result.reason, retryable=result.retryable)
                     await self._notify_slice_if_exhausted(task)
         except asyncio.CancelledError:
             if self._aborting:
                 await self.task_repository.release_task(task.id, self._abort_reason or "worker aborted")
+                self._forget_progress(task.id)
             raise
         except Exception as error:
             logger.exception("[%s] 上传失败: %s", self.worker_name, task.file_path)
             if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                 self._emit_progress(task, 0, 1, "failed", str(error))
+            else:
+                self._forget_progress(task.id)
             await self._handle_upload_failure(task, str(error))
             await self._notify_slice_if_exhausted(task)
         finally:
@@ -329,6 +339,7 @@ class UploadWorker:
         )
         if failures >= RECONNECT_MAX_ATTEMPTS or not await self._wait_until_connected():
             await self.task_repository.release_task(task.id, f"disconnected: {reason}")
+            self._forget_progress(task.id)
             if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                 self._emit_progress(task, current, total, "flood_wait", "重连失败，已回队列")
             logger.warning("[%s] 重连多次失败，任务回队列: %s", self.worker_name, task.file_path)
@@ -348,12 +359,8 @@ class UploadWorker:
             self._byte_progress[task.id] = (float(current), float(total))
         elif stage in {"success", "failed"}:
             self._byte_progress.pop(task.id, None)
-        report_id = task.id
         report_message = message
-        if task.parent_id and task.part_index and task.part_count:
-            if stage in {"success", "failed"}:
-                return
-            report_id = task.parent_id
+        if task.parent_id and task.part_index and task.part_count and stage == "uploading":
             label = f"第 {task.part_index}/{task.part_count} 段"
             report_message = f"{label} · {message}" if message else label
         if self.progress_reporter is None:
@@ -361,7 +368,7 @@ class UploadWorker:
         try:
             self.progress_reporter.report(
                 make_progress(
-                    task_id=report_id,
+                    task_id=task.id,
                     worker_name=self.worker_name,
                     file_name=task.file_name,
                     current=current,
@@ -372,6 +379,19 @@ class UploadWorker:
             )
         except Exception:
             logger.exception("[%s] 进度上报失败", self.worker_name)
+
+    def _forget_progress(self, task_id: int) -> None:
+        """任务已经离开上传。内存进度不再留给下一次 SSE 快照。"""
+        reporter = self.progress_reporter
+        if reporter is None:
+            return
+        forget = getattr(reporter, "forget", None)
+        if forget is None:
+            return
+        try:
+            forget([task_id])
+        except Exception:
+            logger.exception("[%s] 清理进度失败", self.worker_name)
 
     async def _watch_connection(self) -> None:
         """监听 SessionPool 的断线状态，重连期间暂停接单并让任务回队列重试。"""

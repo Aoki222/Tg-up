@@ -13,8 +13,11 @@ import { computed, onDeactivated, ref, watch } from "vue";
 import WorkerPanel from "../components/WorkerPanel.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import SessionPanel from "../components/SessionPanel.vue";
+import { fetchSuccessPage } from "../api";
+import type { SuccessRecord } from "../api";
 import { useTaskBoard } from "../composables/useTaskBoard";
 import { useUnmatchedPolling } from "../composables/useUnmatched";
+import { formatBytes } from "../format";
 import type { WorkerSnapshot } from "../types";
 
 defineOptions({ name: "MonitorPage" });
@@ -40,6 +43,15 @@ const successScope = ref<"today" | "all">(loadSuccessScope());
 const successCount = computed(() =>
   successScope.value === "today" ? successToday.value : successTotal.value,
 );
+const successOpen = ref(false);
+const successPage = ref(1);
+const successPageSize = 50;
+const successTotalRows = ref(0);
+const successItems = ref<SuccessRecord[]>([]);
+const successLoading = ref(false);
+const successPages = computed(() =>
+  Math.max(1, Math.ceil(successTotalRows.value / successPageSize)),
+);
 
 function loadSuccessScope(): "today" | "all" {
   return localStorage.getItem(SUCCESS_SCOPE_KEY) === "all" ? "all" : "today";
@@ -52,6 +64,42 @@ onDeactivated(() => {
 function onSuccessScopeChange(value: "today" | "all"): void {
   successScope.value = value;
   localStorage.setItem(SUCCESS_SCOPE_KEY, value);
+  if (successOpen.value) {
+    successPage.value = 1;
+    void loadSuccess();
+  }
+}
+
+async function loadSuccess(): Promise<void> {
+  successLoading.value = true;
+  try {
+    const data = await fetchSuccessPage(successScope.value, successPage.value, successPageSize);
+    successItems.value = data.items;
+    successTotalRows.value = data.total;
+    successPage.value = data.page;
+  } catch {
+    successItems.value = [];
+    successTotalRows.value = 0;
+  } finally {
+    successLoading.value = false;
+  }
+}
+
+function openSuccess(): void {
+  successOpen.value = true;
+  successPage.value = 1;
+  void loadSuccess();
+}
+
+function closeSuccess(): void {
+  successOpen.value = false;
+}
+
+async function shiftSuccessPage(step: number): Promise<void> {
+  const next = successPage.value + step;
+  if (next < 1 || next > successPages.value) return;
+  successPage.value = next;
+  await loadSuccess();
 }
 
 // ── 弹窗交互控制 ───────────────────────────────────────────────
@@ -85,6 +133,10 @@ const totalWorkersCount = computed(() => workers.value.length);
 watch(showSessionForm, (open) => {
   document.body.style.overflow = open ? "hidden" : "";
 });
+
+watch(successCount, () => {
+  if (successOpen.value && successPage.value === 1) void loadSuccess();
+});
 </script>
 
 <template>
@@ -112,8 +164,18 @@ watch(showSessionForm, (open) => {
             <el-option label="今日成功" value="today" />
             <el-option label="累计成功" value="all" />
           </el-select>
-          <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
-            {{ successCount }} <span class="cell-unit">条</span>
+          <span class="success-line">
+            <button
+              type="button"
+              class="success-open"
+              :aria-expanded="successOpen"
+              @click="successOpen ? closeSuccess() : openSuccess()"
+            >
+              <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
+                {{ successCount }} <span class="cell-unit">条</span>
+              </span>
+              <span class="view-mark">查看</span>
+            </button>
           </span>
         </div>
       </div>
@@ -170,6 +232,39 @@ watch(showSessionForm, (open) => {
           </span>
         </div>
       </div>
+    </section>
+
+    <section v-if="successOpen" class="success-panel" aria-label="上传成功">
+      <header class="success-head">
+        <h2>上传成功</h2>
+        <button type="button" class="success-close" @click="closeSuccess">关闭</button>
+      </header>
+      <p v-if="successLoading" class="success-empty">正在读取</p>
+      <p v-else-if="successItems.length === 0" class="success-empty">没有成功记录</p>
+      <ul v-else class="success-list">
+        <li v-for="item in successItems" :key="item.id">
+          <span class="success-name" :title="item.file_name">{{ item.file_name }}</span>
+          <span v-if="item.part_label" class="success-part">{{ item.part_label }}</span>
+          <span class="success-meta">
+            <template v-if="item.file_size > 0">{{ formatBytes(item.file_size) }}</template>
+            <template v-if="item.folder_name"> · {{ item.folder_name }}</template>
+            <template v-if="item.finished_at"> · {{ item.finished_at }}</template>
+          </span>
+        </li>
+      </ul>
+      <footer class="success-pager">
+        <button type="button" :disabled="successPage <= 1 || successLoading" @click="shiftSuccessPage(-1)">
+          上一页
+        </button>
+        <span>第 {{ successPage }} / {{ successPages }} 页</span>
+        <button
+          type="button"
+          :disabled="successPage >= successPages || successLoading"
+          @click="shiftSuccessPage(1)"
+        >
+          下一页
+        </button>
+      </footer>
     </section>
 
     <!-- ── 移动端分段视图切换 (仅在窄屏呈现) ── -->
@@ -351,6 +446,139 @@ watch(showSessionForm, (open) => {
 .scope-select :deep(.el-select__selected-item) {
   font-size: 11.5px;
   font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.success-line {
+  display: flex;
+  align-items: center;
+}
+
+.success-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+
+.view-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.view-mark::before {
+  content: "";
+  width: 10px;
+  height: 8px;
+  border: 1.4px solid currentColor;
+  border-radius: 1px;
+  box-shadow: inset 0 -2px 0 currentColor;
+}
+
+.success-open:hover .view-mark {
+  color: var(--text);
+  border-color: rgba(0, 0, 0, 0.16);
+}
+
+.success-panel {
+  margin-top: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 14px 16px 12px;
+}
+
+.success-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.success-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.success-close,
+.success-pager button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.success-close:disabled,
+.success-pager button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.success-empty {
+  margin: 8px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.success-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.success-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-light);
+  font-size: 13px;
+}
+
+.success-name {
+  font-weight: 550;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.success-part {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.success-meta {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.success-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 

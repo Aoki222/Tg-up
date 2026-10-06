@@ -16,7 +16,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, BackgroundTasks, Path as FastPath
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, BackgroundTasks, Path as FastPath
 from pydantic import BaseModel, Field, field_validator
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -27,7 +27,7 @@ from ..logger import get_logger
 from ..adapters.session_login import SessionLoginService
 from ..config import API_TOKEN, PROJECT_DIR, SESSION_DIR, TELEGRAM_PROXY, mask_api_hash
 from ..domain.progress import UploadProgress
-from ..domain.slices import is_sliceable_video, minimum_slice_parts, slice_phase
+from ..domain.slices import MSG_TOO_DENSE, is_sliceable_video, minimum_slice_parts, slice_phase
 from ..domain.settings_hub import SettingsHub
 from ..domain.telegram_credentials import load_telegram_credentials, merge_submitted_hash, save_telegram_credentials
 from ..pipeline.ingest.policy import inspect_path_route
@@ -36,6 +36,12 @@ from .settings import SettingsPayload
 
 
 class FailedIdsBody(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+
+
+class OversizedIdsBody(BaseModel):
+    """ids 为空表示当前所有过大源文件。"""
+
     ids: list[int] = Field(default_factory=list)
 
 
@@ -716,6 +722,38 @@ def create_api(
         rows = await repo.list_unmatched()
         return {"items": rows, "count": len(rows)}
 
+    # 上传成功的分页列表。条件和顶部今日/累计数字一致。
+    @app.get("/api/tasks/success")
+    async def list_success(
+        scope: str = Query(default="all"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100),
+    ) -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        if scope not in {"today", "all"}:
+            raise HTTPException(status_code=400, detail="scope 只能是 today 或 all")
+        rows, total = await repo.list_success_page(scope=scope, page=page, page_size=page_size)
+        items = []
+        for row in rows:
+            part_index = row.get("part_index")
+            part_count = row.get("part_count")
+            part_label = None
+            if part_index and part_count:
+                part_label = f"第 {int(part_index)}/{int(part_count)} 段"
+            items.append(
+                {
+                    "id": int(row["id"]),
+                    "file_name": row.get("file_name") or "",
+                    "file_size": int(row.get("file_size") or 0),
+                    "folder_name": row.get("folder_name"),
+                    "finished_at": row.get("finished_at"),
+                    "part_label": part_label,
+                }
+            )
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
     # 看板快照：进行中的任务，外加最近失败。上传中的行叠上实时进度。
     @app.get("/api/tasks")
     async def list_tasks() -> dict:
@@ -742,6 +780,9 @@ def create_api(
         if repo is None:
             raise HTTPException(status_code=503, detail="任务仓库未就绪")
         retried, skipped, parked = await repo.requeue_all_failed()
+        slicer = app.state.slice_service
+        if slicer is not None:
+            await slicer.sync_requeued_parts()
         if retried:
             _wake_scheduler()
         return {"ok": True, "retried": retried, "skipped": skipped, "parked": parked}
@@ -759,6 +800,9 @@ def create_api(
             raise HTTPException(status_code=409, detail="只能重试失败任务")
         if result == "missing_file":
             raise HTTPException(status_code=409, detail="文件不存在")
+        slicer = app.state.slice_service
+        if slicer is not None:
+            await slicer.sync_requeued_parts()
         fresh = await repo.get_task_by_id(task_id)
         status = str(fresh.get("status") if fresh else "pending")
         if status == "pending":
@@ -829,14 +873,146 @@ def create_api(
             raise HTTPException(status_code=503, detail="切片未就绪")
         return {"ok": True, "id": task_id}
 
+    def _skip(row: dict | None, task_id: int, reason: str) -> dict:
+        name = ""
+        if row is not None:
+            name = str(row.get("file_name") or "")
+        return {"id": task_id, "file_name": name, "reason": reason}
+
+    def _slice_skip_reason(result: str) -> str:
+        if result == "not_video":
+            return "这个文件不能切片"
+        if result == "missing_file":
+            return "文件不存在"
+        if result == "busy":
+            return "已在切片"
+        if result == "not_oversized":
+            return "不是过大文件"
+        if result == "not_found":
+            return "找不到任务"
+        if result.startswith("bad_parts:"):
+            minimum = result.split(":", 1)[1]
+            if minimum.isdigit() and int(minimum) > 30:
+                return MSG_TOO_DENSE
+            return f"段数至少为 {minimum}，最多 30"
+        return "切片未就绪"
+
+    async def _oversized_rows(repo, ids: list[int]) -> list[dict]:
+        if not ids:
+            wanted = await repo.list_oversized_root_ids()
+        else:
+            wanted = [int(task_id) for task_id in ids if int(task_id) > 0]
+        rows: list[dict] = []
+        for task_id in wanted:
+            row = await repo.get_task_by_id(task_id)
+            if row is None or str(row.get("status")) != "oversized" or row.get("parent_id"):
+                continue
+            rows.append(row)
+        return rows
+
+    # 选中的或全部过大视频按各自最少段数进入切片队列。
+    @app.post("/api/tasks/oversized/slice", dependencies=[Depends(require_token)])
+    async def slice_oversized_batch(payload: OversizedIdsBody) -> dict:
+        repo = app.state.task_repository
+        slicer = app.state.slice_service
+        if repo is None or slicer is None:
+            raise HTTPException(status_code=503, detail="切片未就绪")
+        queued = 0
+        skipped: list[dict] = []
+        for row in await _oversized_rows(repo, payload.ids):
+            task_id = int(row["id"])
+            parts = minimum_slice_parts(int(row.get("file_size") or 0))
+            result = await slicer.request(task_id, parts)
+            if result == "ok":
+                queued += 1
+                continue
+            skipped.append(_skip(row, task_id, _slice_skip_reason(result)))
+        return {"ok": True, "queued": queued, "skipped": skipped}
+
+    # 选中的或全部过大文件交给个人号。没有个人号时一条都不分配。
+    @app.post("/api/tasks/oversized/dispatch-user", dependencies=[Depends(require_token)])
+    async def dispatch_oversized_batch(payload: OversizedIdsBody) -> dict:
+        repo = app.state.task_repository
+        dispatch = app.state.dispatch_oversized
+        if repo is None or dispatch is None:
+            raise HTTPException(status_code=503, detail="任务分发未就绪")
+        assigned = 0
+        skipped: list[dict] = []
+        for row in await _oversized_rows(repo, payload.ids):
+            task_id = int(row["id"])
+            result = await dispatch(task_id)
+            if result == "ok":
+                assigned += 1
+                continue
+            if result == "no_user" and assigned == 0:
+                raise HTTPException(status_code=409, detail="没有可用的个人账号")
+            reason = {
+                "no_user": "没有可用的个人账号",
+                "slicing": "正在切片，请先清除",
+                "missing_file": "文件不存在",
+                "not_oversized": "不是过大文件",
+                "not_found": "找不到任务",
+            }.get(result, "无法交给个人号")
+            skipped.append(_skip(row, task_id, reason))
+            if result == "no_user":
+                break
+        return {"ok": True, "assigned": assigned, "skipped": skipped}
+
+    async def _delete_oversized(ids: list[int] | None) -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        slicer = app.state.slice_service
+        rows = await _oversized_rows(repo, ids or [])
+        deleted = 0
+        skipped: list[dict] = []
+        removed: list[int] = []
+        for row in rows:
+            task_id = int(row["id"])
+            child_ids: list[int] = []
+            if slicer is not None:
+                gate, child_ids = await slicer.discard(task_id)
+                if gate == "uploading":
+                    skipped.append(_skip(row, task_id, "有分段正在上传"))
+                    continue
+            result = await repo.delete_failed(task_id)
+            if result != "ok":
+                skipped.append(_skip(row, task_id, "不是过大文件"))
+                continue
+            deleted += 1
+            removed.extend(child_ids)
+            removed.append(task_id)
+        _forget_progress(removed)
+        return {"ok": True, "deleted": deleted, "skipped": skipped}
+
+    @app.post("/api/tasks/oversized/delete", dependencies=[Depends(require_token)])
+    async def delete_selected_oversized(payload: OversizedIdsBody) -> dict:
+        if not payload.ids:
+            return {"ok": True, "deleted": 0, "skipped": []}
+        return await _delete_oversized(payload.ids)
+
+    @app.delete("/api/tasks/oversized", dependencies=[Depends(require_token)])
+    async def delete_all_oversized() -> dict:
+        return await _delete_oversized(None)
+
+    def _forget_progress(task_ids: list[int]) -> None:
+        hub = app.state.progress_hub
+        if hub is not None and task_ids:
+            hub.forget(task_ids)
+
     # 删除全部失败记录。不删磁盘上的文件。
     @app.delete("/api/tasks/failed", dependencies=[Depends(require_token)])
     async def delete_all_failed() -> dict:
         repo = app.state.task_repository
         if repo is None:
             raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        slicer = app.state.slice_service
+        part_ids = await repo.failed_slice_child_ids() if slicer is not None else []
+        root_ids = await repo.list_failed_root_ids()
+        cleared = await slicer.clear_failed_parts() if slicer is not None else 0
         deleted = await repo.delete_all_failed()
-        return {"ok": True, "deleted": deleted}
+        _forget_progress([*part_ids, *root_ids])
+        return {"ok": True, "deleted": deleted + cleared}
 
     # 按 id 删除选中的失败记录。不是 failed 的行会跳过。
     @app.post("/api/tasks/failed/delete", dependencies=[Depends(require_token)])
@@ -844,8 +1020,23 @@ def create_api(
         repo = app.state.task_repository
         if repo is None:
             raise HTTPException(status_code=503, detail="任务仓库未就绪")
-        deleted = await repo.delete_failed_ids(payload.ids)
-        return {"ok": True, "deleted": deleted}
+        slicer = app.state.slice_service
+        child_ids: list[int] = []
+        rest: list[int] = []
+        for task_id in payload.ids:
+            row = await repo.get_task_by_id(int(task_id))
+            if row is None:
+                continue
+            status = str(row.get("status"))
+            if row.get("parent_id") and status == "failed":
+                child_ids.append(int(task_id))
+            elif status == "failed":
+                rest.append(int(task_id))
+        cleared = await slicer.clear_failed_parts(child_ids) if slicer is not None else 0
+        deleted = await repo.delete_failed_ids(rest)
+        removed = [*child_ids, *rest] if slicer is not None else rest
+        _forget_progress(removed)
+        return {"ok": True, "deleted": deleted + cleared}
 
     # 删除一条失败记录。进行中的任务不能删。
     @app.delete("/api/tasks/{task_id}", dependencies=[Depends(require_token)])
@@ -853,14 +1044,30 @@ def create_api(
         repo = app.state.task_repository
         if repo is None:
             raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        row = await repo.get_task_by_id(task_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="找不到任务")
+        slicer = app.state.slice_service
+        removed: list[int] = []
+        if row.get("parent_id"):
+            if str(row.get("status")) != "failed":
+                raise HTTPException(status_code=409, detail="只能清除失败或过大的任务")
+            if slicer is None or not await slicer.clear_failed_part(task_id):
+                raise HTTPException(status_code=409, detail="只能清除失败或过大的任务")
+            _forget_progress([task_id])
+            return {"ok": True, "id": task_id, "deleted": True}
+        if str(row.get("status")) == "oversized" and slicer is not None:
+            gate, child_ids = await slicer.discard(task_id)
+            if gate == "uploading":
+                raise HTTPException(status_code=409, detail="有分段正在上传")
+            removed.extend(child_ids)
         result = await repo.delete_failed(task_id)
         if result == "not_found":
             raise HTTPException(status_code=404, detail="找不到任务")
         if result == "not_failed":
             raise HTTPException(status_code=409, detail="只能清除失败或过大的任务")
-        slicer = app.state.slice_service
-        if slicer is not None:
-            await slicer.discard(task_id)
+        removed.append(task_id)
+        _forget_progress(removed)
         return {"ok": True, "id": task_id, "deleted": True}
 
     # 当前仍在 uploading 的进度快照，含服务端算好的速度。

@@ -369,6 +369,79 @@ export async function deleteAllFailedTasks(): Promise<number> {
   return res.data.deleted;
 }
 
+export interface SkippedTask {
+  id: number;
+  file_name: string;
+  reason: string;
+}
+
+export interface SuccessRecord {
+  id: number;
+  file_name: string;
+  file_size: number;
+  folder_name: string | null;
+  finished_at: string | null;
+  part_label: string | null;
+}
+
+export interface SuccessPage {
+  items: SuccessRecord[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function sliceOversizedBatch(
+  ids: number[],
+): Promise<{ queued: number; skipped: SkippedTask[] }> {
+  const res = await apiClient.post<{ queued: number; skipped: SkippedTask[] }>(
+    "/api/tasks/oversized/slice",
+    { ids },
+  );
+  return { queued: res.data.queued, skipped: res.data.skipped ?? [] };
+}
+
+export async function dispatchOversizedBatch(
+  ids: number[],
+): Promise<{ assigned: number; skipped: SkippedTask[] }> {
+  const res = await apiClient.post<{ assigned: number; skipped: SkippedTask[] }>(
+    "/api/tasks/oversized/dispatch-user",
+    { ids },
+  );
+  return { assigned: res.data.assigned, skipped: res.data.skipped ?? [] };
+}
+
+export async function deleteSelectedOversizedTasks(
+  ids: number[],
+): Promise<{ deleted: number; skipped: SkippedTask[] }> {
+  const res = await apiClient.post<{ deleted: number; skipped: SkippedTask[] }>(
+    "/api/tasks/oversized/delete",
+    { ids },
+  );
+  return { deleted: res.data.deleted, skipped: res.data.skipped ?? [] };
+}
+
+export async function deleteAllOversizedTasks(): Promise<{
+  deleted: number;
+  skipped: SkippedTask[];
+}> {
+  const res = await apiClient.delete<{ deleted: number; skipped: SkippedTask[] }>(
+    "/api/tasks/oversized",
+  );
+  return { deleted: res.data.deleted, skipped: res.data.skipped ?? [] };
+}
+
+export async function fetchSuccessPage(
+  scope: "today" | "all",
+  page: number,
+  pageSize = 50,
+): Promise<SuccessPage> {
+  const res = await apiClient.get<SuccessPage>("/api/tasks/success", {
+    params: { scope, page, page_size: pageSize },
+  });
+  return res.data;
+}
+
 // ── SSE 实时进度长连接 ─────────────────────────────────────────
 
 /**

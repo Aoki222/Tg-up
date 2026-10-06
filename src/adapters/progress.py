@@ -1,7 +1,8 @@
 """进度实现：内存总线（给 SSE）+ 控制台/日志进度条。
 
 Worker 只调用 report()。Hub 节流后再广播，避免 Telethon 每个分片都打满前端。
-终态 success/failed 会从 snapshot 里摘掉，避免列表里永远留着已完成任务。
+快照里只留正在上传的任务。成功、失败、退回等待会先推给已连接的页面，再从内存删掉。
+超过 60 秒没有新进度的记录在取快照时过期。
 """
 
 from __future__ import annotations
@@ -16,6 +17,9 @@ from ..logger import get_logger
 
 logger = get_logger(__name__)
 
+# 断线重连中间大约二十多秒没有新回调，60 秒盖得住，又不会把已删除的进度留太久。
+PROGRESS_TTL_SECONDS = 60.0
+
 
 class ProgressHub:
     """进程内进度总线。FastAPI SSE 订阅这里；Worker 只负责 report。"""
@@ -26,10 +30,17 @@ class ProgressHub:
         self._last_emit: dict[int, tuple[float, float]] = {}
         # task_id -> (time, current, total, ema_speed)
         self._speed_state: dict[int, tuple[float, float, float, float]] = {}
+        self._touched: dict[int, float] = {}
 
     def snapshot(self) -> list[UploadProgress]:
         """当前仍在 uploading 的进度，给 SSE 连上时的第一批快照。"""
+        self._expire()
         return list(self._latest.values())
+
+    def forget(self, task_ids) -> None:
+        """任务已离开上传或已从库里删除。不广播假进度。"""
+        for task_id in task_ids:
+            self._drop(int(task_id))
 
     def subscribe(self) -> asyncio.Queue[UploadProgress]:
         queue: asyncio.Queue[UploadProgress] = asyncio.Queue(maxsize=256)
@@ -45,16 +56,33 @@ class ProgressHub:
     def report(self, progress: UploadProgress) -> None:
         """同步接口，可从 Telethon 回调里调用。队列满则丢掉最旧的一条。"""
         progress = self._with_speed(progress)
-        if not self._should_emit(progress):
+        now = time.monotonic()
+        self._touched[progress.task_id] = now
+        if progress.stage == "uploading":
             self._latest[progress.task_id] = progress
+            if not self._should_emit(progress):
+                return
+            self._last_emit[progress.task_id] = (now, progress.percent)
+            self._broadcast(progress)
             return
-        self._latest[progress.task_id] = progress
-        self._last_emit[progress.task_id] = (time.monotonic(), progress.percent)
-        if progress.stage in {"success", "failed"}:
-            self._latest.pop(progress.task_id, None)
-            self._last_emit.pop(progress.task_id, None)
-            self._speed_state.pop(progress.task_id, None)
         self._broadcast(progress)
+        self._drop(progress.task_id)
+
+    def _drop(self, task_id: int) -> None:
+        self._latest.pop(task_id, None)
+        self._last_emit.pop(task_id, None)
+        self._speed_state.pop(task_id, None)
+        self._touched.pop(task_id, None)
+
+    def _expire(self) -> None:
+        now = time.monotonic()
+        stale = [
+            task_id
+            for task_id, seen in self._touched.items()
+            if now - seen > PROGRESS_TTL_SECONDS
+        ]
+        for task_id in stale:
+            self._drop(task_id)
 
     def _with_speed(self, progress: UploadProgress) -> UploadProgress:
         """在节流之前用单调时钟算 EMA 速度。相册单位不算字节速度。"""
@@ -172,6 +200,16 @@ class FanoutReporter:
                 reporter.report(progress)
             except Exception:
                 logger.exception("进度汇报失败: %s", type(reporter).__name__)
+
+    def forget(self, task_ids) -> None:
+        for reporter in self._reporters:
+            forget = getattr(reporter, "forget", None)
+            if forget is None:
+                continue
+            try:
+                forget(task_ids)
+            except Exception:
+                logger.exception("清理进度失败: %s", type(reporter).__name__)
 
 
 def _render_bar(percent: float, width: int) -> str:

@@ -1,4 +1,4 @@
-"""切片队列：分段入库、逐段上传、源文件按原策略收尾。ffmpeg 被替掉。"""
+"""切片队列：分段进入正常封面和上传队列，源文件等全部成功后再收尾。ffmpeg 被替掉。"""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ from src.adapters.task_store import TaskRepository
 from src.database.connection import close_pool, get_db, open_pool
 from src.database.init import SCHEMA
 from src.domain.limits import OVERSIZED_REASON
-from src.domain.slices import MSG_INTERRUPTED, MSG_WAIT, msg_need_parts, msg_part, msg_part_failed
+from src.domain.slices import MSG_INTERRUPTED, MSG_WAIT, msg_need_parts, msg_part_failed, msg_released
 from src.domain.task import AfterSuccess, Task, TaskArtifacts, TaskDestination, TaskPolicy, TaskStatus
 from src.pipeline.slice_media import SliceCutError
 from src.pipeline.slicer import SliceService
@@ -85,7 +85,7 @@ def _child_task(row: dict) -> Task:
     )
 
 
-async def test_parts_upload_one_by_one_and_source_stays(tmp_path: Path, monkeypatch) -> None:
+async def test_parts_enter_the_board_and_source_waits(tmp_path: Path, monkeypatch) -> None:
     try:
         repo = await _prepare(tmp_path)
         parent_id, source = await _parent(repo, tmp_path)
@@ -107,36 +107,76 @@ async def test_parts_upload_one_by_one_and_source_stays(tmp_path: Path, monkeypa
 
         parent = await repo.get_task_by_id(parent_id)
         assert parent is not None
-        assert parent["error_msg"] == msg_part(1, 2)
+        assert parent["error_msg"] == msg_released(2)
         assert parent["status"] == "oversized"
         slices = await repo.list_slices(parent_id)
-        assert [row["status"] for row in slices] == ["queued", "planned"]
+        assert [row["status"] for row in slices] == ["queued", "queued"]
         board = await repo.list_board_tasks()
-        assert [int(row["id"]) for row in board] == [parent_id]
+        assert parent_id in [int(row["id"]) for row in board]
+        assert len(board) == 3
 
         first = await repo.get_task_by_id(int(slices[0]["child_task_id"]))
-        assert first is not None
+        second = await repo.get_task_by_id(int(slices[1]["child_task_id"]))
+        assert first is not None and second is not None
+        assert first["status"] == "pending"
+        assert second["status"] == "pending"
         assert first["caption"] == "原说明\n（1/2）"
         assert first["after_success"] == "keep"
+        assert Path(first["file_path"]).is_file()
+        assert Path(first["file_path"]).parent == service.slice_dir(parent_id)
         await repo.mark_task_succeeded(int(first["id"]), 11)
         await service.on_child(_child_task(first), "success")
-        assert not Path(first["file_path"]).exists()
-
+        assert Path(first["file_path"]).is_file()
         parent = await repo.get_task_by_id(parent_id)
-        assert parent is not None and parent["error_msg"] == msg_part(2, 2)
-        second_row = await repo.list_slices(parent_id)
-        second = await repo.get_task_by_id(int(second_row[1]["child_task_id"]))
-        assert second is not None and second["status"] == "pending"
+        assert parent is not None and parent["status"] == "oversized"
+
         await repo.mark_task_succeeded(int(second["id"]), 22)
         await service.on_child(_child_task(second), "success")
-
         parent = await repo.get_task_by_id(parent_id)
         assert parent is not None
         assert parent["status"] == "success"
         assert parent["remote_id"] == "22"
         assert after.paths == [str(source)]
         assert source.is_file()
-        assert not service.slice_dir(parent_id).exists()
+        counts = await repo.count_board_statuses()
+        assert counts["success"] == 2
+    finally:
+        await close_pool()
+
+
+async def test_parts_wait_for_preview_before_upload(tmp_path: Path, monkeypatch) -> None:
+    try:
+        repo = await _prepare(tmp_path)
+        parent_id, _source = await _parent(repo, tmp_path)
+        hub = _Hub()
+        hub.preview = "first_frame"
+        service = _service(tmp_path, repo, hub, _After())
+        jobs: list[object] = []
+
+        class _Pool:
+            def submit(self, job: object) -> None:
+                jobs.append(job)
+
+        service.preview_pool = _Pool()
+
+        async def fake_cut(source_path: Path, directory: Path, parts: int):
+            path = directory / "movie.part01-of-02.mp4"
+            path.write_bytes(b"part")
+            second = directory / "movie.part02-of-02.mp4"
+            second.write_bytes(b"part")
+            return [(path, 4), (second, 4)]
+
+        monkeypatch.setattr("src.pipeline.slicer.cut_into_parts", fake_cut)
+        assert await service.request(parent_id, 2) == "ok"
+        await service._slice_parent(parent_id)
+        slices = await repo.list_slices(parent_id)
+        first = await repo.get_task_by_id(int(slices[0]["child_task_id"]))
+        assert first is not None
+        assert first["status"] == "preparing"
+        assert int(first["single_page"]) == 1
+        assert len(jobs) == 2
+        board = await repo.list_board_tasks()
+        assert any(str(row["status"]) == "preparing" for row in board)
     finally:
         await close_pool()
 

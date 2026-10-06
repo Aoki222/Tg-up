@@ -49,6 +49,7 @@ function oversizedHint(item: BoardTask): string {
   const phase = item.slice_phase || "idle";
   if (phase === "queued") return "等待切片";
   if (phase === "cutting" && item.stage !== "uploading") return "正在切片";
+  if (phase === "released") return item.error || "分段已进入队列";
   if (phase === "uploading" || item.stage === "uploading") {
     return item.message || item.error || "正在上传切片";
   }

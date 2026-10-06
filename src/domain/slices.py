@@ -86,6 +86,11 @@ def container_extension(video_codec: str | None, audio_codec: str | None) -> str
     return ".mkv"
 
 
+def msg_released(count: int) -> str:
+    """源文件卡片：各段已经进入正常的封面和上传队列。"""
+    return f"已分成 {int(count)} 段，分段已进入队列"
+
+
 def msg_part(index: int, count: int) -> str:
     return f"第 {index}/{count} 段"
 
@@ -105,13 +110,15 @@ def msg_keyframes(count: int) -> str:
 def slice_phase(error: str | None) -> str:
     """由过大任务的 error_msg 推出卡片阶段。
 
-    idle / queued / cutting / uploading / failed / blocked
+    idle / queued / cutting / released / uploading / failed / blocked
     """
     text = (error or "").strip()
     if text == MSG_WAIT:
         return "queued"
     if text == MSG_CUTTING:
         return "cutting"
+    if text.startswith("已分成 ") and text.endswith("段，分段已进入队列"):
+        return "released"
     if text.startswith("第 ") and text.endswith("段上传失败"):
         return "failed"
     if text.startswith("第 ") and text.endswith("段"):
@@ -123,7 +130,7 @@ def slice_phase(error: str | None) -> str:
 
 def user_dispatch_blocked(error: str | None) -> bool:
     """切片已经开始或某一段失败时，不再整文件交给个人号。"""
-    return slice_phase(error) in {"queued", "cutting", "uploading", "failed"}
+    return slice_phase(error) in {"queued", "cutting", "released", "uploading", "failed"}
 
 
 def exceeds_bot_limit(size: int) -> bool:

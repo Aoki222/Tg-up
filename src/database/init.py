@@ -131,6 +131,7 @@ _UPLOAD_TASK_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_started_at ON upload_tasks(started_at)",
     "CREATE INDEX IF NOT EXISTS idx_status_platform ON upload_tasks(status, platform)",
     "CREATE INDEX IF NOT EXISTS idx_upload_tasks_parent ON upload_tasks(parent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_status_finished ON upload_tasks(status, finished_at)",
 )
 
 

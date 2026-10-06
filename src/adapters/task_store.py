@@ -194,7 +194,8 @@ class TaskRepository:
                          SELECT 1 FROM upload_slices WHERE parent_id = upload_tasks.id
                      )
                      AND COALESCE(error_msg, '') NOT IN (?, ?)
-                     AND COALESCE(error_msg, '') NOT LIKE '第 %段%'""",
+                     AND COALESCE(error_msg, '') NOT LIKE '第 %段%'
+                     AND COALESCE(error_msg, '') NOT LIKE '已分成 %段，分段已进入队列'""",
                 (worker_name, task_id, MSG_WAIT, MSG_CUTTING),
             )
             await database.commit()
@@ -278,10 +279,19 @@ class TaskRepository:
             )
             await database.commit()
 
-    async def release_tasks_for_worker(self, worker_name: str, error_message: str) -> int:
-        """这个号名下还挂着的 assigned/uploading 全部释放，不增加 retry_count。"""
+    async def release_tasks_for_worker(self, worker_name: str, error_message: str) -> list[int]:
+        """这个号名下还挂着的 assigned/uploading 全部释放，不增加 retry_count。返回被释放的 id。"""
         async with get_db() as database:
-            cursor = await database.execute(
+            async with database.execute(
+                """SELECT id FROM upload_tasks
+                   WHERE COALESCE(assigned_worker, assigned_bot) = ?
+                     AND status IN ('assigned', 'uploading')""",
+                (worker_name,),
+            ) as cursor:
+                task_ids = [int(row[0]) for row in await cursor.fetchall()]
+            if not task_ids:
+                return []
+            await database.execute(
                 """UPDATE upload_tasks SET
                    status = CASE
                        WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
@@ -294,7 +304,54 @@ class TaskRepository:
                 (_bot_limit(), error_message[:500], worker_name),
             )
             await database.commit()
-            return cursor.rowcount
+            return task_ids
+
+    async def list_failed_root_ids(self) -> list[int]:
+        """失败列里的源任务。分段失败行另算。"""
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT id FROM upload_tasks
+                   WHERE status = 'failed' AND parent_id IS NULL
+                   ORDER BY id ASC"""
+            ) as cursor:
+                return [int(row[0]) for row in await cursor.fetchall()]
+
+    async def list_oversized_root_ids(self) -> list[int]:
+        """过大列里的源文件。分段子任务不算。"""
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT id FROM upload_tasks
+                   WHERE status = 'oversized' AND parent_id IS NULL
+                   ORDER BY id ASC"""
+            ) as cursor:
+                return [int(row[0]) for row in await cursor.fetchall()]
+
+    async def list_success_page(
+        self, *, scope: str, page: int, page_size: int
+    ) -> tuple[list[dict], int]:
+        """成功记录分页。源文件那条切片记账不计入，各段计入。"""
+        where = """status = 'success'
+                   AND NOT (parent_id IS NULL AND COALESCE(slice_parts, 0) > 0)"""
+        if scope == "today":
+            where += " AND date(finished_at, 'localtime') = date('now', 'localtime')"
+        offset = max(0, page - 1) * page_size
+        async with get_db() as database:
+            async with database.execute(
+                f"SELECT COUNT(*) FROM upload_tasks WHERE {where}"
+            ) as cursor:
+                row = await cursor.fetchone()
+                total = int(row[0] if row else 0)
+            async with database.execute(
+                f"""SELECT id, file_name, file_size, folder_name, finished_at,
+                           part_index, part_count
+                    FROM upload_tasks
+                    WHERE {where}
+                    ORDER BY finished_at IS NULL, finished_at DESC, id DESC
+                    LIMIT ? OFFSET ?""",
+                (page_size, offset),
+            ) as cursor:
+                items = [dict(row) for row in await cursor.fetchall()]
+        return items, total
 
     async def reconcile_stale_tasks(self) -> int:
         """进程刚起来时内存队列是空的，assigned / uploading 都是幽灵任务。"""
@@ -401,18 +458,17 @@ class TaskRepository:
                 return dict(row) if row else None
 
     async def list_board_tasks(self, failed_limit: int = 80) -> list[dict]:
-        """看板：进行中全量 + 最近失败。旧 retrying 一并带上，调用方当 pending。"""
+        """看板：进行中全量 + 最近失败。切片各段和普通任务一起出现。"""
         async with get_db() as database:
             async with database.execute(
                 """SELECT * FROM upload_tasks
-                   WHERE parent_id IS NULL
-                     AND status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'oversized')
+                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'oversized')
                    ORDER BY id ASC"""
             ) as cursor:
                 active = [dict(row) for row in await cursor.fetchall()]
             async with database.execute(
                 """SELECT * FROM upload_tasks
-                   WHERE parent_id IS NULL AND status = 'failed'
+                   WHERE status = 'failed'
                    ORDER BY id DESC LIMIT ?""",
                 (failed_limit,),
             ) as cursor:
@@ -434,18 +490,25 @@ class TaskRepository:
         async with get_db() as database:
             async with database.execute(
                 """SELECT status, COUNT(*) AS n FROM upload_tasks
-                   WHERE parent_id IS NULL
-                     AND status IN (
+                   WHERE status IN (
                        'preparing', 'pending', 'retrying', 'assigned', 'uploading',
                        'oversized', 'failed', 'success'
-                   )
+                     )
+                     AND NOT (
+                       status = 'success'
+                       AND parent_id IS NULL
+                       AND COALESCE(slice_parts, 0) > 0
+                     )
                    GROUP BY status"""
             ) as cursor:
                 rows = await cursor.fetchall()
             async with database.execute(
                 """SELECT COUNT(*) FROM upload_tasks
-                   WHERE parent_id IS NULL
-                     AND status = 'success'
+                   WHERE status = 'success'
+                     AND NOT (
+                       parent_id IS NULL
+                       AND COALESCE(slice_parts, 0) > 0
+                     )
                      AND date(finished_at, 'localtime') = date('now', 'localtime')"""
             ) as cursor:
                 today = await cursor.fetchone()
@@ -497,7 +560,7 @@ class TaskRepository:
         async with get_db() as database:
             async with database.execute(
                 """SELECT id, file_path, file_size, platform FROM upload_tasks
-                   WHERE status = 'failed' AND parent_id IS NULL"""
+                   WHERE status = 'failed'"""
             ) as cursor:
                 rows = await cursor.fetchall()
         ready: list[int] = []
@@ -548,7 +611,7 @@ class TaskRepository:
                 chunk = ids[offset : offset + 400]
                 placeholders = ",".join("?" * len(chunk))
                 cursor = await database.execute(
-                    f"DELETE FROM upload_tasks WHERE status IN ('failed', 'oversized') AND id IN ({placeholders})",
+                    f"DELETE FROM upload_tasks WHERE status = 'failed' AND id IN ({placeholders})",
                     chunk,
                 )
                 deleted += cursor.rowcount
@@ -638,7 +701,8 @@ class TaskRepository:
                          SELECT 1 FROM upload_slices WHERE parent_id = upload_tasks.id
                      )
                      AND COALESCE(error_msg, '') NOT IN (?, ?)
-                     AND COALESCE(error_msg, '') NOT LIKE '第 %段%'""",
+                     AND COALESCE(error_msg, '') NOT LIKE '第 %段%'
+                     AND COALESCE(error_msg, '') NOT LIKE '已分成 %段，分段已进入队列'""",
                 (parts, message[:500], task_id, MSG_WAIT, MSG_CUTTING),
             )
             await database.commit()
@@ -829,6 +893,26 @@ class TaskRepository:
             await database.commit()
             return cursor.rowcount > 0
 
+    async def detach_slice_child(self, child_id: int) -> None:
+        """失败分段从看板上清掉之后，计划仍留着，文件也留着，方便以后再入队。"""
+        async with get_db() as database:
+            await database.execute(
+                """UPDATE upload_slices
+                   SET status = 'failed', child_task_id = NULL
+                   WHERE child_task_id = ?""",
+                (child_id,),
+            )
+            await database.commit()
+
+    async def failed_slice_child_ids(self) -> list[int]:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT id FROM upload_tasks
+                   WHERE status = 'failed' AND parent_id IS NOT NULL
+                   ORDER BY id ASC"""
+            ) as cursor:
+                return [int(row[0]) for row in await cursor.fetchall()]
+
     async def insert_slice_child(
         self,
         parent: dict,
@@ -839,9 +923,12 @@ class TaskRepository:
         file_name: str,
         file_size: int,
         caption: str,
-        page_path: str | None,
+        status: str,
+        after_success: str,
+        single_page: int,
+        content_page: int,
     ) -> int:
-        """插入一段待上传的子任务。收尾策略固定为保留，避免提前删掉源文件。"""
+        """插入一段普通上传任务。文件在 data/slices，群和话题沿用源任务。"""
         platform = str(parent.get("platform") or "telegram")
         chat_id = int(parent.get("chat_id") or 0)
         dest_id = parent.get("dest_id") or (str(chat_id) if platform == "telegram" else "")
@@ -854,7 +941,7 @@ class TaskRepository:
                    after_success, platform, dest_id, dest_extra, error_msg,
                    parent_id, part_index, part_count
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'pending', ?, 'keep', ?, ?, ?, NULL, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -863,8 +950,11 @@ class TaskRepository:
                     file_size,
                     chat_id,
                     caption,
-                    page_path,
+                    int(single_page),
+                    int(content_page),
+                    status,
                     int(parent.get("max_retries") or 3),
+                    after_success,
                     platform,
                     dest_id,
                     parent.get("dest_extra"),

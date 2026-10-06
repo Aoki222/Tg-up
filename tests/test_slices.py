@@ -14,6 +14,7 @@ from src.domain.slices import (
     msg_need_parts,
     msg_part,
     msg_part_failed,
+    msg_released,
     part_caption,
     parts_to_fit,
     segment_filename,
@@ -47,12 +48,14 @@ def test_phase_controls_personal_upload() -> None:
     assert slice_phase("超过 2GB，不自动分配给 Bot") == "idle"
     assert slice_phase(MSG_WAIT) == "queued"
     assert slice_phase(MSG_CUTTING) == "cutting"
+    assert slice_phase(msg_released(6)) == "released"
     assert slice_phase(msg_part(2, 6)) == "uploading"
     assert slice_phase(msg_part_failed(3, 6)) == "failed"
     assert slice_phase(msg_need_parts(4)) == "blocked"
     assert slice_phase(MSG_INTERRUPTED) == "blocked"
     assert slice_phase(MSG_NO_DISK) == "blocked"
     assert slice_phase(MSG_TOO_DENSE) == "blocked"
+    assert user_dispatch_blocked(msg_released(6))
     assert user_dispatch_blocked(MSG_WAIT)
     assert user_dispatch_blocked(msg_part_failed(1, 2))
     assert not user_dispatch_blocked(MSG_INTERRUPTED)

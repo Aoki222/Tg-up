@@ -7,14 +7,19 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   deleteAllFailedTasks,
+  deleteAllOversizedTasks,
   deleteFailedTask,
   deleteSelectedFailedTasks,
+  deleteSelectedOversizedTasks,
   continueSliceTask,
+  dispatchOversizedBatch,
   dispatchOversizedTask,
   retryAllFailedTasks,
   retryBoardTask,
+  sliceOversizedBatch,
   sliceOversizedTask,
 } from "../api";
+import type { SkippedTask } from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
 
@@ -42,7 +47,9 @@ const dispatchingId = ref<number | null>(null);
 const slicingId = ref<number | null>(null);
 const retryingAll = ref(false);
 const clearing = ref(false);
+const oversizedActing = ref(false);
 const selectedIds = ref<Set<number>>(new Set());
+const oversizedIds = ref<Set<number>>(new Set());
 
 const buckets = computed(() => {
   const preparing: BoardTask[] = [];
@@ -149,13 +156,15 @@ async function onRetryAll(): Promise<void> {
 }
 
 const selectedCount = computed(() => selectedIds.value.size);
+const oversizedCount = computed(() => oversizedIds.value.size);
 const failedBusy = computed(
   () =>
     retryingAll.value ||
     retryingId.value !== null ||
     clearing.value ||
     dispatchingId.value !== null ||
-    slicingId.value !== null,
+    slicingId.value !== null ||
+    oversizedActing.value,
 );
 
 function toggleSelect(id: number): void {
@@ -166,11 +175,39 @@ function toggleSelect(id: number): void {
   selectedIds.value = next;
 }
 
+function toggleOversized(id: number): void {
+  const next = new Set(oversizedIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  oversizedIds.value = next;
+}
+
 function forgetSelected(ids: number[]): void {
   // 删除任务后同步移除本地已选 ID，避免残留选择影响按钮状态。
   const next = new Set(selectedIds.value);
   for (const id of ids) next.delete(id);
   selectedIds.value = next;
+  const oversized = new Set(oversizedIds.value);
+  for (const id of ids) oversized.delete(id);
+  oversizedIds.value = oversized;
+}
+
+function reportBatch(doneLabel: string, done: number, skipped: SkippedTask[]): void {
+  const head = done > 0 ? `${doneLabel} ${done} 个` : "";
+  const tail =
+    skipped.length > 0
+      ? `跳过 ${skipped.length} 个：${skipped
+          .slice(0, 3)
+          .map((item) => `${item.file_name || "文件"} ${item.reason}`)
+          .join("；")}`
+      : "";
+  const text = [head, tail].filter(Boolean).join("，");
+  if (!text) {
+    ElMessage.info("没有可处理的文件");
+    return;
+  }
+  if (skipped.length > 0) ElMessage.warning(text);
+  else ElMessage.success(text);
 }
 
 async function onDispatch(id: number): Promise<void> {
@@ -292,6 +329,71 @@ async function onRemoveAll(): Promise<void> {
   }
 }
 
+async function onSliceBatch(ids: number[]): Promise<void> {
+  if (failedBusy.value) return;
+  oversizedActing.value = true;
+  try {
+    const result = await sliceOversizedBatch(ids);
+    reportBatch("已加入切片", result.queued, result.skipped);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法切片");
+  } finally {
+    oversizedActing.value = false;
+  }
+}
+
+async function onDispatchBatch(ids: number[]): Promise<void> {
+  if (failedBusy.value) return;
+  oversizedActing.value = true;
+  try {
+    const result = await dispatchOversizedBatch(ids);
+    reportBatch("已交给个人号", result.assigned, result.skipped);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法交给个人号");
+  } finally {
+    oversizedActing.value = false;
+  }
+}
+
+async function onRemoveOversizedSelected(): Promise<void> {
+  const ids = [...oversizedIds.value];
+  if (failedBusy.value || ids.length === 0) return;
+  oversizedActing.value = true;
+  try {
+    const result = await deleteSelectedOversizedTasks(ids);
+    oversizedIds.value = new Set();
+    reportBatch("已清除", result.deleted, result.skipped);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+  } finally {
+    oversizedActing.value = false;
+  }
+}
+
+async function onRemoveOversizedAll(): Promise<void> {
+  if (failedBusy.value || buckets.value.oversized.length === 0) return;
+  try {
+    await ElMessageBox.confirm("将从数据库删除全部过大记录，本地源文件不会动。", "全部清除", {
+      type: "warning",
+      confirmButtonText: "清除",
+      cancelButtonText: "取消",
+      confirmButtonClass: "el-button--danger",
+    });
+  } catch {
+    return;
+  }
+  oversizedActing.value = true;
+  try {
+    const result = await deleteAllOversizedTasks();
+    oversizedIds.value = new Set();
+    reportBatch("已清除", result.deleted, result.skipped);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+  } finally {
+    oversizedActing.value = false;
+  }
+}
+
 onMounted(() => {
   const media = window.matchMedia("(max-width: 768px)");
   const apply = () => {
@@ -346,6 +448,56 @@ onMounted(() => {
         <header class="well-head">
           <span class="well-title">{{ column.title }}</span>
           <div class="well-actions">
+            <template v-if="column.key === 'oversized'">
+              <button
+                type="button"
+                class="retry-all-btn"
+                :disabled="failedBusy || oversizedCount === 0"
+                @click="onSliceBatch([...oversizedIds])"
+              >
+                切片选中
+              </button>
+              <button
+                type="button"
+                class="retry-all-btn"
+                :disabled="failedBusy || buckets.oversized.length === 0"
+                @click="onSliceBatch([])"
+              >
+                全部切片
+              </button>
+              <button
+                type="button"
+                class="retry-all-btn"
+                :disabled="failedBusy || oversizedCount === 0"
+                @click="onDispatchBatch([...oversizedIds])"
+              >
+                交给个人号
+              </button>
+              <button
+                type="button"
+                class="retry-all-btn"
+                :disabled="failedBusy || buckets.oversized.length === 0"
+                @click="onDispatchBatch([])"
+              >
+                全部交给个人号
+              </button>
+              <button
+                type="button"
+                class="retry-all-btn"
+                :disabled="failedBusy || oversizedCount === 0"
+                @click="onRemoveOversizedSelected"
+              >
+                清除选中
+              </button>
+              <button
+                type="button"
+                class="retry-all-btn danger"
+                :disabled="failedBusy || buckets.oversized.length === 0"
+                @click="onRemoveOversizedAll"
+              >
+                全部清除
+              </button>
+            </template>
             <template v-if="column.key === 'failed'">
               <button
                 type="button"
@@ -401,11 +553,13 @@ onMounted(() => {
               :task="task"
               :retrying="failedBusy"
               :dispatching="dispatchingId === task.id"
-              :selectable="column.key === 'failed'"
-              :selected="selectedIds.has(task.id)"
+              :selectable="column.key === 'failed' || column.key === 'oversized'"
+              :selected="
+                column.key === 'oversized' ? oversizedIds.has(task.id) : selectedIds.has(task.id)
+              "
               @retry="onRetry"
               @remove="onRemove"
-              @toggle="toggleSelect"
+              @toggle="column.key === 'oversized' ? toggleOversized($event) : toggleSelect($event)"
               @dispatch="onDispatch"
               @slice="onSlice"
               @continue="onContinueSlice"
@@ -614,12 +768,14 @@ onMounted(() => {
   color: var(--bad);
 }
 
-.well.failed .well-head {
+.well.failed .well-head,
+.well.oversized .well-head {
   flex-wrap: wrap;
   row-gap: 8px;
 }
 
-.well.failed .well-actions {
+.well.failed .well-actions,
+.well.oversized .well-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -858,11 +1014,13 @@ onMounted(() => {
     height: auto;
   }
 
-  .well.failed .well-head {
+  .well.failed .well-head,
+  .well.oversized .well-head {
     row-gap: 6px;
   }
 
-  .well.failed .well-actions {
+  .well.failed .well-actions,
+  .well.oversized .well-actions {
     gap: 4px;
   }
 

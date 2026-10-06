@@ -134,6 +134,7 @@ class UploaderApplication:
         preview_pool = PreviewPool(
             repository, scheduler, settings_hub, on_settled=slicer.offer_auto
         )
+        slicer.preview_pool = preview_pool
         ingestor = FileIngestor(
             repository,
             scheduler,
@@ -404,6 +405,7 @@ class UploaderApplication:
         except Exception:
             logger.exception("个人号入队失败 task=%s", task_id)
             await repository.park_oversized(task_id, "个人号入队失败")
+            self.progress_hub.forget([task_id])
             return "not_ready"
         logger.info("过大文件交给个人号 task=%s worker=%s", task_id, chosen.worker_name)
         return "ok"
@@ -655,7 +657,8 @@ class UploaderApplication:
         self._channel_cache.detach_client(name)
         released = await repository.release_tasks_for_worker(name, reason)
         if released:
-            logger.info("[%s] 已释放挂起任务 %s 条", name, released)
+            self.progress_hub.forget(released)
+            logger.info("[%s] 已释放挂起任务 %s 条", name, len(released))
         await session_pool.remove_client(name)
         scheduler.request_reschedule()
 

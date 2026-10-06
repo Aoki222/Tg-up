@@ -290,6 +290,11 @@ async def test_fresh_database_creates_parent_index(tmp_path: Path, monkeypatch) 
         assert "parent_id" in columns
         assert has_index
         assert status is None
+        async with get_db() as database:
+            async with database.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_status_finished'"
+            ) as cursor:
+                assert await cursor.fetchone() is not None
     finally:
         await close_pool()
 
