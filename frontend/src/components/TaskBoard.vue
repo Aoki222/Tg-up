@@ -9,9 +9,11 @@ import {
   deleteAllFailedTasks,
   deleteFailedTask,
   deleteSelectedFailedTasks,
+  continueSliceTask,
   dispatchOversizedTask,
   retryAllFailedTasks,
   retryBoardTask,
+  sliceOversizedTask,
 } from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
@@ -37,6 +39,7 @@ const activeMobileTab = ref<ColumnKey>("uploading");
 const collapsed = ref<Set<ColumnKey>>(loadCollapsed());
 const retryingId = ref<number | null>(null);
 const dispatchingId = ref<number | null>(null);
+const slicingId = ref<number | null>(null);
 const retryingAll = ref(false);
 const clearing = ref(false);
 const selectedIds = ref<Set<number>>(new Set());
@@ -151,7 +154,8 @@ const failedBusy = computed(
     retryingAll.value ||
     retryingId.value !== null ||
     clearing.value ||
-    dispatchingId.value !== null,
+    dispatchingId.value !== null ||
+    slicingId.value !== null,
 );
 
 function toggleSelect(id: number): void {
@@ -180,6 +184,55 @@ async function onDispatch(id: number): Promise<void> {
     ElMessage.error(error instanceof Error ? error.message : "无法交给个人号");
   } finally {
     dispatchingId.value = null;
+  }
+}
+
+async function onSlice(id: number): Promise<void> {
+  if (failedBusy.value) return;
+  const task = props.items.find((item) => item.id === id);
+  const min = task?.slice_min_parts && task.slice_min_parts > 1 ? task.slice_min_parts : 2;
+  let parts = min;
+  try {
+    const result = await ElMessageBox.prompt(
+      `至少 ${min} 段，最多 30 段。按整段时长平均切，原文件留到全部传完。`,
+      "切片后上传",
+      {
+        inputValue: String(min),
+        inputPattern: /^[1-9]\d*$/,
+        inputErrorMessage: "请输入段数",
+        confirmButtonText: "开始切片",
+        cancelButtonText: "取消",
+      },
+    );
+    parts = Number(result.value);
+  } catch {
+    return;
+  }
+  if (parts < min || parts > 30) {
+    ElMessage.error(`段数至少为 ${min}，最多 30`);
+    return;
+  }
+  slicingId.value = id;
+  try {
+    await sliceOversizedTask(id, parts);
+    ElMessage.success("已加入切片");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法切片");
+  } finally {
+    slicingId.value = null;
+  }
+}
+
+async function onContinueSlice(id: number): Promise<void> {
+  if (failedBusy.value) return;
+  slicingId.value = id;
+  try {
+    await continueSliceTask(id);
+    ElMessage.success("已从失败的那段继续");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法继续");
+  } finally {
+    slicingId.value = null;
   }
 }
 
@@ -354,6 +407,8 @@ onMounted(() => {
               @remove="onRemove"
               @toggle="toggleSelect"
               @dispatch="onDispatch"
+              @slice="onSlice"
+              @continue="onContinueSlice"
             />
           </TransitionGroup>
           <p v-if="buckets[column.key].length === 0" class="empty">{{ column.empty }}</p>

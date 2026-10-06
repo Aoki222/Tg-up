@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ..database.connection import get_db
 from ..domain import limits
+from ..domain.slices import MSG_CUTTING, MSG_WAIT
 
 
 def _bot_limit() -> int:
@@ -188,8 +189,13 @@ class TaskRepository:
             cursor = await database.execute(
                 """UPDATE upload_tasks SET status = 'assigned',
                    assigned_worker = ?, assigned_at = CURRENT_TIMESTAMP, error_msg = NULL
-                   WHERE id = ? AND status = 'oversized'""",
-                (worker_name, task_id),
+                   WHERE id = ? AND status = 'oversized' AND parent_id IS NULL
+                     AND NOT EXISTS (
+                         SELECT 1 FROM upload_slices WHERE parent_id = upload_tasks.id
+                     )
+                     AND COALESCE(error_msg, '') NOT IN (?, ?)
+                     AND COALESCE(error_msg, '') NOT LIKE '第 %段%'""",
+                (worker_name, task_id, MSG_WAIT, MSG_CUTTING),
             )
             await database.commit()
             return cursor.rowcount > 0
@@ -232,6 +238,8 @@ class TaskRepository:
             await database.execute(
                 """UPDATE upload_tasks SET
                    status = CASE
+                       WHEN parent_id IS NOT NULL AND ? >= ? THEN 'failed'
+                       WHEN parent_id IS NOT NULL THEN 'pending'
                        WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
                            THEN 'oversized'
                        WHEN ? >= ? THEN 'failed'
@@ -240,7 +248,16 @@ class TaskRepository:
                    retry_count = ?, error_msg = ?,
                    assigned_worker = NULL, assigned_at = NULL, started_at = NULL
                    WHERE id = ?""",
-                (limit, retry_count, max_retries, retry_count, error_message[:500], task_id),
+                (
+                    retry_count,
+                    max_retries,
+                    limit,
+                    retry_count,
+                    max_retries,
+                    retry_count,
+                    error_message[:500],
+                    task_id,
+                ),
             )
             await database.commit()
 
@@ -388,13 +405,14 @@ class TaskRepository:
         async with get_db() as database:
             async with database.execute(
                 """SELECT * FROM upload_tasks
-                   WHERE status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'oversized')
+                   WHERE parent_id IS NULL
+                     AND status IN ('preparing', 'pending', 'retrying', 'assigned', 'uploading', 'oversized')
                    ORDER BY id ASC"""
             ) as cursor:
                 active = [dict(row) for row in await cursor.fetchall()]
             async with database.execute(
                 """SELECT * FROM upload_tasks
-                   WHERE status = 'failed'
+                   WHERE parent_id IS NULL AND status = 'failed'
                    ORDER BY id DESC LIMIT ?""",
                 (failed_limit,),
             ) as cursor:
@@ -416,7 +434,8 @@ class TaskRepository:
         async with get_db() as database:
             async with database.execute(
                 """SELECT status, COUNT(*) AS n FROM upload_tasks
-                   WHERE status IN (
+                   WHERE parent_id IS NULL
+                     AND status IN (
                        'preparing', 'pending', 'retrying', 'assigned', 'uploading',
                        'oversized', 'failed', 'success'
                    )
@@ -425,7 +444,8 @@ class TaskRepository:
                 rows = await cursor.fetchall()
             async with database.execute(
                 """SELECT COUNT(*) FROM upload_tasks
-                   WHERE status = 'success'
+                   WHERE parent_id IS NULL
+                     AND status = 'success'
                      AND date(finished_at, 'localtime') = date('now', 'localtime')"""
             ) as cursor:
                 today = await cursor.fetchone()
@@ -476,7 +496,8 @@ class TaskRepository:
         """
         async with get_db() as database:
             async with database.execute(
-                "SELECT id, file_path, file_size, platform FROM upload_tasks WHERE status = 'failed'"
+                """SELECT id, file_path, file_size, platform FROM upload_tasks
+                   WHERE status = 'failed' AND parent_id IS NULL"""
             ) as cursor:
                 rows = await cursor.fetchall()
         ready: list[int] = []
@@ -566,7 +587,9 @@ class TaskRepository:
     async def delete_all_failed(self) -> int:
         """删除库里全部 failed 行。"""
         async with get_db() as database:
-            cursor = await database.execute("DELETE FROM upload_tasks WHERE status = 'failed'")
+            cursor = await database.execute(
+                "DELETE FROM upload_tasks WHERE status = 'failed' AND parent_id IS NULL"
+            )
             await database.commit()
             return cursor.rowcount
 
@@ -604,3 +627,254 @@ class TaskRepository:
                         if fp not in result:
                             result[fp] = {"status": "unmatched"}
         return result
+
+    async def begin_slice(self, task_id: int, parts: int, message: str) -> bool:
+        """只有仍停在过大、且还没开始切片的行才能占住。"""
+        async with get_db() as database:
+            cursor = await database.execute(
+                """UPDATE upload_tasks SET slice_parts = ?, error_msg = ?
+                   WHERE id = ? AND status = 'oversized' AND parent_id IS NULL
+                     AND NOT EXISTS (
+                         SELECT 1 FROM upload_slices WHERE parent_id = upload_tasks.id
+                     )
+                     AND COALESCE(error_msg, '') NOT IN (?, ?)
+                     AND COALESCE(error_msg, '') NOT LIKE '第 %段%'""",
+                (parts, message[:500], task_id, MSG_WAIT, MSG_CUTTING),
+            )
+            await database.commit()
+            return cursor.rowcount > 0
+
+    async def set_oversized_note(
+        self,
+        task_id: int,
+        message: str,
+        *,
+        clear_parts: bool = False,
+    ) -> None:
+        """改过大卡片上的说明。clear_parts 用于切片失败后允许再切一次。"""
+        async with get_db() as database:
+            if clear_parts:
+                await database.execute(
+                    """UPDATE upload_tasks SET error_msg = ?, slice_parts = NULL
+                       WHERE id = ? AND status = 'oversized'""",
+                    (message[:500], task_id),
+                )
+            else:
+                await database.execute(
+                    """UPDATE upload_tasks SET error_msg = ?
+                       WHERE id = ? AND status = 'oversized'""",
+                    (message[:500], task_id),
+                )
+            await database.commit()
+
+    async def has_slice_plan(self, parent_id: int) -> bool:
+        async with get_db() as database:
+            async with database.execute(
+                "SELECT 1 FROM upload_slices WHERE parent_id = ? LIMIT 1",
+                (parent_id,),
+            ) as cursor:
+                return await cursor.fetchone() is not None
+
+    async def list_slices(self, parent_id: int) -> list[dict]:
+        async with get_db() as database:
+            async with database.execute(
+                "SELECT * FROM upload_slices WHERE parent_id = ? ORDER BY part_index ASC",
+                (parent_id,),
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def insert_slice_plan(self, parent_id: int, segments: list[tuple[str, int]]) -> None:
+        count = len(segments)
+        async with get_db() as database:
+            await database.execute("DELETE FROM upload_slices WHERE parent_id = ?", (parent_id,))
+            for index, (path, size) in enumerate(segments, start=1):
+                await database.execute(
+                    """INSERT INTO upload_slices
+                       (parent_id, part_index, part_count, segment_path, segment_size, status)
+                       VALUES (?, ?, ?, ?, ?, 'planned')""",
+                    (parent_id, index, count, path, int(size)),
+                )
+            await database.commit()
+
+    async def next_planned_slice(self, parent_id: int) -> dict | None:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT * FROM upload_slices
+                   WHERE parent_id = ? AND status = 'planned'
+                   ORDER BY part_index ASC LIMIT 1""",
+                (parent_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def failed_slice(self, parent_id: int) -> dict | None:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT * FROM upload_slices
+                   WHERE parent_id = ? AND status = 'failed'
+                   ORDER BY part_index ASC LIMIT 1""",
+                (parent_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def slice_by_child(self, child_id: int) -> dict | None:
+        async with get_db() as database:
+            async with database.execute(
+                "SELECT * FROM upload_slices WHERE child_task_id = ? LIMIT 1",
+                (child_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def mark_slice(self, slice_id: int, status: str, child_task_id: int | None = None) -> None:
+        async with get_db() as database:
+            if child_task_id is None:
+                await database.execute(
+                    "UPDATE upload_slices SET status = ? WHERE id = ?",
+                    (status, slice_id),
+                )
+            else:
+                await database.execute(
+                    "UPDATE upload_slices SET status = ?, child_task_id = ? WHERE id = ?",
+                    (status, child_task_id, slice_id),
+                )
+            await database.commit()
+
+    async def active_slice_child(self, parent_id: int) -> bool:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT 1 FROM upload_slices AS slices
+                   JOIN upload_tasks AS tasks ON tasks.id = slices.child_task_id
+                   WHERE slices.parent_id = ? AND slices.status = 'queued'
+                     AND tasks.status IN ('pending', 'assigned', 'uploading')
+                   LIMIT 1""",
+                (parent_id,),
+            ) as cursor:
+                return await cursor.fetchone() is not None
+
+    async def slices_all_success(self, parent_id: int) -> bool:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT COUNT(*) AS n,
+                          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS ok
+                   FROM upload_slices WHERE parent_id = ?""",
+                (parent_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        if row is None or int(row[0] or 0) == 0:
+            return False
+        return int(row[0]) == int(row[1] or 0)
+
+    async def delete_slice_plan(self, parent_id: int) -> None:
+        async with get_db() as database:
+            await database.execute("DELETE FROM upload_slices WHERE parent_id = ?", (parent_id,))
+            await database.commit()
+
+    async def delete_task_ids(self, task_ids: list[int]) -> None:
+        ids = [int(task_id) for task_id in task_ids if int(task_id) > 0]
+        if not ids:
+            return
+        async with get_db() as database:
+            for offset in range(0, len(ids), 400):
+                chunk = ids[offset : offset + 400]
+                placeholders = ",".join("?" * len(chunk))
+                await database.execute(
+                    f"DELETE FROM upload_tasks WHERE id IN ({placeholders})",
+                    chunk,
+                )
+            await database.commit()
+
+    async def slice_parents_to_recover(self) -> list[int]:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT id FROM upload_tasks
+                   WHERE status = 'oversized' AND parent_id IS NULL
+                     AND (
+                         slice_parts IS NOT NULL
+                         OR error_msg IN (?, ?)
+                         OR id IN (SELECT parent_id FROM upload_slices)
+                     )
+                   ORDER BY id ASC""",
+                (MSG_WAIT, MSG_CUTTING),
+            ) as cursor:
+                return [int(row[0]) for row in await cursor.fetchall()]
+
+    async def latest_child_remote_id(self, parent_id: int) -> int:
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT remote_id FROM upload_tasks
+                   WHERE parent_id = ? AND status = 'success' AND remote_id IS NOT NULL
+                   ORDER BY part_index DESC LIMIT 1""",
+                (parent_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        if row is None or row[0] in (None, ""):
+            return 0
+        try:
+            return int(row[0])
+        except (TypeError, ValueError):
+            return 0
+
+    async def requeue_slice_child(self, child_id: int) -> bool:
+        """失败的分段回到 pending。只动子任务，不把源文件交回机器人。"""
+        async with get_db() as database:
+            cursor = await database.execute(
+                """UPDATE upload_tasks SET status = 'pending', retry_count = 0,
+                   assigned_worker = NULL, assigned_at = NULL, started_at = NULL,
+                   finished_at = NULL, error_msg = NULL
+                   WHERE id = ? AND parent_id IS NOT NULL AND status = 'failed'""",
+                (child_id,),
+            )
+            await database.commit()
+            return cursor.rowcount > 0
+
+    async def insert_slice_child(
+        self,
+        parent: dict,
+        *,
+        part_index: int,
+        part_count: int,
+        file_path: str,
+        file_name: str,
+        file_size: int,
+        caption: str,
+        page_path: str | None,
+    ) -> int:
+        """插入一段待上传的子任务。收尾策略固定为保留，避免提前删掉源文件。"""
+        platform = str(parent.get("platform") or "telegram")
+        chat_id = int(parent.get("chat_id") or 0)
+        dest_id = parent.get("dest_id") or (str(chat_id) if platform == "telegram" else "")
+        async with get_db() as database:
+            cursor = await database.execute(
+                """INSERT INTO upload_tasks
+                (
+                   task_id, file_path, file_name, folder_name, file_size, chat_id,
+                   caption, single_page, content_page, page_path, status, max_retries,
+                   after_success, platform, dest_id, dest_extra, error_msg,
+                   parent_id, part_index, part_count
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'pending', ?, 'keep', ?, ?, ?, NULL, ?, ?, ?)""",
+                (
+                    str(uuid.uuid4()),
+                    file_path,
+                    file_name,
+                    parent.get("folder_name"),
+                    file_size,
+                    chat_id,
+                    caption,
+                    page_path,
+                    int(parent.get("max_retries") or 3),
+                    platform,
+                    dest_id,
+                    parent.get("dest_extra"),
+                    int(parent["id"]),
+                    part_index,
+                    part_count,
+                ),
+            )
+            await database.commit()
+            child_id = cursor.lastrowid
+            if child_id is None:
+                raise RuntimeError("切片子任务入库失败")
+            return int(child_id)

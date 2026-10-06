@@ -35,6 +35,7 @@ class PreviewPool:
         rescheduler: Rescheduler,
         settings_hub: SettingsHub,
         concurrency: int = PREVIEW_CONCURRENCY,
+        on_settled=None,
     ):
         self.task_repository = task_repository
         self.rescheduler = rescheduler
@@ -44,6 +45,7 @@ class PreviewPool:
         self._running = True
         self._inflight: set[asyncio.Task] = set()
         self._gate = asyncio.Semaphore(self.concurrency)
+        self.on_settled = on_settled
 
     def submit(self, job: PreviewJob) -> None:
         self.queue.put_nowait(job)
@@ -84,6 +86,11 @@ class PreviewPool:
             await self.task_repository.update_preview(job.task_id, None, False, str(error))
             logger.exception("预览生成失败 task=%s", job.task_id)
         finally:
+            if self.on_settled is not None:
+                try:
+                    await self.on_settled(job.task_id)
+                except Exception:
+                    logger.exception("预览结束后的切片检查失败 task=%s", job.task_id)
             self.queue.task_done()
             current = asyncio.current_task()
             if current is not None:

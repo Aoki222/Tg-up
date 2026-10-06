@@ -154,6 +154,7 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
       title: item.title ?? "",
     })),
     drive_folders: data.drive_folders ?? [],
+    auto_slice: data.auto_slice === true,
   };
 }
 
@@ -328,6 +329,14 @@ export async function retryBoardTask(taskId: number): Promise<string> {
 
 export async function dispatchOversizedTask(taskId: number): Promise<void> {
   await apiClient.post(`/api/tasks/${taskId}/dispatch-user`);
+}
+
+export async function sliceOversizedTask(taskId: number, parts: number): Promise<void> {
+  await apiClient.post(`/api/tasks/${taskId}/slice`, { parts });
+}
+
+export async function continueSliceTask(taskId: number): Promise<void> {
+  await apiClient.post(`/api/tasks/${taskId}/slice-continue`);
 }
 
 export async function retryAllFailedTasks(): Promise<{

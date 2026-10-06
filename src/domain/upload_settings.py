@@ -69,3 +69,5 @@ class UploadSettings:
     routes: tuple[FolderRoute, ...] = ()
     chats: tuple[ChatAlias, ...] = ()
     drive_folders: tuple[DriveFolder, ...] = ()
+    # 新发现的过大视频按最少段数自动切片。已经停在「过大」里的不补切。
+    auto_slice: bool = False

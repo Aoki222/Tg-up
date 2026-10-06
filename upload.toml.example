@@ -19,6 +19,9 @@ topic_creation_enabled = true
 # keep | delete | move_to_archive
 after_success = "keep"
 
+# 新发现的超过 2GB 的视频按最少段数自动切片。已经停在「过大」里的不会补切。
+auto_slice = false
+
 concurrency = 1
 max_retries = 3
 upload_timeout_seconds = 1200

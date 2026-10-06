@@ -15,7 +15,7 @@ serve_forever 只分发、不等上传结束；Queue.join() 等的是 process_si
 import asyncio
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from ..adapters.task_store import TaskRepository
 from .ingest.filters import check_transient_file
@@ -55,6 +55,7 @@ class UploadWorker:
         session_pool: SessionPool | None = None,
         session_path: Path | None = None,
         account_kind: str = "unknown",
+        on_slice_child: Callable[[Task, str], Awaitable[None]] | None = None,
     ):
         self.worker_name = worker_name
         self.account_kind = account_kind
@@ -73,6 +74,7 @@ class UploadWorker:
         self._abort_reason = ""
         self.session_pool = session_pool
         self.session_path = session_path
+        self.on_slice_child = on_slice_child
         self._watch_task: asyncio.Task | None = None
         # task_id -> (已传字节, 总字节)。断线时用它保持进度，不发 0/1。
         self._byte_progress: dict[int, tuple[float, float]] = {}
@@ -196,12 +198,16 @@ class UploadWorker:
                     )
                 if isinstance(result, SendOk):
                     await self.task_repository.mark_task_succeeded(task.id, result.message_id)
-                    self._emit_progress(task, 1, 1, "success", "上传成功")
-                    try:
-                        await self.after_upload.handle(task)
-                    except Exception:
-                        logger.exception("[%s] 上传后收尾失败: %s", self.worker_name, task.file_path)
-                    logger.info("[%s] 上传成功: %s", self.worker_name, task.file_path)
+                    if task.parent_id:
+                        await self._notify_slice(task, "success")
+                        logger.info("[%s] 切片段上传成功: %s", self.worker_name, task.file_path)
+                    else:
+                        self._emit_progress(task, 1, 1, "success", "上传成功")
+                        try:
+                            await self.after_upload.handle(task)
+                        except Exception:
+                            logger.exception("[%s] 上传后收尾失败: %s", self.worker_name, task.file_path)
+                        logger.info("[%s] 上传成功: %s", self.worker_name, task.file_path)
                 elif isinstance(result, SendRetryLater):
                     self.flood_wait_until = time.monotonic() + result.seconds
                     # 回 pending 且不 +retry_count；调度器会跳过 is_accepting()==False 的 worker
@@ -217,7 +223,16 @@ class UploadWorker:
                         task.file_path,
                     )
                 elif isinstance(result, SendOversized):
-                    await self.task_repository.park_oversized(task.id, result.reason)
+                    if task.parent_id:
+                        await self.task_repository.mark_task_failed(
+                            task.id,
+                            task.policy.max_retries,
+                            task.policy.max_retries,
+                            result.reason,
+                        )
+                        await self._notify_slice(task, "failed")
+                    else:
+                        await self.task_repository.park_oversized(task.id, result.reason)
                     logger.warning(
                         "[%s] 超过分片上限，停在过大: %s (%s)",
                         self.worker_name,
@@ -231,6 +246,7 @@ class UploadWorker:
                     if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                         self._emit_progress(task, 0, 1, "failed", result.reason)
                     await self._handle_upload_failure(task, result.reason, retryable=result.retryable)
+                    await self._notify_slice_if_exhausted(task)
         except asyncio.CancelledError:
             if self._aborting:
                 await self.task_repository.release_task(task.id, self._abort_reason or "worker aborted")
@@ -240,6 +256,7 @@ class UploadWorker:
             if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                 self._emit_progress(task, 0, 1, "failed", str(error))
             await self._handle_upload_failure(task, str(error))
+            await self._notify_slice_if_exhausted(task)
         finally:
             self.task_queue.task_done()
             if self.on_task_finished is not None:
@@ -331,18 +348,26 @@ class UploadWorker:
             self._byte_progress[task.id] = (float(current), float(total))
         elif stage in {"success", "failed"}:
             self._byte_progress.pop(task.id, None)
+        report_id = task.id
+        report_message = message
+        if task.parent_id and task.part_index and task.part_count:
+            if stage in {"success", "failed"}:
+                return
+            report_id = task.parent_id
+            label = f"第 {task.part_index}/{task.part_count} 段"
+            report_message = f"{label} · {message}" if message else label
         if self.progress_reporter is None:
             return
         try:
             self.progress_reporter.report(
                 make_progress(
-                    task_id=task.id,
+                    task_id=report_id,
                     worker_name=self.worker_name,
                     file_name=task.file_name,
                     current=current,
                     total=total,
                     stage=stage,
-                    message=message,
+                    message=report_message,
                 )
             )
         except Exception:
@@ -418,3 +443,18 @@ class UploadWorker:
             task.policy.max_retries,
             error_message,
         )
+
+    async def _notify_slice(self, task: Task, outcome: str) -> None:
+        if not task.parent_id or self.on_slice_child is None:
+            return
+        try:
+            await self.on_slice_child(task, outcome)
+        except Exception:
+            logger.exception("[%s] 切片后续处理失败: %s", self.worker_name, task.file_path)
+
+    async def _notify_slice_if_exhausted(self, task: Task) -> None:
+        if not task.parent_id or self.on_slice_child is None:
+            return
+        fresh = await self.task_repository.get_task_by_id(task.id)
+        if fresh is not None and str(fresh.get("status")) == "failed":
+            await self._notify_slice(task, "failed")

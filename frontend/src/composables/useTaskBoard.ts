@@ -75,7 +75,19 @@ export function useTaskBoard() {
       eta_seconds: progress.eta_seconds ?? -1,
       stage: progress.stage,
       message: progress.message,
+      sliceable: false,
+      slice_phase: "idle",
+      slice_min_parts: null,
     };
+  }
+
+  function sliceLabel(text: string): string | null {
+    const matched = text.match(/第 \d+\/\d+ 段/);
+    return matched ? matched[0] : null;
+  }
+
+  function keepOversized(existing: BoardTask): boolean {
+    return existing.status === "oversized";
   }
 
   function hasByteProgress(task: BoardTask): boolean {
@@ -113,6 +125,7 @@ export function useTaskBoard() {
     // 合并实时进度；成功任务短暂保留为 ghost，等待下一次数据库快照确认。
     if (progress.stage === "success") {
       const existing = items.value.find((item) => item.id === progress.task_id);
+      if (existing && keepOversized(existing)) return;
       const ghost: BoardTask = {
         ...(existing ?? progressToTask(progress)),
         status: "uploading",
@@ -131,6 +144,17 @@ export function useTaskBoard() {
     if (progress.stage === "failed") {
       ghosts.delete(progress.task_id);
       const existing = items.value.find((item) => item.id === progress.task_id);
+      if (existing && keepOversized(existing)) {
+        upsert({
+          ...existing,
+          stage: "failed",
+          speed_bps: 0,
+          eta_seconds: -1,
+          message: progress.message,
+          error: progress.message || existing.error,
+        });
+        return;
+      }
       upsert({
         ...(existing ?? progressToTask(progress)),
         status: "failed",
@@ -151,8 +175,9 @@ export function useTaskBoard() {
       return;
     }
 
-    const nextStatus =
-      progress.stage === "uploading"
+    const nextStatus = keepOversized(existing)
+      ? existing.status
+      : progress.stage === "uploading"
         ? "uploading"
         : progress.stage === "flood_wait"
           ? "pending"
@@ -160,9 +185,13 @@ export function useTaskBoard() {
 
     // 仍在上传中时，更旧的字节或相册回调不能把条打回去。
     // 任务已经回到等待后再开始，新的 0 是另一次上传，要接受。
+    // 切片换到下一段时，字节从这段的开头重新计。
+    const previousPart = sliceLabel(existing.message);
+    const nextPart = sliceLabel(progress.message);
+    const partChanged = previousPart !== null && nextPart !== null && previousPart !== nextPart;
     const restart =
       progress.current <= 0 && existing.status !== "uploading" && existing.status !== "assigned";
-    if (keepByteProgress(existing, progress.current, progress.total) && !restart) {
+    if (keepByteProgress(existing, progress.current, progress.total) && !restart && !partChanged) {
       upsert({
         ...existing,
         status: nextStatus,

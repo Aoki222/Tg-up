@@ -60,6 +60,7 @@ def render_upload_toml(payload: dict) -> str:
         f"preview = {_toml_string(str(payload.get('preview') or 'off'))}\n"
         f"topic_creation_enabled = {topic}\n"
         f"after_success = {_toml_string(str(payload.get('after_success') or 'keep'))}\n"
+        f"auto_slice = {'true' if payload.get('auto_slice') else 'false'}\n"
         "concurrency = 1\n"
         f"max_retries = {max(1, int(payload.get('max_retries', 3)))}\n"
         f"upload_timeout_seconds = {max(1, int(payload.get('upload_timeout_seconds', 1200)))}\n"
@@ -407,6 +408,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         routes=_as_routes(data),
         chats=_as_chats(data),
         drive_folders=_as_drive_folders(data),
+        auto_slice=_as_bool(data.get("auto_slice"), False),
     )
 
 
@@ -463,6 +465,7 @@ class SettingsHub:
             "preview": settings.preview.value,
             "topic_creation_enabled": settings.topic_creation_enabled,
             "after_success": settings.after_success.value,
+            "auto_slice": settings.auto_slice,
             "concurrency": settings.concurrency,
             "max_retries": settings.max_retries,
             "upload_timeout_seconds": settings.upload_timeout_seconds,

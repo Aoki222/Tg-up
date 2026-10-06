@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     max_retries     INTEGER NOT NULL DEFAULT 3,
     after_success   TEXT    NOT NULL DEFAULT 'keep',
     error_msg       TEXT,
+    parent_id       INTEGER,
+    part_index      INTEGER,
+    part_count      INTEGER,
+    slice_parts     INTEGER,
     
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     assigned_at     DATETIME,
@@ -62,6 +66,21 @@ CREATE INDEX IF NOT EXISTS idx_assigned_bot    ON upload_tasks(assigned_bot);
 CREATE INDEX IF NOT EXISTS idx_assigned_status ON upload_tasks(assigned_bot, status);
 CREATE INDEX IF NOT EXISTS idx_file_path_status ON upload_tasks(file_path, status);
 CREATE INDEX IF NOT EXISTS idx_started_at      ON upload_tasks(started_at);
+CREATE INDEX IF NOT EXISTS idx_upload_tasks_parent ON upload_tasks(parent_id);
+
+CREATE TABLE IF NOT EXISTS upload_slices (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id     INTEGER NOT NULL,
+    part_index    INTEGER NOT NULL,
+    part_count    INTEGER NOT NULL,
+    segment_path  TEXT    NOT NULL,
+    segment_size  INTEGER NOT NULL DEFAULT 0,
+    child_task_id INTEGER,
+    status        TEXT    NOT NULL DEFAULT 'planned',
+    UNIQUE(parent_id, part_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_upload_slices_parent ON upload_slices(parent_id);
 
 CREATE TABLE IF NOT EXISTS chat_topic (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,6 +129,7 @@ _UPLOAD_TASK_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_file_path_status ON upload_tasks(file_path, status)",
     "CREATE INDEX IF NOT EXISTS idx_started_at ON upload_tasks(started_at)",
     "CREATE INDEX IF NOT EXISTS idx_status_platform ON upload_tasks(status, platform)",
+    "CREATE INDEX IF NOT EXISTS idx_upload_tasks_parent ON upload_tasks(parent_id)",
 )
 
 
@@ -139,6 +159,10 @@ async def init_db() -> None:
         await _ensure_column(db, "upload_tasks", "dest_id", "TEXT")
         await _ensure_column(db, "upload_tasks", "dest_extra", "TEXT")
         await _ensure_column(db, "upload_tasks", "remote_id", "TEXT")
+        await _ensure_column(db, "upload_tasks", "parent_id", "INTEGER")
+        await _ensure_column(db, "upload_tasks", "part_index", "INTEGER")
+        await _ensure_column(db, "upload_tasks", "part_count", "INTEGER")
+        await _ensure_column(db, "upload_tasks", "slice_parts", "INTEGER")
         await _backfill_destination_columns(db)
         await _allow_oversized_status(db)
         await _ensure_upload_task_indexes(db)

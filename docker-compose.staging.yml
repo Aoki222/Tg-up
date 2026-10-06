@@ -24,6 +24,7 @@ services:
     environment:
       API_HOST: "0.0.0.0"
       API_PORT: "8000"
+      APP_CHANNEL: "staging"
     volumes:
       - ./download:/app/download
       - ./sessions:/app/sessions

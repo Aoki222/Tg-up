@@ -53,6 +53,7 @@ from ..database.connection import close_pool
 from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
 from ..domain.telegram_credentials import TelegramCredentials, load_telegram_credentials
+from ..domain.slices import user_dispatch_blocked
 from ..domain.task import task_from_row
 from ..logger import get_logger
 from ..utils.sender_pool import SenderPool
@@ -60,6 +61,7 @@ from ..utils.topic_creactor import TopicCreator
 from .discover import FolderWatcher, iter_existing_files_many
 from .ingest import FileIngestor, PreviewJob, PreviewPool
 from .schedule import UploadScheduler
+from .slicer import SliceService
 from .worker import UploadWorker
 
 logger = get_logger(__name__)
@@ -86,6 +88,7 @@ class UploaderApplication:
         self._file_queue = None
         self._ingestor = None
         self._preview_pool = None
+        self._slicer = None
         self._uvicorn = None
         self._shutting_down = False
         self._finished = False
@@ -125,9 +128,19 @@ class UploaderApplication:
         self._after_upload = after_upload
         topic_creator = TopicCreator(session_pool.any_client, repository)
         file_queue: asyncio.Queue[Path | None] = asyncio.Queue()
-        preview_pool = PreviewPool(repository, scheduler, settings_hub)
+        slicer = SliceService(repository, settings_hub, scheduler, after_upload, PROJECT_DIR)
+        self._slicer = slicer
+        await slicer.recover()
+        preview_pool = PreviewPool(
+            repository, scheduler, settings_hub, on_settled=slicer.offer_auto
+        )
         ingestor = FileIngestor(
-            repository, scheduler, settings_hub, topic_creator, preview_pool=preview_pool
+            repository,
+            scheduler,
+            settings_hub,
+            topic_creator,
+            preview_pool=preview_pool,
+            on_oversized=slicer.offer_auto,
         )
         self._preview_pool = preview_pool
         watcher = FolderWatcher(file_queue.put)
@@ -153,6 +166,7 @@ class UploaderApplication:
                 spawn(ingestor.consume(file_queue), "ingest")
                 spawn(preview_pool.run_forever(), "preview")
                 spawn(scheduler.run_forever(), "scheduler")
+                spawn(slicer.run_forever(), "slicer")
                 for row in await repository.fetch_preparing_tasks():
                     preview_pool.submit(
                         PreviewJob(
@@ -335,6 +349,7 @@ class UploaderApplication:
                 session_pool=session_pool,
                 session_path=session_path,
                 account_kind=kind,
+                on_slice_child=self._on_slice_child,
             )
             scheduler.register_worker(worker)
             if self._task_group is not None:
@@ -364,6 +379,8 @@ class UploaderApplication:
             return "not_found"
         if str(row.get("status")) != "oversized":
             return "not_oversized"
+        if user_dispatch_blocked(row.get("error_msg")) or await repository.has_slice_plan(task_id):
+            return "slicing"
         file_path = str(row.get("file_path") or "")
         if not file_path or not Path(file_path).exists():
             return "missing_file"
@@ -390,6 +407,12 @@ class UploaderApplication:
             return "not_ready"
         logger.info("过大文件交给个人号 task=%s worker=%s", task_id, chosen.worker_name)
         return "ok"
+
+    async def _on_slice_child(self, task, outcome: str) -> None:
+        slicer = self._slicer
+        if slicer is None:
+            return
+        await slicer.on_child(task, outcome)
 
     async def _list_chats(self) -> dict:
         """只读个人号的内存快照；首次无缓存时才触发一次 Telegram 全量同步。"""
@@ -510,6 +533,7 @@ class UploaderApplication:
             task_repository=self._repository,
             reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
             dispatch_oversized=self.dispatch_oversized_to_user,
+            slice_service=self._slicer,
             restart_process=self.request_restart,
             chats_provider=self._list_chats,
             chats_sync=self._sync_chats,
@@ -547,6 +571,8 @@ class UploaderApplication:
                 await self._ingestor.stop()
             if self._preview_pool is not None:
                 await self._preview_pool.stop()
+            if self._slicer is not None:
+                await self._slicer.stop()
             if self._scheduler is not None:
                 await self._scheduler.stop()
             if self._uvicorn is not None:
@@ -592,6 +618,8 @@ class UploaderApplication:
             await ingestor.stop()
         if self._preview_pool is not None:
             await self._preview_pool.stop()
+        if self._slicer is not None:
+            await self._slicer.stop()
         if scheduler is not None:
             await scheduler.stop()
             names = list(scheduler.worker_map)

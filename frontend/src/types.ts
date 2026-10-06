@@ -63,6 +63,12 @@ export interface BoardTask {
   eta_seconds: number;
   stage: ProgressStage | null;
   message: string;
+  /** 过大视频能否切片。压缩包为 false。 */
+  sliceable: boolean;
+  /** idle / queued / cutting / uploading / failed / blocked */
+  slice_phase: "idle" | "queued" | "cutting" | "uploading" | "failed" | "blocked";
+  /** 按时长平均切时的最少段数。不能再少。 */
+  slice_min_parts: number | null;
 }
 
 export interface BoardCounts {
@@ -208,6 +214,8 @@ export interface UploadConfig {
   topic_creation_enabled: boolean;
   /** 上传成功后的本地文件处理动作 */
   after_success: AfterSuccess;
+  /** 新发现的超过 2GB 视频按最少段数自动切片 */
+  auto_slice: boolean;
   /** 单个 Session 允许的最大并行上传流数量 */
   concurrency: number;
   /** 单个任务上传失败最大重试次数 */
@@ -276,11 +284,15 @@ export interface SessionMeta {
   api_configured: boolean;
 }
 
-/** 系统版本与远程更新信息（用于前端展示更新徽标，纯展示无一键更新） */
+export type VersionStatus = "latest" | "staging" | "update" | "dev";
+
+/** 系统版本与远程更新信息（用于前端展示状态灯与更新提示） */
 export interface SystemVersionInfo {
   current_version: string;
   remote_version: string | null;
   has_update: boolean;
+  channel: "latest" | "staging";
+  status: VersionStatus;
   commit_message: string;
   commit_url: string;
   checked_at?: number;

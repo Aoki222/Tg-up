@@ -50,6 +50,7 @@ const form = reactive<UploadConfig>({
   preview: "first_frame",
   topic_creation_enabled: true,
   after_success: "keep",
+  auto_slice: false,
   concurrency: 1,
   max_retries: 3,
   upload_timeout_seconds: 1200,
@@ -580,6 +581,9 @@ defineExpose({ dirty });
               <el-option label="删除本地文件" value="delete" />
               <el-option label="归档到 uploaded/" value="move_to_archive" />
             </el-select>
+          </el-form-item>
+          <el-form-item label="过大视频">
+            <el-switch v-model="form.auto_slice" active-text="自动切片" />
           </el-form-item>
           <el-form-item label="归档目录">
             <el-input v-model="form.archive_dir" />

@@ -4,10 +4,15 @@
 # 控制台：http://<服务器IP>:8000/
 # 视频放到 ./download ；session 放到 ./sessions
 # 上传配置在 ./data/upload.toml（目录挂载，控制台保存不会 EBUSY）
+# 本机编译要带上提交号，顶栏才会和 latest 镜像比较：
+#   BUILD_SHA=$(git rev-parse HEAD) docker compose build
 
 services:
   uploader:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_SHA: ${BUILD_SHA:-local_dev}
     image: uploader:local
     container_name: uploader
     restart: unless-stopped
@@ -18,6 +23,7 @@ services:
     environment:
       API_HOST: "0.0.0.0"
       API_PORT: "8000"
+      APP_CHANNEL: "latest"
     volumes:
       - ./download:/app/download
       - ./sessions:/app/sessions

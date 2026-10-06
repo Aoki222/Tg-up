@@ -133,6 +133,9 @@ class Task:
     error: str | None = None
     single_page: bool = False
     content_page: bool = False
+    parent_id: int | None = None
+    part_index: int | None = None
+    part_count: int | None = None
 
     def merge_row(self, row: dict) -> Task:
         """用数据库最新行刷新可变字段，保留入库时拍下的 policy。"""
@@ -154,6 +157,9 @@ class Task:
             error=row.get("error_msg"),
             single_page=bool(row.get("single_page")),
             content_page=bool(row.get("content_page")),
+            parent_id=_optional_int(row.get("parent_id")),
+            part_index=_optional_int(row.get("part_index")),
+            part_count=_optional_int(row.get("part_count")),
         )
 
 
@@ -178,4 +184,16 @@ def task_from_row(row: dict, policy: TaskPolicy) -> Task:
         error=row.get("error_msg"),
         single_page=bool(row.get("single_page")),
         content_page=bool(row.get("content_page")),
+        parent_id=_optional_int(row.get("parent_id")),
+        part_index=_optional_int(row.get("part_index")),
+        part_count=_optional_int(row.get("part_count")),
     )
+
+
+def _optional_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None

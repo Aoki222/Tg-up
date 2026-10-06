@@ -23,9 +23,11 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..adapters.progress import ProgressHub
+from ..logger import get_logger
 from ..adapters.session_login import SessionLoginService
 from ..config import API_TOKEN, PROJECT_DIR, SESSION_DIR, TELEGRAM_PROXY, mask_api_hash
 from ..domain.progress import UploadProgress
+from ..domain.slices import is_sliceable_video, minimum_slice_parts, slice_phase
 from ..domain.settings_hub import SettingsHub
 from ..domain.telegram_credentials import load_telegram_credentials, merge_submitted_hash, save_telegram_credentials
 from ..pipeline.ingest.policy import inspect_path_route
@@ -35,6 +37,10 @@ from .settings import SettingsPayload
 
 class FailedIdsBody(BaseModel):
     ids: list[int] = Field(default_factory=list)
+
+
+class SliceBody(BaseModel):
+    parts: int = Field(ge=2, le=30)
 
 
 class ChatIdBody(BaseModel):
@@ -57,24 +63,127 @@ _version_cache: dict[str, object] = {
     "checked_at": 0.0,
     "data": None,
 }
-_VERSION_CACHE_TTL = 1800.0
-
-
-def _fetch_github_commit_sync() -> dict | None:
-    url = "https://api.github.com/repos/Aoki222/Tg-up/commits/main"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "Tg-up-App",
-        },
+_VERSION_CACHE_TTL = 900.0
+_GHCR_REPO = "aoki222/tg-up"
+_GITHUB_REPO = "Aoki222/Tg-up"
+_MANIFEST_ACCEPT = ", ".join(
+    (
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
     )
+)
+logger = get_logger(__name__)
+
+
+def _http_json(url: str, headers: dict[str, str], timeout: float = 5.0) -> dict | None:
+    request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            if resp.status == 200:
-                return json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _child_manifest_digest(index: dict) -> str | None:
+    """多架构清单里取 linux/amd64；没有就用第一条。"""
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list):
+        return None
+    chosen: dict | None = None
+    for item in manifests:
+        if not isinstance(item, dict):
+            continue
+        platform = item.get("platform") or {}
+        if (
+            isinstance(platform, dict)
+            and platform.get("os") == "linux"
+            and platform.get("architecture") == "amd64"
+        ):
+            chosen = item
+            break
+        if chosen is None:
+            chosen = item
+    if chosen is None:
+        return None
+    digest = str(chosen.get("digest") or "")
+    return digest or None
+
+
+def _label_revision(config: dict) -> str | None:
+    inner = config.get("config")
+    labels = inner.get("Labels") if isinstance(inner, dict) else None
+    if not isinstance(labels, dict):
+        return None
+    revision = str(labels.get("org.opencontainers.image.revision") or "").strip()
+    return revision or None
+
+
+def _ghcr_revision(tag: str) -> str | None:
+    """读取 ghcr.io 上某个标签的镜像提交号。标签没动过就说明这台机器不用更新。"""
+    token_payload = _http_json(
+        f"https://ghcr.io/token?service=ghcr.io&scope=repository:{_GHCR_REPO}:pull",
+        {"User-Agent": "Tg-up-App"},
+    )
+    token = str((token_payload or {}).get("token") or "")
+    if not token:
+        return None
+    headers = {
+        "User-Agent": "Tg-up-App",
+        "Authorization": f"Bearer {token}",
+        "Accept": _MANIFEST_ACCEPT,
+    }
+    manifest = _http_json(f"https://ghcr.io/v2/{_GHCR_REPO}/manifests/{tag}", headers)
+    if manifest is None:
+        return None
+    if manifest.get("manifests"):
+        digest = _child_manifest_digest(manifest)
+        if not digest:
+            return None
+        manifest = _http_json(f"https://ghcr.io/v2/{_GHCR_REPO}/manifests/{digest}", headers)
+        if manifest is None:
+            return None
+    config_digest = str((manifest.get("config") or {}).get("digest") or "")
+    if not config_digest:
+        return None
+    blob = _http_json(
+        f"https://ghcr.io/v2/{_GHCR_REPO}/blobs/{config_digest}",
+        {
+            "User-Agent": "Tg-up-App",
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/octet-stream",
+        },
+    )
+    return _label_revision(blob or {})
+
+
+def _github_commit(ref: str) -> dict | None:
+    return _http_json(
+        f"https://api.github.com/repos/{_GITHUB_REPO}/commits/{ref}",
+        {"Accept": "application/vnd.github+json", "User-Agent": "Tg-up-App"},
+    )
+
+
+def _fetch_remote_release_sync(channel: str) -> dict | None:
+    """正式版看 latest 镜像，测试版看 staging 镜像。测试版在仓库读失败时才退回 main。"""
+    tag = "staging" if channel == "staging" else "latest"
+    sha = _ghcr_revision(tag)
+    if sha:
+        commit = _github_commit(sha)
+        if commit and commit.get("sha"):
+            return commit
+        return {
+            "sha": sha,
+            "commit": {"message": ""},
+            "html_url": f"https://github.com/{_GITHUB_REPO}/commit/{sha}",
+        }
+    if tag == "staging":
+        return _github_commit("main")
+    logger.warning("读取 latest 镜像版本失败，暂不提示更新")
     return None
 
 
@@ -107,6 +216,7 @@ def create_api(
     task_repository=None,
     reschedule=None,
     dispatch_oversized=None,
+    slice_service=None,
     restart_process=None,
     chats_provider=None,
     chats_sync=None,
@@ -123,6 +233,7 @@ def create_api(
     app.state.task_repository = task_repository
     app.state.reschedule = reschedule
     app.state.dispatch_oversized = dispatch_oversized
+    app.state.slice_service = slice_service
     app.state.restart_process = restart_process
     app.state.chats_provider = chats_provider
     app.state.chats_sync = chats_sync
@@ -164,12 +275,27 @@ def create_api(
     async def health() -> dict:
         return {"ok": True}
 
-    # 当前版本与远程更新检查（30分钟内存缓存，不鉴权）
+    # 当前版本与镜像标签比较（15 分钟内存缓存，不鉴权）
     @app.get("/api/system/version")
     async def get_system_version() -> dict:
         current_raw = (os.getenv("APP_VERSION") or "local_dev").strip()
         is_dev = current_raw in ("local_dev", "dev", "")
         current_version = "dev" if is_dev else (current_raw[:7] if len(current_raw) >= 7 else current_raw)
+
+        channel = (os.getenv("APP_CHANNEL") or "latest").strip().lower()
+        if channel not in ("staging", "latest"):
+            channel = "latest"
+
+        if is_dev:
+            return {
+                "current_version": "dev",
+                "remote_version": None,
+                "has_update": False,
+                "channel": channel,
+                "status": "dev",
+                "commit_message": "",
+                "commit_url": "",
+            }
 
         now = time.monotonic()
         cached_data = _version_cache.get("data")
@@ -177,14 +303,16 @@ def create_api(
         if cached_data is not None and (now - last_check) < _VERSION_CACHE_TTL:
             return dict(cached_data)
 
-        remote_json = await asyncio.to_thread(_fetch_github_commit_sync)
+        remote_json = await asyncio.to_thread(_fetch_remote_release_sync, channel)
         if not remote_json:
             result = {
                 "current_version": current_version,
                 "remote_version": None,
                 "has_update": False,
+                "channel": channel,
+                "status": "staging" if channel == "staging" else "latest",
                 "commit_message": "",
-                "commit_url": "https://github.com/Aoki222/Tg-up",
+                "commit_url": f"https://github.com/{_GITHUB_REPO}/pkgs/container/tg-up",
             }
             if cached_data is not None:
                 return dict(cached_data)
@@ -194,18 +322,24 @@ def create_api(
         remote_short = remote_sha[:7] if len(remote_sha) >= 7 else remote_sha
         commit_info = remote_json.get("commit") or {}
         raw_msg = str(commit_info.get("message") or "")
-        commit_msg = raw_msg.splitlines()[0] if raw_msg else ""
-        html_url = str(remote_json.get("html_url") or f"https://github.com/Aoki222/Tg-up/commit/{remote_sha}")
+        commit_msg = raw_msg.splitlines()[0][:160] if raw_msg else ""
+        html_url = str(remote_json.get("html_url") or f"https://github.com/{_GITHUB_REPO}/commit/{remote_sha}")
 
-        has_update = False
-        if not is_dev and remote_sha:
-            if not remote_sha.startswith(current_raw) and not current_raw.startswith(remote_sha):
-                has_update = True
+        has_update = bool(remote_sha) and not remote_sha.startswith(current_raw) and not current_raw.startswith(remote_sha)
+
+        if has_update:
+            status = "update"
+        elif channel == "staging":
+            status = "staging"
+        else:
+            status = "latest"
 
         result = {
             "current_version": current_version,
             "remote_version": remote_short,
             "has_update": has_update,
+            "channel": channel,
+            "status": status,
             "commit_message": commit_msg,
             "commit_url": html_url,
         }
@@ -646,9 +780,54 @@ def create_api(
             raise HTTPException(status_code=409, detail="文件不存在")
         if result == "no_user":
             raise HTTPException(status_code=409, detail="没有可用的个人账号")
+        if result == "slicing":
+            raise HTTPException(status_code=409, detail="正在切片，请先清除")
         if result != "ok":
             raise HTTPException(status_code=503, detail="任务分发未就绪")
         return {"ok": True, "id": task_id, "status": "assigned"}
+
+    # 过大视频按用户指定的段数切片，再逐段进入现有上传队列。
+    @app.post("/api/tasks/{task_id}/slice", dependencies=[Depends(require_token)])
+    async def slice_task(task_id: int, body: SliceBody) -> dict:
+        slicer = app.state.slice_service
+        if slicer is None:
+            raise HTTPException(status_code=503, detail="切片未就绪")
+        result = await slicer.request(task_id, body.parts)
+        if result == "not_found":
+            raise HTTPException(status_code=404, detail="找不到任务")
+        if result == "not_oversized":
+            raise HTTPException(status_code=409, detail="只能切片过大的文件")
+        if result == "not_video":
+            raise HTTPException(status_code=409, detail="这个文件不能切片")
+        if result == "missing_file":
+            raise HTTPException(status_code=409, detail="文件不存在")
+        if result == "busy":
+            raise HTTPException(status_code=409, detail="已在切片")
+        if result.startswith("bad_parts:"):
+            minimum = result.split(":", 1)[1]
+            raise HTTPException(status_code=409, detail=f"段数至少为 {minimum}，最多 30")
+        if result != "ok":
+            raise HTTPException(status_code=503, detail="切片未就绪")
+        return {"ok": True, "id": task_id, "parts": body.parts}
+
+    # 某一段上传失败后，从那段接着传，不重新切片。
+    @app.post("/api/tasks/{task_id}/slice-continue", dependencies=[Depends(require_token)])
+    async def continue_slice(task_id: int) -> dict:
+        slicer = app.state.slice_service
+        if slicer is None:
+            raise HTTPException(status_code=503, detail="切片未就绪")
+        result = await slicer.continue_upload(task_id)
+        if result == "not_found":
+            raise HTTPException(status_code=404, detail="找不到任务")
+        if result == "not_oversized":
+            raise HTTPException(status_code=409, detail="只能继续过大文件的切片")
+        if result == "not_failed":
+            raise HTTPException(status_code=409, detail="没有失败的切片")
+        if result == "missing_file":
+            raise HTTPException(status_code=409, detail="切片文件不存在")
+        if result != "ok":
+            raise HTTPException(status_code=503, detail="切片未就绪")
+        return {"ok": True, "id": task_id}
 
     # 删除全部失败记录。不删磁盘上的文件。
     @app.delete("/api/tasks/failed", dependencies=[Depends(require_token)])
@@ -679,6 +858,9 @@ def create_api(
             raise HTTPException(status_code=404, detail="找不到任务")
         if result == "not_failed":
             raise HTTPException(status_code=409, detail="只能清除失败或过大的任务")
+        slicer = app.state.slice_service
+        if slicer is not None:
+            await slicer.discard(task_id)
         return {"ok": True, "id": task_id, "deleted": True}
 
     # 当前仍在 uploading 的进度快照，含服务端算好的速度。
@@ -769,7 +951,16 @@ def _board_item(row: dict, progress: UploadProgress | None) -> dict:
         "eta_seconds": -1.0,
         "stage": None,
         "message": "",
+        "sliceable": False,
+        "slice_phase": "idle",
+        "slice_min_parts": None,
     }
+    if status == "oversized":
+        sliceable = is_sliceable_video(str(row.get("file_name") or row.get("file_path") or ""))
+        item["sliceable"] = sliceable
+        item["slice_phase"] = slice_phase(row.get("error_msg"))
+        if sliceable:
+            item["slice_min_parts"] = minimum_slice_parts(int(row.get("file_size") or 0))
     if progress is not None:
         item["percent"] = progress.percent
         item["current"] = progress.current

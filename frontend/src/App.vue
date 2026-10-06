@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { fetchSystemVersion } from "./api";
 import { useTelegramIdentity } from "./composables/useTelegramIdentity";
@@ -12,21 +12,46 @@ const versionInfo = ref<SystemVersionInfo>({
   current_version: "",
   remote_version: null,
   has_update: false,
+  channel: "latest",
+  status: "latest",
   commit_message: "",
   commit_url: "",
+});
+const versionReady = ref(false);
+let versionTimer = 0;
+
+const versionLabel = computed(() => {
+  if (versionInfo.value.status === "update") return "有更新";
+  if (versionInfo.value.status === "dev") return "开发";
+  return versionInfo.value.current_version;
+});
+
+const versionAria = computed(() => {
+  if (versionInfo.value.status === "update") {
+    const line = versionInfo.value.channel === "staging" ? "测试版" : "正式版";
+    return `${line}有更新，远端 ${versionInfo.value.remote_version || ""}`;
+  }
+  if (versionInfo.value.status === "dev") return "本地开发";
+  if (versionInfo.value.status === "staging") return `测试版 ${versionInfo.value.current_version}`;
+  return `正式版 ${versionInfo.value.current_version}`;
 });
 
 async function loadVersion(): Promise<void> {
   try {
     versionInfo.value = await fetchSystemVersion();
+    versionReady.value = true;
   } catch {
-    // 忽略异常，降级显示
+    // 保留上一次的结果。第一次失败则不显示。
   }
 }
 
 onMounted(() => {
   void refresh();
   void loadVersion();
+  versionTimer = window.setInterval(() => void loadVersion(), 15 * 60 * 1000);
+});
+onUnmounted(() => {
+  window.clearInterval(versionTimer);
 });
 /**
  * @file App.vue
@@ -85,37 +110,54 @@ onMounted(() => {
           <span class="status-label">在线</span>
         </div>
 
-        <!-- 版本与更新指示器 (纯展示型无一键更新) -->
-        <template v-if="versionInfo.current_version">
-          <div class="nav-divider"></div>
+        <template v-if="versionReady">
+          <div class="nav-divider version-divider"></div>
           <div class="version-section">
-            <el-tooltip
-              v-if="versionInfo.has_update"
-              effect="dark"
-              placement="bottom"
-            >
+            <el-tooltip effect="dark" placement="bottom" :show-after="200">
               <template #content>
                 <div class="version-tooltip-content">
-                  <div class="version-tooltip-title">发现新提交 ({{ versionInfo.remote_version }})</div>
-                  <div v-if="versionInfo.commit_message" class="version-tooltip-msg">
-                    {{ versionInfo.commit_message }}
-                  </div>
-                  <a
-                    v-if="versionInfo.commit_url"
-                    :href="versionInfo.commit_url"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="version-tooltip-link"
-                  >
-                    前往 GitHub 查看变更 →
-                  </a>
+                  <template v-if="versionInfo.status === 'update'">
+                    <div class="version-tooltip-title">
+                      {{ versionInfo.channel === "staging" ? "测试版有更新" : "正式版有更新" }}
+                    </div>
+                    <div class="version-tooltip-sub">
+                      正在运行 {{ versionInfo.current_version }}，远端 {{ versionInfo.remote_version }}
+                    </div>
+                    <div v-if="versionInfo.commit_message" class="version-tooltip-msg">
+                      {{ versionInfo.commit_message }}
+                    </div>
+                    <div class="version-tooltip-sub">
+                      拉取 {{ versionInfo.channel === "staging" ? "staging" : "latest" }} 镜像后重新启动
+                    </div>
+                    <a
+                      v-if="versionInfo.commit_url"
+                      :href="versionInfo.commit_url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="version-tooltip-link"
+                    >
+                      在 GitHub 查看
+                    </a>
+                  </template>
+                  <template v-else-if="versionInfo.status === 'staging'">
+                    <div class="version-tooltip-title">测试版</div>
+                    <div class="version-tooltip-sub">当前提交 {{ versionInfo.current_version }}</div>
+                  </template>
+                  <template v-else-if="versionInfo.status === 'dev'">
+                    <div class="version-tooltip-title">本地开发</div>
+                    <div class="version-tooltip-sub">未写入镜像提交号，不检查更新</div>
+                  </template>
+                  <template v-else>
+                    <div class="version-tooltip-title">正式版</div>
+                    <div class="version-tooltip-sub">当前提交 {{ versionInfo.current_version }}</div>
+                  </template>
                 </div>
               </template>
-              <el-badge is-dot class="version-badge">
-                <span class="version-tag update-available">{{ versionInfo.current_version }}</span>
-              </el-badge>
+              <div :class="['version-tag', `tag-${versionInfo.status}`]" role="status" :aria-label="versionAria">
+                <span :class="['version-dot', `dot-${versionInfo.status}`]"></span>
+                <span class="version-text">{{ versionLabel }}</span>
+              </div>
             </el-tooltip>
-            <span v-else class="version-tag">{{ versionInfo.current_version }}</span>
           </div>
         </template>
       </div>
@@ -282,6 +324,9 @@ onMounted(() => {
 }
 
 .version-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   color: var(--text-secondary);
@@ -290,21 +335,85 @@ onMounted(() => {
   border-radius: 6px;
   letter-spacing: 0.3px;
   font-weight: 500;
+  cursor: pointer;
   transition: color 0.15s, background-color 0.15s;
 }
 
-.version-tag.update-available {
-  color: #c2410c;
-  background: rgba(234, 88, 12, 0.1);
-  cursor: pointer;
+.version-tag:hover {
+  background: rgba(0, 0, 0, 0.07);
 }
 
-.version-badge :deep(.el-badge__content.is-dot) {
-  top: 1px;
-  right: 1px;
-  background-color: #f97316;
-  border: 1.5px solid #ffffff;
-  box-shadow: 0 0 6px rgba(249, 115, 22, 0.5);
+.version-tag.tag-update {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.09);
+}
+
+.version-tag.tag-update:hover {
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.version-tag.tag-staging {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.09);
+}
+
+.version-tag.tag-staging:hover {
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.version-tag.tag-latest {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.09);
+}
+
+.version-tag.tag-latest:hover {
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.version-tag.tag-dev {
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.version-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background-color 0.2s, box-shadow 0.2s;
+}
+
+.version-dot.dot-latest {
+  background: #10b981;
+  box-shadow: 0 0 5px rgba(16, 185, 129, 0.5);
+}
+
+.version-dot.dot-staging {
+  background: #f59e0b;
+  box-shadow: 0 0 5px rgba(245, 158, 11, 0.5);
+}
+
+.version-dot.dot-update {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+  animation: pulse-update 2s infinite ease-in-out;
+}
+
+.version-dot.dot-dev {
+  background: #9ca3af;
+}
+
+@keyframes pulse-update {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+    box-shadow: 0 0 5px rgba(239, 68, 68, 0.6);
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.85;
+    box-shadow: 0 0 9px rgba(239, 68, 68, 0.9);
+  }
 }
 
 /* ── 居中大画幅主视口 ── */
@@ -337,9 +446,16 @@ onMounted(() => {
     max-width: 100%;
   }
 
-  .system-status,
-  .version-section {
+  .system-status {
     display: none;
+  }
+
+  .version-section {
+    display: flex;
+  }
+
+  .version-tag {
+    padding: 2px 6px;
   }
 
   .pill-item {
@@ -406,6 +522,12 @@ onMounted(() => {
   font-weight: 600;
   color: #ffffff;
   font-size: 12px;
+}
+
+.version-tooltip-sub {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.3;
 }
 
 .version-tooltip-msg {

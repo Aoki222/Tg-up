@@ -86,12 +86,14 @@ class FileIngestor:
         topic_creator: TopicCreator | None = None,
         preview_pool: PreviewPool | None = None,
         concurrency: int = INGEST_CONCURRENCY,
+        on_oversized=None,
     ):
         self.task_repository = task_repository
         self.rescheduler = rescheduler
         self.settings_hub = settings_hub
         self.topic_creator = topic_creator
         self.preview_pool = preview_pool
+        self.on_oversized = on_oversized
         self.ingest_policy = IngestPolicy()
         self.concurrency = max(1, concurrency)
         self._gate = asyncio.Semaphore(self.concurrency)
@@ -236,6 +238,7 @@ class FileIngestor:
             logger.info("已入库 task=%s: %s", task_id, file_path)
 
         if oversized and not need_preview:
+            await self._offer_slice(task_id)
             return task_id
 
         if not need_preview:
@@ -244,7 +247,9 @@ class FileIngestor:
 
         if self.preview_pool is None:
             await self.task_repository.update_preview(task_id, None, False, "preview pool missing")
-            if not oversized:
+            if oversized:
+                await self._offer_slice(task_id)
+            else:
                 self.rescheduler.request_reschedule()
             return task_id
         self.preview_pool.submit(
@@ -256,6 +261,14 @@ class FileIngestor:
             )
         )
         return task_id
+
+    async def _offer_slice(self, task_id: int) -> None:
+        if self.on_oversized is None:
+            return
+        try:
+            await self.on_oversized(task_id)
+        except Exception:
+            logger.exception("自动切片失败 task=%s", task_id)
 
     async def consume(self, file_queue: asyncio.Queue[Path | None]) -> None:
         """并行消费发现队列。单条失败只记日志；None 或 stop() 后退出。"""

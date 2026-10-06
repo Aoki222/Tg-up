@@ -24,6 +24,8 @@ const emit = defineEmits<{
   remove: [id: number];
   toggle: [id: number];
   dispatch: [id: number];
+  slice: [id: number];
+  continue: [id: number];
 }>();
 
 function pendingHint(item: BoardTask): string | null {
@@ -43,11 +45,30 @@ function pendingHint(item: BoardTask): string | null {
   return null;
 }
 
-function oversizedDetail(item: BoardTask): string | null {
-  // 默认提示已经说明在等个人号。只有另有失败原因时才再显示一行。
-  const text = item.error || item.message || "";
-  if (!text || text.includes("超过 2GB")) return null;
-  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+function oversizedHint(item: BoardTask): string {
+  const phase = item.slice_phase || "idle";
+  if (phase === "queued") return "等待切片";
+  if (phase === "cutting" && item.stage !== "uploading") return "正在切片";
+  if (phase === "uploading" || item.stage === "uploading") {
+    return item.message || item.error || "正在上传切片";
+  }
+  if (phase === "failed") return item.error || "切片上传失败";
+  if (phase === "blocked") return item.error || "切片未完成";
+  return "超过 2GB，等待个人号";
+}
+
+function showSlice(item: BoardTask): boolean {
+  const phase = item.slice_phase || "idle";
+  return Boolean(item.sliceable) && (phase === "idle" || phase === "blocked");
+}
+
+function showDispatch(item: BoardTask): boolean {
+  const phase = item.slice_phase || "idle";
+  return phase === "idle" || phase === "blocked";
+}
+
+function showContinue(item: BoardTask): boolean {
+  return item.slice_phase === "failed";
 }
 
 function speedLabel(item: BoardTask): string {
@@ -104,11 +125,42 @@ function speedLabel(item: BoardTask): string {
     </div>
 
     <div v-else-if="task.status === 'oversized'" class="body">
-      <p class="hint">超过 2GB，等待个人号</p>
-      <p v-if="oversizedDetail(task)" class="warn">{{ oversizedDetail(task) }}</p>
+      <p class="hint">{{ oversizedHint(task) }}</p>
+      <template v-if="task.slice_phase === 'uploading' || task.stage === 'uploading'">
+        <el-progress
+          :percentage="task.percent"
+          :stroke-width="5"
+          :show-text="false"
+        />
+        <div class="stats">
+          <span>{{ formatTransferred(task.current, task.total) }} · {{ task.percent }}%</span>
+          <span v-if="!isAlbumProgress(task.current, task.total)">
+            {{ speedLabel(task) }} · 剩余 {{ formatETA(task.eta_seconds) }}
+          </span>
+        </div>
+      </template>
       <div class="fail-row">
         <div class="fail-actions">
           <button
+            v-if="showSlice(task)"
+            type="button"
+            class="retry-btn"
+            :disabled="retrying"
+            @click="emit('slice', task.id)"
+          >
+            切片后上传
+          </button>
+          <button
+            v-if="showContinue(task)"
+            type="button"
+            class="retry-btn"
+            :disabled="retrying"
+            @click="emit('continue', task.id)"
+          >
+            继续
+          </button>
+          <button
+            v-if="showDispatch(task)"
             type="button"
             class="retry-btn"
             :disabled="retrying"
