@@ -66,7 +66,8 @@ CREATE INDEX IF NOT EXISTS idx_assigned_bot    ON upload_tasks(assigned_bot);
 CREATE INDEX IF NOT EXISTS idx_assigned_status ON upload_tasks(assigned_bot, status);
 CREATE INDEX IF NOT EXISTS idx_file_path_status ON upload_tasks(file_path, status);
 CREATE INDEX IF NOT EXISTS idx_started_at      ON upload_tasks(started_at);
-CREATE INDEX IF NOT EXISTS idx_upload_tasks_parent ON upload_tasks(parent_id);
+-- parent_id 的索引不能写在这里。旧库还没有这一列，CREATE INDEX 会在 ALTER 之前失败。
+-- 列补上、表重建之后，由 _UPLOAD_TASK_INDEXES 再建。
 
 CREATE TABLE IF NOT EXISTS upload_slices (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

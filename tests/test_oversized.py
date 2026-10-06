@@ -1,11 +1,19 @@
 """超过 Bot 上限的文件：入库、停在 oversized、只交给个人号。"""
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
 from src.adapters.task_store import TaskRepository
 from src.database.connection import close_pool, get_db, open_pool
-from src.database.init import SCHEMA, _allow_oversized_status, _ensure_upload_task_indexes, _park_existing_oversized
+from src.database.init import (
+    SCHEMA,
+    _allow_oversized_status,
+    _ensure_upload_task_indexes,
+    _fresh_upload_tasks_sql,
+    _park_existing_oversized,
+    init_db,
+)
 from src.domain.limits import OVERSIZED_REASON, PARTS_INVALID_REASON
 from src.domain.task import AfterSuccess, Task, TaskArtifacts, TaskDestination, TaskPolicy, TaskStatus
 from src.pipeline.application import UploaderApplication
@@ -221,6 +229,67 @@ async def test_requeue_of_huge_failed_file_does_not_return_to_bots(tmp_path: Pat
         assert gone_row is not None and gone_row["status"] == "failed"
         assert await repo.delete_failed(huge_id) == "ok"
         assert await repo.get_task_by_id(huge_id) is None
+    finally:
+        await close_pool()
+
+
+def _upload_tasks_before_slice_columns() -> str:
+    """切片功能之前的 upload_tasks：没有 parent_id / part_* / slice_parts。"""
+    statement = _fresh_upload_tasks_sql()
+    dropped = ("parent_id", "part_index", "part_count", "slice_parts")
+    lines = [line for line in statement.splitlines() if not any(name in line for name in dropped)]
+    return "\n".join(lines)
+
+
+async def _columns_and_index() -> tuple[set[str], bool, str | None]:
+    async with get_db() as database:
+        async with database.execute("PRAGMA table_info(upload_tasks)") as cursor:
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+        async with database.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_upload_tasks_parent'"
+        ) as cursor:
+            has_index = await cursor.fetchone() is not None
+        async with database.execute(
+            "SELECT status FROM upload_tasks WHERE task_id = 'keep-me'"
+        ) as cursor:
+            row = await cursor.fetchone()
+    status = None if row is None else str(row["status"])
+    return columns, has_index, status
+
+
+async def test_legacy_database_without_slice_columns_migrates(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(_upload_tasks_before_slice_columns())
+        connection.execute(
+            """INSERT INTO upload_tasks (task_id, file_path, file_name, file_size, chat_id, status)
+               VALUES ('keep-me', 'a.mp4', 'a.mp4', 3, -100, 'pending')"""
+        )
+    monkeypatch.setattr("src.database.connection.DATABASE_PATH", db_path)
+    try:
+        await init_db()
+        columns, has_index, status = await _columns_and_index()
+        assert {"parent_id", "part_index", "part_count", "slice_parts"} <= columns
+        assert has_index
+        assert status == "pending"
+        async with get_db() as database:
+            async with database.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'upload_slices'"
+            ) as cursor:
+                assert await cursor.fetchone() is not None
+    finally:
+        await close_pool()
+
+
+async def test_fresh_database_creates_parent_index(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "fresh.db"
+    monkeypatch.setattr("src.database.connection.DATABASE_PATH", db_path)
+    try:
+        await init_db()
+        columns, has_index, status = await _columns_and_index()
+        assert "parent_id" in columns
+        assert has_index
+        assert status is None
     finally:
         await close_pool()
 
