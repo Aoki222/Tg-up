@@ -50,6 +50,15 @@ const clearing = ref(false);
 const oversizedActing = ref(false);
 const selectedIds = ref<Set<number>>(new Set());
 const oversizedIds = ref<Set<number>>(new Set());
+const batchOpen = ref<ColumnKey | null>(null);
+
+function toggleBatch(key: ColumnKey): void {
+  batchOpen.value = batchOpen.value === key ? null : key;
+}
+
+function closeBatch(): void {
+  batchOpen.value = null;
+}
 
 const buckets = computed(() => {
   const preparing: BoardTask[] = [];
@@ -82,6 +91,7 @@ function loadCollapsed(): Set<ColumnKey> {
   // 从浏览器恢复列折叠状态，并过滤掉旧版本或非法列名。
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw == null) return new Set<ColumnKey>(["preparing", "pending"]);
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return new Set();
@@ -133,6 +143,7 @@ async function onRetry(id: number): Promise<void> {
 
 async function onRetryAll(): Promise<void> {
   // 批量重试失败任务，并把缺失文件数量反馈给用户。
+  closeBatch();
   if (retryingAll.value || retryingId.value !== null || buckets.value.failed.length === 0) return;
   retryingAll.value = true;
   try {
@@ -290,6 +301,7 @@ async function onRemove(id: number): Promise<void> {
 
 async function onRemoveSelected(): Promise<void> {
   // 将选中的失败任务 ID 一次提交给后端删除。
+  closeBatch();
   const ids = [...selectedIds.value];
   if (failedBusy.value || ids.length === 0) return;
   clearing.value = true;
@@ -306,6 +318,7 @@ async function onRemoveSelected(): Promise<void> {
 
 async function onRemoveAll(): Promise<void> {
   // 二次确认后删除全部失败记录，并保留磁盘文件。
+  closeBatch();
   if (failedBusy.value || buckets.value.failed.length === 0) return;
   try {
     await ElMessageBox.confirm("将从数据库删除全部失败记录，本地文件不会动。", "全部清除", {
@@ -330,6 +343,7 @@ async function onRemoveAll(): Promise<void> {
 }
 
 async function onSliceBatch(ids: number[]): Promise<void> {
+  closeBatch();
   if (failedBusy.value) return;
   oversizedActing.value = true;
   try {
@@ -343,6 +357,7 @@ async function onSliceBatch(ids: number[]): Promise<void> {
 }
 
 async function onDispatchBatch(ids: number[]): Promise<void> {
+  closeBatch();
   if (failedBusy.value) return;
   oversizedActing.value = true;
   try {
@@ -356,6 +371,7 @@ async function onDispatchBatch(ids: number[]): Promise<void> {
 }
 
 async function onRemoveOversizedSelected(): Promise<void> {
+  closeBatch();
   const ids = [...oversizedIds.value];
   if (failedBusy.value || ids.length === 0) return;
   oversizedActing.value = true;
@@ -371,6 +387,7 @@ async function onRemoveOversizedSelected(): Promise<void> {
 }
 
 async function onRemoveOversizedAll(): Promise<void> {
+  closeBatch();
   if (failedBusy.value || buckets.value.oversized.length === 0) return;
   try {
     await ElMessageBox.confirm("将从数据库删除全部过大记录，本地源文件不会动。", "全部清除", {
@@ -399,10 +416,17 @@ onMounted(() => {
   const apply = () => {
     isNarrow.value = media.matches;
   };
+  const onPointer = (event: Event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest(".batch-wrap")) return;
+    batchOpen.value = null;
+  };
   apply();
   media.addEventListener("change", apply);
+  document.addEventListener("pointerdown", onPointer);
   onUnmounted(() => {
     media.removeEventListener("change", apply);
+    document.removeEventListener("pointerdown", onPointer);
   });
 });
 </script>
@@ -448,82 +472,37 @@ onMounted(() => {
         <header class="well-head">
           <span class="well-title">{{ column.title }}</span>
           <div class="well-actions">
-            <template v-if="column.key === 'oversized'">
+            <div
+              v-if="column.key === 'oversized' || column.key === 'failed'"
+              class="batch-wrap"
+            >
               <button
                 type="button"
                 class="retry-all-btn"
-                :disabled="failedBusy || oversizedCount === 0"
-                @click="onSliceBatch([...oversizedIds])"
+                :disabled="failedBusy"
+                @click.stop="toggleBatch(column.key)"
               >
-                切片选中
+                批量
               </button>
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy || buckets.oversized.length === 0"
-                @click="onSliceBatch([])"
-              >
-                全部切片
-              </button>
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy || oversizedCount === 0"
-                @click="onDispatchBatch([...oversizedIds])"
-              >
-                交给个人号
-              </button>
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy || buckets.oversized.length === 0"
-                @click="onDispatchBatch([])"
-              >
-                全部交给个人号
-              </button>
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy || oversizedCount === 0"
-                @click="onRemoveOversizedSelected"
-              >
-                清除选中
-              </button>
-              <button
-                type="button"
-                class="retry-all-btn danger"
-                :disabled="failedBusy || buckets.oversized.length === 0"
-                @click="onRemoveOversizedAll"
-              >
-                全部清除
-              </button>
-            </template>
-            <template v-if="column.key === 'failed'">
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy || buckets.failed.length === 0"
-                @click="onRetryAll"
-              >
-                {{ retryingAll ? "重试中" : "全部重试" }}
-              </button>
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy || selectedCount === 0"
-                @click="onRemoveSelected"
-              >
-                清除选中
-              </button>
-              <button
-                type="button"
-                class="retry-all-btn danger"
-                :disabled="failedBusy || buckets.failed.length === 0"
-                @click="onRemoveAll"
-              >
-                全部清除
-              </button>
-            </template>
+              <div v-if="batchOpen === column.key" class="batch-menu" @click.stop>
+                <template v-if="column.key === 'oversized'">
+                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onSliceBatch([...oversizedIds])">切片选中</button>
+                  <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onSliceBatch([])">全部切片</button>
+                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onDispatchBatch([...oversizedIds])">交给个人号</button>
+                  <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onDispatchBatch([])">全部交给个人号</button>
+                  <hr />
+                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onRemoveOversizedSelected">清除选中</button>
+                  <button type="button" class="danger" :disabled="failedBusy || buckets.oversized.length === 0" @click="onRemoveOversizedAll">全部清除</button>
+                </template>
+                <template v-else>
+                  <button type="button" :disabled="failedBusy || buckets.failed.length === 0" @click="onRetryAll">
+                    {{ retryingAll ? "重试中" : "全部重试" }}
+                  </button>
+                  <button type="button" :disabled="failedBusy || selectedCount === 0" @click="onRemoveSelected">清除选中</button>
+                  <button type="button" class="danger" :disabled="failedBusy || buckets.failed.length === 0" @click="onRemoveAll">全部清除</button>
+                </template>
+              </div>
+            </div>
             <span class="well-count">{{ buckets[column.key].length }}</span>
             <button
               v-if="!isNarrow"
@@ -702,6 +681,55 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+}
+
+.batch-wrap {
+  position: relative;
+}
+
+.batch-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 5;
+  width: 168px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(24, 36, 25, 0.12);
+}
+
+.batch-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 7px 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.batch-menu button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.batch-menu button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.batch-menu button.danger {
+  color: #dc2626;
+}
+
+.batch-menu hr {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  margin: 4px 0;
 }
 
 .well-actions {

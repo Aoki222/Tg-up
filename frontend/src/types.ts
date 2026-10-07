@@ -69,6 +69,10 @@ export interface BoardTask {
   slice_phase: "idle" | "queued" | "cutting" | "released" | "uploading" | "failed" | "blocked";
   /** 按时长平均切时的最少段数。不能再少。 */
   slice_min_parts: number | null;
+  /** 切片分段序号。普通任务和源文件为 null。 */
+  part_index: number | null;
+  /** 切片总段数。 */
+  part_count: number | null;
 }
 
 export interface BoardCounts {

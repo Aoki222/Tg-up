@@ -33,16 +33,14 @@ const mobileTab = ref<"board" | "workers">("board");
 /** 由子组件 WorkerPanel 派发的最新 Worker 快照数组 */
 const workers = ref<WorkerSnapshot[]>([]);
 
-const { items: boardItems, inFlightCount, queueCount, successToday, successTotal } = useTaskBoard();
+const { items: boardItems, inFlightCount, queueCount, successToday } = useTaskBoard();
 
 const SUCCESS_SCOPE_KEY = "uploader.success-scope";
 const { files: unmatchedFiles } = useUnmatchedPolling();
 const unmatchedCount = computed(() => unmatchedFiles.value.length);
 
 const successScope = ref<"today" | "all">(loadSuccessScope());
-const successCount = computed(() =>
-  successScope.value === "today" ? successToday.value : successTotal.value,
-);
+const successCount = computed(() => successToday.value);
 const successOpen = ref(false);
 const successPage = ref(1);
 const successPageSize = 50;
@@ -59,6 +57,7 @@ function loadSuccessScope(): "today" | "all" {
 
 onDeactivated(() => {
   showSessionForm.value = false;
+  successOpen.value = false;
 });
 
 function onSuccessScopeChange(value: "today" | "all"): void {
@@ -130,8 +129,8 @@ const activeWorkersCount = computed(() =>
 const totalWorkersCount = computed(() => workers.value.length);
 
 // 弹窗展开时锁定 body 滚动条，防止页面背景滚动穿透
-watch(showSessionForm, (open) => {
-  document.body.style.overflow = open ? "hidden" : "";
+watch([showSessionForm, successOpen], ([sessionOpen, historyOpen]) => {
+  document.body.style.overflow = sessionOpen || historyOpen ? "hidden" : "";
 });
 
 watch(successCount, () => {
@@ -155,28 +154,13 @@ watch(successCount, () => {
           </svg>
         </div>
         <div class="cell-data">
-          <el-select
-            :model-value="successScope"
-            class="scope-select"
-            size="small"
-            @change="onSuccessScopeChange"
-          >
-            <el-option label="今日成功" value="today" />
-            <el-option label="累计成功" value="all" />
-          </el-select>
-          <span class="success-line">
-            <button
-              type="button"
-              class="success-open"
-              :aria-expanded="successOpen"
-              @click="successOpen ? closeSuccess() : openSuccess()"
-            >
-              <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
-                {{ successCount }} <span class="cell-unit">条</span>
-              </span>
-              <span class="view-mark">查看</span>
-            </button>
-          </span>
+          <span class="cell-label">今日成功</span>
+          <button type="button" class="success-open" :aria-expanded="successOpen" @click="openSuccess">
+            <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
+              {{ successCount }} <span class="cell-unit">条</span>
+            </span>
+            <span class="view-mark">查看</span>
+          </button>
         </div>
       </div>
 
@@ -232,39 +216,6 @@ watch(successCount, () => {
           </span>
         </div>
       </div>
-    </section>
-
-    <section v-if="successOpen" class="success-panel" aria-label="上传成功">
-      <header class="success-head">
-        <h2>上传成功</h2>
-        <button type="button" class="success-close" @click="closeSuccess">关闭</button>
-      </header>
-      <p v-if="successLoading" class="success-empty">正在读取</p>
-      <p v-else-if="successItems.length === 0" class="success-empty">没有成功记录</p>
-      <ul v-else class="success-list">
-        <li v-for="item in successItems" :key="item.id">
-          <span class="success-name" :title="item.file_name">{{ item.file_name }}</span>
-          <span v-if="item.part_label" class="success-part">{{ item.part_label }}</span>
-          <span class="success-meta">
-            <template v-if="item.file_size > 0">{{ formatBytes(item.file_size) }}</template>
-            <template v-if="item.folder_name"> · {{ item.folder_name }}</template>
-            <template v-if="item.finished_at"> · {{ item.finished_at }}</template>
-          </span>
-        </li>
-      </ul>
-      <footer class="success-pager">
-        <button type="button" :disabled="successPage <= 1 || successLoading" @click="shiftSuccessPage(-1)">
-          上一页
-        </button>
-        <span>第 {{ successPage }} / {{ successPages }} 页</span>
-        <button
-          type="button"
-          :disabled="successPage >= successPages || successLoading"
-          @click="shiftSuccessPage(1)"
-        >
-          下一页
-        </button>
-      </footer>
     </section>
 
     <!-- ── 移动端分段视图切换 (仅在窄屏呈现) ── -->
@@ -325,6 +276,58 @@ watch(successCount, () => {
     >
       <div class="session-modal" @click.stop>
         <SessionPanel @close="closeSessionForm" />
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="successOpen" class="session-overlay" @click.self="closeSuccess">
+      <div class="session-modal success-modal" role="dialog" aria-label="上传成功" @click.stop>
+        <header class="success-head">
+          <h2>上传成功</h2>
+          <div class="success-switch">
+            <button
+              type="button"
+              :class="{ on: successScope === 'today' }"
+              @click="onSuccessScopeChange('today')"
+            >
+              今日
+            </button>
+            <button
+              type="button"
+              :class="{ on: successScope === 'all' }"
+              @click="onSuccessScopeChange('all')"
+            >
+              累计
+            </button>
+          </div>
+        </header>
+        <p v-if="successLoading" class="success-empty">正在读取</p>
+        <p v-else-if="successItems.length === 0" class="success-empty">没有成功记录</p>
+        <ul v-else class="success-list">
+          <li v-for="item in successItems" :key="item.id">
+            <span class="success-name" :title="item.file_name">{{ item.file_name }}</span>
+            <span v-if="item.part_label" class="success-part">{{ item.part_label }}</span>
+            <span class="success-meta">
+              <template v-if="item.file_size > 0">{{ formatBytes(item.file_size) }}</template>
+              <template v-if="item.folder_name"> · {{ item.folder_name }}</template>
+              <template v-if="item.finished_at"> · {{ item.finished_at }}</template>
+            </span>
+          </li>
+        </ul>
+        <footer class="success-pager">
+          <button type="button" :disabled="successPage <= 1 || successLoading" @click="shiftSuccessPage(-1)">
+            上一页
+          </button>
+          <span>第 {{ successPage }} / {{ successPages }} 页</span>
+          <button
+            type="button"
+            :disabled="successPage >= successPages || successLoading"
+            @click="shiftSuccessPage(1)"
+          >
+            下一页
+          </button>
+        </footer>
       </div>
     </div>
   </Teleport>
@@ -491,13 +494,34 @@ watch(successCount, () => {
   border-color: rgba(0, 0, 0, 0.16);
 }
 
-.success-panel {
-  margin-top: 12px;
+.success-modal {
+  width: min(640px, 100%);
+  padding: 16px 16px 12px;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
-  padding: 14px 16px 12px;
+}
+
+.success-switch {
+  display: flex;
+  background: #f3f5f3;
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.success-switch button {
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.success-switch button.on {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .success-head {

@@ -78,6 +78,8 @@ export function useTaskBoard() {
       sliceable: false,
       slice_phase: "idle",
       slice_min_parts: null,
+      part_index: null,
+      part_count: null,
     };
   }
 

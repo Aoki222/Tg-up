@@ -72,6 +72,11 @@ function showContinue(item: BoardTask): boolean {
   return item.slice_phase === "failed";
 }
 
+function partLabel(item: BoardTask): string {
+  if (item.status === "oversized" || !item.part_index || !item.part_count) return "";
+  return `第 ${item.part_index}/${item.part_count} 段`;
+}
+
 function speedLabel(item: BoardTask): string {
   // 还没凑满一个测速窗口时速度是 0，显示测算中，不写成 0 B/s。
   if (item.speed_bps > 0) return formatSpeed(item.speed_bps);
@@ -85,7 +90,10 @@ function speedLabel(item: BoardTask): string {
       <label v-if="selectable" class="pick" @click.stop>
         <input type="checkbox" :checked="selected" @change="emit('toggle', task.id)" />
       </label>
-      <div class="name" :title="task.file_name">{{ task.file_name }}</div>
+      <div class="name-block">
+        <div class="name" :title="task.file_name">{{ task.file_name }}</div>
+        <span v-if="partLabel(task)" class="part-chip">{{ partLabel(task) }}</span>
+      </div>
     </div>
     <div class="meta">
       <span v-if="task.file_size > 0">{{ formatBytes(task.file_size) }}</span>
@@ -246,6 +254,11 @@ function speedLabel(item: BoardTask): string {
   accent-color: var(--accent);
 }
 
+.name-block {
+  min-width: 0;
+  flex: 1;
+}
+
 .name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -254,7 +267,16 @@ function speedLabel(item: BoardTask): string {
   font-weight: 600;
   color: var(--text);
   min-width: 0;
-  flex: 1;
+}
+
+.part-chip {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
 }
 
 .meta {

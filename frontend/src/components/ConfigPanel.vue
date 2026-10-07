@@ -11,7 +11,7 @@
  * 3. 【多监听目录健康诊断】：展示各个监听目录的存在性与读取权限状态。
  */
 
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useQueryClient } from "@tanstack/vue-query";
 import { fetchDialogChats, fetchFsNodes, fetchSettings, saveSettings, syncDialogChats } from "../api";
@@ -116,11 +116,23 @@ const addingChat = ref(false);
 const dialogChats = ref<DialogChat[]>([]);
 const dialogReason = ref("");
 const chatQuery = ref("");
-const editingPath = ref("");
 const stylePath = ref("");
+const styleDest = ref("");
 const styleCaptionMode = ref<"inherit" | "none" | "custom">("inherit");
 const styleCaption = ref("");
 const stylePreview = ref<"inherit" | "off" | "first_frame" | "grid">("inherit");
+const captionBox = ref<{ textarea?: HTMLTextAreaElement } | null>(null);
+
+const CAPTION_CHIPS = [
+  { label: "文件名", token: "{file_name}" },
+  { label: "主文件名", token: "{stem}" },
+  { label: "后缀", token: "{ext}" },
+  { label: "所在目录", token: "{folder}" },
+  { label: "相对路径", token: "{rel_path}" },
+  { label: "路由名", token: "{route}" },
+  { label: "大小", token: "{size}" },
+  { label: "日期", token: "{date}" },
+] as const;
 
 function samePath(left: string, right: string): boolean {
   // 统一斜杠、去掉末尾分隔符并忽略大小写，用于匹配目录路由。
@@ -163,7 +175,6 @@ function setPathDest(path: string, key: string): void {
   const index = form.routes.findIndex((item) => samePath(item.path, path));
   if (!key) {
     if (index >= 0) form.routes.splice(index, 1);
-    editingPath.value = "";
     return;
   }
   const next = key.startsWith("gd:")
@@ -182,13 +193,46 @@ function setPathDest(path: string, key: string): void {
       ...next,
     });
   }
-  editingPath.value = "";
 }
 
-function openRouteStyle(path: string): void {
-  const route = form.routes.find((item) => samePath(item.path, path));
-  if (!route) return;
-  if (route.caption_template == null) {
+function folderTail(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] || path;
+}
+
+function captionWord(path: string): string {
+  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
+  if (!route || route.caption_template == null) return "跟随";
+  if (route.caption_template === "") return "不要说明";
+  return "自己写";
+}
+
+function previewWord(path: string): string {
+  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
+  const mode = route?.preview;
+  if (mode === "off") return "关闭";
+  if (mode === "first_frame") return "首帧";
+  if (mode === "grid") return "网格";
+  return "跟随";
+}
+
+function routeSummary(data: FsNode): string {
+  if (hasExplicitRoute(data.path)) {
+    return `专属 · ${pathDestLabel(data.path)} · 说明：${captionWord(data.path)} · 封面：${previewWord(data.path)}`;
+  }
+  if (data.current_route?.matched) {
+    const from = data.current_route.inherited_from
+      ? folderTail(data.current_route.inherited_from)
+      : data.current_route.dest_name || "上级";
+    return `继承自 ${from} · 说明：跟随 · 封面：跟随`;
+  }
+  return "未命中";
+}
+
+function readRouteStyle(path: string): void {
+  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
+  styleDest.value = pathDestKey(path);
+  if (!route || route.caption_template == null) {
     styleCaptionMode.value = "inherit";
     styleCaption.value = "";
   } else if (route.caption_template === "") {
@@ -198,12 +242,88 @@ function openRouteStyle(path: string): void {
     styleCaptionMode.value = "custom";
     styleCaption.value = route.caption_template;
   }
-  stylePreview.value = route.preview ?? "inherit";
+  stylePreview.value = route?.preview ?? "inherit";
+}
+
+function openRouteSettings(path: string): void {
+  readRouteStyle(path);
   stylePath.value = path;
 }
 
-function applyRouteStyle(): void {
-  const route = form.routes.find((item) => samePath(item.path, stylePath.value));
+function chipOn(token: string): boolean {
+  return styleCaption.value.includes(token);
+}
+
+async function toggleChip(token: string): Promise<void> {
+  const current = styleCaption.value;
+  if (current.includes(token)) {
+    styleCaption.value = current
+      .split(token)
+      .join("")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\s+\/\s+/g, " / ")
+      .trim();
+    return;
+  }
+  const box = captionBox.value?.textarea;
+  if (box && document.activeElement === box) {
+    const start = box.selectionStart ?? current.length;
+    const end = box.selectionEnd ?? start;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const pad = before && !/\s$/.test(before) ? " " : "";
+    styleCaption.value = `${before}${pad}${token}${after}`;
+    await nextTick();
+    const pos = (before + pad + token).length;
+    box.focus();
+    box.setSelectionRange(pos, pos);
+    return;
+  }
+  styleCaption.value = current ? `${current} ${token}` : token;
+}
+
+const stylePreviewText = computed(() => {
+  const folder = folderTail(stylePath.value) || "目录";
+  const sample: Record<string, string> = {
+    file_name: "电影.mp4",
+    stem: "电影",
+    ext: "mp4",
+    folder,
+    rel_path: "电影.mp4",
+    route: folder,
+    size: "1.4 GB",
+    date: new Date().toISOString().slice(0, 10),
+  };
+  const template = styleCaption.value;
+  if (!template.trim()) return "不写说明";
+  let position = 0;
+  let text = "";
+  const pattern = /\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  for (const match of template.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    text += template.slice(position, index);
+    const token = match[0];
+    const name = match[1];
+    if (token === "{{") text += "{";
+    else if (token === "}}") text += "}";
+    else if (name && name in sample) text += sample[name];
+    else text += token;
+    position = index + token.length;
+  }
+  text += template.slice(position);
+  return text.trim() || "不写说明";
+});
+
+function applyRouteSettings(): void {
+  const path = stylePath.value;
+  if (!path) return;
+  if (!styleDest.value) {
+    setPathDest(path, "");
+    stylePath.value = "";
+    return;
+  }
+  setPathDest(path, styleDest.value);
+  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
   if (!route) {
     stylePath.value = "";
     return;
@@ -448,7 +568,7 @@ defineExpose({ dirty });
           <span class="section-title">映射目录与文件路由</span>
           <el-button size="small" @click="refreshAllFsNodes">全部刷新</el-button>
         </div>
-        <p class="route-hint">可展开子目录查看内部文件；未配置专属目标的子目录默认继承上级规则。未命中规则的文件不会上传。</p>
+        <p class="route-hint">每个目录一行状态。目标、说明和封面都在「设置」里改。未命中规则的文件不会上传。</p>
         <div v-if="form.observer_paths.length === 0" class="route-empty">请先在「监听」里添加目录。</div>
         <div v-else class="fs-tree-wrapper">
           <el-tree
@@ -461,14 +581,19 @@ defineExpose({ dirty });
           >
             <template #default="{ node, data }">
               <div class="tree-node-row">
-                <div class="node-left">
+                <div class="node-left" :class="{ 'is-dir': data.is_dir }">
                   <span v-if="data.is_dir" class="node-icon">📂</span>
-                  <span class="node-name" :class="{ 'is-root': data.is_root }" :title="data.path">
-                    {{ data.name }}
-                  </span>
-                  
-                  <span v-if="data.is_root" class="node-badge root-badge">监控根目录</span>
-
+                  <div class="node-copy">
+                    <div class="node-title">
+                      <span class="node-name" :class="{ 'is-root': data.is_root }" :title="data.path">
+                        {{ data.name }}
+                      </span>
+                      <span v-if="data.is_root" class="node-badge root-badge">监控根目录</span>
+                    </div>
+                    <div v-if="data.is_dir" class="node-sub" :class="{ miss: routeSummary(data) === '未命中' }">
+                      {{ routeSummary(data) }}
+                    </div>
+                  </div>
                   <template v-if="!data.is_dir">
                     <span class="file-size">{{ formatBytes(data.size || 0) }}</span>
                     <span v-if="!data.supported_ext" class="file-ext-unsupported">未监听格式</span>
@@ -481,81 +606,26 @@ defineExpose({ dirty });
                 </div>
 
                 <div v-if="data.is_dir" class="node-right" @click.stop>
-                  <template v-if="editingPath === data.path">
-                    <el-select
-                      class="path-select"
-                      :model-value="pathDestKey(data.path)"
-                      size="small"
-                      @change="(value: string) => setPathDest(data.path, value)"
-                    >
-                      <el-option label="跟随父级目录" value="" />
-                      <el-option-group v-if="form.chats.length" label="Telegram">
-                        <el-option
-                          v-for="chat in form.chats"
-                          :key="chat.chat_id"
-                          :label="chatLabel(chat.chat_id)"
-                          :value="`tg:${chat.chat_id}`"
-                        />
-                      </el-option-group>
-                      <el-option-group v-if="ENABLE_GOOGLE_DRIVE && form.drive_folders.length" label="Google Drive">
-                        <el-option
-                          v-for="folder in form.drive_folders"
-                          :key="folder.folder_id"
-                          :label="folder.name.trim() || folder.folder_id"
-                          :value="`gd:${folder.folder_id}`"
-                        />
-                      </el-option-group>
-                    </el-select>
-                    <el-button size="small" text @click="editingPath = ''">取消</el-button>
-                  </template>
-                  <template v-else>
-                    <span
-                      v-if="hasExplicitRoute(data.path)"
-                      class="route-pill explicit"
-                      title="已为此目录配置专属规则"
-                    >
-                      专属: {{ pathDestLabel(data.path) }}
-                    </span>
-                    <span
-                      v-else-if="data.current_route?.matched"
-                      class="route-pill inherited"
-                      title="继承自上级目录规则"
-                    >
-                      继承: {{ data.current_route.dest_name || pathDestLabel(data.path) }}
-                    </span>
-                    <span v-else class="route-pill unmatched">未命中</span>
-
-                    <el-button size="small" text @click="editingPath = data.path">
-                      {{ hasExplicitRoute(data.path) ? '修改' : '自定义目标' }}
-                    </el-button>
-                    <el-button
-                      v-if="hasExplicitRoute(data.path)"
-                      size="small"
-                      text
-                      @click="openRouteStyle(data.path)"
-                    >
-                      说明与封面
-                    </el-button>
-                    <el-button
-                      v-if="hasExplicitRoute(data.path) && !data.is_root"
-                      size="small"
-                      text
-                      type="danger"
-                      title="清除专属规则，恢复跟随父级"
-                      @click="setPathDest(data.path, '')"
-                    >
-                      恢复继承
-                    </el-button>
-                    <el-button
-                      size="small"
-                      text
-                      class="btn-refresh"
-                      title="刷新此目录"
-                      @click="refreshFsNode(node, data)"
-                    >
-                      🔄
-                    </el-button>
-                  </template>
+                  <el-button size="small" @click="openRouteSettings(data.path)">设置</el-button>
+                  <el-button
+                    v-if="hasExplicitRoute(data.path) && !data.is_root"
+                    size="small"
+                    text
+                    type="danger"
+                    title="清除专属规则，恢复跟随父级"
+                    @click="setPathDest(data.path, '')"
+                  >
+                    恢复继承
+                  </el-button>
+                  <el-button
+                    size="small"
+                    text
+                    class="btn-refresh"
+                    title="刷新此目录"
+                    @click="refreshFsNode(node, data)"
+                  >
+                    🔄
+                  </el-button>
                 </div>
               </div>
             </template>
@@ -662,13 +732,35 @@ defineExpose({ dirty });
 
     <el-dialog
       :model-value="stylePath !== ''"
-      title="说明与封面"
-      width="440px"
+      title="目录设置"
+      width="480px"
       append-to-body
       @close="stylePath = ''"
     >
-      <p class="route-hint">没写就沿目录往上找。都没写时，说明用默认说明，封面用上面的封面模式。</p>
+      <p class="route-hint">{{ stylePath }}</p>
       <el-form label-position="top">
+        <el-form-item label="投递目标">
+          <el-select v-model="styleDest" class="grow" placeholder="跟随父级">
+            <el-option label="跟随父级" value="" />
+            <el-option-group v-if="form.chats.length" label="Telegram">
+              <el-option
+                v-for="chat in form.chats"
+                :key="chat.chat_id"
+                :label="chatLabel(chat.chat_id)"
+                :value="`tg:${chat.chat_id}`"
+              />
+            </el-option-group>
+            <el-option-group v-if="ENABLE_GOOGLE_DRIVE && form.drive_folders.length" label="Google Drive">
+              <el-option
+                v-for="folder in form.drive_folders"
+                :key="folder.folder_id"
+                :label="folder.name.trim() || folder.folder_id"
+                :value="`gd:${folder.folder_id}`"
+              />
+            </el-option-group>
+          </el-select>
+          <p v-if="!styleDest" class="route-hint">跟随父级会去掉这个目录自己的说明和封面。</p>
+        </el-form-item>
         <el-form-item label="说明">
           <el-select v-model="styleCaptionMode" class="grow">
             <el-option label="跟随上一级" value="inherit" />
@@ -678,12 +770,27 @@ defineExpose({ dirty });
         </el-form-item>
         <el-form-item v-if="styleCaptionMode === 'custom'" label="说明模板">
           <el-input
+            ref="captionBox"
             v-model="styleCaption"
             type="textarea"
             :rows="3"
             maxlength="2000"
-            placeholder="{folder} {stem}"
+            placeholder="{folder} / {stem}"
           />
+          <div class="caption-chips">
+            <button
+              v-for="chip in CAPTION_CHIPS"
+              :key="chip.token"
+              type="button"
+              class="caption-chip"
+              :class="{ on: chipOn(chip.token) }"
+              @mousedown.prevent
+              @click="toggleChip(chip.token)"
+            >
+              {{ chip.label }}
+            </button>
+          </div>
+          <p class="route-hint">预览　{{ stylePreviewText }}</p>
         </el-form-item>
         <el-form-item label="封面">
           <el-select v-model="stylePreview" class="grow">
@@ -692,11 +799,12 @@ defineExpose({ dirty });
             <el-option label="首帧截图" value="first_frame" />
             <el-option label="网格缩略图" value="grid" />
           </el-select>
+          <p class="route-hint">没写时用处理页的封面模式。一路往上都没写说明时，用处理页的默认说明。</p>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="stylePath = ''">取消</el-button>
-        <el-button type="primary" @click="applyRouteStyle">保存</el-button>
+        <el-button type="primary" @click="applyRouteSettings">保存</el-button>
       </template>
     </el-dialog>
 
@@ -1029,6 +1137,56 @@ defineExpose({ dirty });
   gap: 8px;
   min-width: 0;
   flex: 1;
+}
+
+.node-left.is-dir {
+  align-items: flex-start;
+}
+
+.node-copy {
+  min-width: 0;
+}
+
+.node-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.node-sub {
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.node-sub.miss {
+  color: #dc2626;
+}
+
+.caption-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.caption-chip {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.caption-chip.on {
+  background: var(--accent-soft);
+  border-color: rgba(40, 153, 90, 0.35);
+  color: var(--accent);
 }
 
 .node-icon {

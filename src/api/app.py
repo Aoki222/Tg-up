@@ -1133,6 +1133,14 @@ def _sse(progress: UploadProgress) -> str:
     return f"event: progress\ndata: {json.dumps(progress.to_dict(), ensure_ascii=False)}\n\n"
 
 
+def _part_number(value: object) -> int | None:
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _board_item(row: dict, progress: UploadProgress | None) -> dict:
     status = str(row.get("status") or "pending")
     if status == "retrying":
@@ -1161,6 +1169,8 @@ def _board_item(row: dict, progress: UploadProgress | None) -> dict:
         "sliceable": False,
         "slice_phase": "idle",
         "slice_min_parts": None,
+        "part_index": _part_number(row.get("part_index")),
+        "part_count": _part_number(row.get("part_count")),
     }
     if status == "oversized":
         sliceable = is_sliceable_video(str(row.get("file_name") or row.get("file_path") or ""))
