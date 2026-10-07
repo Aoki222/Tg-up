@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+from src.database.connection import pool_is_open
 from src.utils.topic_creactor import TopicCreator, TopicSessionUnavailable
 
 
@@ -69,6 +70,7 @@ async def test_same_folder_creates_once(tmp_path: Path) -> None:
     ids = await asyncio.gather(first, second)
     assert ids == [1, 1]
     assert client.creates == 1
+    assert pool_is_open() is False
 
 
 async def test_different_folders_create_in_parallel(tmp_path: Path) -> None:

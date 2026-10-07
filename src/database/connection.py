@@ -75,6 +75,11 @@ async def _close_pool_locked() -> None:
             logger.exception("关闭 SQLite 连接失败")
 
 
+def pool_is_open() -> bool:
+    """连接池是否已经由启动流程打开。单测不应被顺带拉起。"""
+    return _pool is not None
+
+
 async def close_pool() -> None:
     async with _lock():
         await _close_pool_locked()

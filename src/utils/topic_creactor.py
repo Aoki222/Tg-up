@@ -18,6 +18,7 @@ from telethon.tl.functions.messages import CreateForumTopicRequest
 
 from ..adapters.db.topics import upsert_topic
 from ..adapters.task_store import TaskRepository
+from ..database.connection import pool_is_open
 from ..logger import get_logger
 
 logger = get_logger(__name__)
@@ -96,10 +97,12 @@ class TopicCreator:
                 )
                 topic_id = self._extract_topic_id(result)
                 await self.task_repository.save_chat_topic(chat_id, topic_id, topic_path)
-                try:
-                    await upsert_topic("", chat_id, topic_id, folder_name)
-                except Exception:
-                    logger.debug("话题名单未写入 chat=%s topic=%s", chat_id, topic_id, exc_info=True)
+                # 正式进程里连接池已打开，顺手写入话题名单。单测没有库，不能在这里打开池。
+                if pool_is_open():
+                    try:
+                        await upsert_topic("", chat_id, topic_id, folder_name)
+                    except Exception:
+                        logger.debug("话题名单未写入 chat=%s topic=%s", chat_id, topic_id, exc_info=True)
                 logger.info("已创建群组话题 chat_id=%s topic_id=%s path=%s", chat_id, topic_id, topic_path)
                 return topic_id
         finally:
