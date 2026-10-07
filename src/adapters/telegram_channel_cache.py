@@ -32,7 +32,7 @@ class TelegramChannelCache:
         """启动时一次性读取本地表，之后 API 直接读取内存。"""
         async with get_db() as db:
             async with db.execute(
-                """SELECT account_name, chat_id, title, type, username, is_active
+                """SELECT account_name, chat_id, title, type, username, is_active, forum
                    FROM telegram_channels
                    ORDER BY title COLLATE NOCASE, chat_id"""
             ) as cursor:
@@ -108,6 +108,7 @@ class TelegramChannelCache:
                 "title": getattr(entity, "title", None) or "",
                 "type": "channel" if isinstance(entity, Channel) and not getattr(entity, "megagroup", False) else "group",
                 "username": getattr(entity, "username", None) or "",
+                "forum": bool(getattr(entity, "forum", False)),
             },
         )
 
@@ -120,18 +121,20 @@ class TelegramChannelCache:
             "type": str(item.get("type") or "group"),
             "username": str(item.get("username") or ""),
             "is_active": bool(item.get("is_active", True)),
+            "forum": bool(item.get("forum", False)),
         }
         async with self._lock:
             async with get_db() as db:
                 await db.execute(
                     """INSERT INTO telegram_channels
-                       (account_name, chat_id, title, type, username, is_active)
-                       VALUES (?, ?, ?, ?, ?, ?)
+                       (account_name, chat_id, title, type, username, is_active, forum)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(account_name, chat_id) DO UPDATE SET
                            title = excluded.title,
                            type = excluded.type,
                            username = excluded.username,
                            is_active = excluded.is_active,
+                           forum = excluded.forum,
                            updated_at = CURRENT_TIMESTAMP,
                            synced_at = CURRENT_TIMESTAMP""",
                     (
@@ -141,6 +144,7 @@ class TelegramChannelCache:
                         normalized["type"],
                         normalized["username"],
                         int(normalized["is_active"]),
+                        int(normalized["forum"]),
                     ),
                 )
                 await db.commit()
@@ -173,6 +177,7 @@ class TelegramChannelCache:
                 "type": str(item.get("type") or "group"),
                 "username": str(item.get("username") or ""),
                 "is_active": True,
+                "forum": bool(item.get("forum", False)),
             }
             normalized_items.append(normalized)
             memory_items[chat_id] = normalized
@@ -185,13 +190,14 @@ class TelegramChannelCache:
             )
             await db.executemany(
                 """INSERT INTO telegram_channels
-                   (account_name, chat_id, title, type, username, is_active)
-                   VALUES (?, ?, ?, ?, ?, 1)
+                   (account_name, chat_id, title, type, username, is_active, forum)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)
                    ON CONFLICT(account_name, chat_id) DO UPDATE SET
                        title = excluded.title,
                        type = excluded.type,
                        username = excluded.username,
                        is_active = 1,
+                       forum = excluded.forum,
                            updated_at = CURRENT_TIMESTAMP,
                            synced_at = CURRENT_TIMESTAMP""",
                 [
@@ -201,6 +207,7 @@ class TelegramChannelCache:
                         item["title"],
                         item["type"],
                         item["username"],
+                        int(item["forum"]),
                     )
                     for item in normalized_items
                 ],
@@ -217,4 +224,5 @@ class TelegramChannelCache:
             "type": str(row[3] or "group"),
             "username": str(row[4] or ""),
             "is_active": bool(row[5]),
+            "forum": bool(row[6]) if len(row) > 6 else False,
         }

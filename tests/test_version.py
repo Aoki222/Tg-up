@@ -56,16 +56,16 @@ def test_latest_channel_does_not_fall_back_to_main(monkeypatch: pytest.MonkeyPat
         calls.append(ref)
         return None
 
-    monkeypatch.setattr("src.api.app._ghcr_revision", ghcr)
-    monkeypatch.setattr("src.api.app._github_commit", github)
+    monkeypatch.setattr("src.api.version._ghcr_revision", ghcr)
+    monkeypatch.setattr("src.api.version._github_commit", github)
     assert _fetch_remote_release_sync("latest") is None
     assert calls == ["latest"]
 
 
 def test_staging_channel_falls_back_to_main(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("src.api.app._ghcr_revision", lambda tag: None)
+    monkeypatch.setattr("src.api.version._ghcr_revision", lambda tag: None)
     monkeypatch.setattr(
-        "src.api.app._github_commit",
+        "src.api.version._github_commit",
         lambda ref: {"sha": "abc1234567890", "commit": {"message": "feat"}, "html_url": "https://example"}
         if ref == "main"
         else None,
@@ -83,7 +83,7 @@ async def test_version_local_dev(monkeypatch: pytest.MonkeyPatch) -> None:
     app = create_api(ProgressHub())
     endpoint = _route(app, "/api/system/version", "GET")
 
-    with patch("src.api.app._fetch_remote_release_sync", side_effect=RuntimeError("should not be called")):
+    with patch("src.api.version._fetch_remote_release_sync", side_effect=RuntimeError("should not be called")):
         data = await endpoint()
         assert data["current_version"] == "dev"
         assert data["remote_version"] is None
@@ -105,7 +105,7 @@ async def test_version_has_update(monkeypatch: pytest.MonkeyPatch) -> None:
         "commit": {"message": "fix: critical bug\n\nmore details"},
         "html_url": "https://github.com/Aoki222/Tg-up/commit/9999999888888877777776666666555555544444",
     }
-    with patch("src.api.app._fetch_remote_release_sync", return_value=mock_remote) as fetch:
+    with patch("src.api.version._fetch_remote_release_sync", return_value=mock_remote) as fetch:
         data = await endpoint()
         fetch.assert_called_once_with("latest")
         assert data["current_version"] == "1111111"
@@ -130,7 +130,7 @@ async def test_version_staging_channel(monkeypatch: pytest.MonkeyPatch) -> None:
         "commit": {"message": "release 1.0"},
         "html_url": f"https://github.com/Aoki222/Tg-up/commit/{sha}",
     }
-    with patch("src.api.app._fetch_remote_release_sync", return_value=mock_remote) as fetch:
+    with patch("src.api.version._fetch_remote_release_sync", return_value=mock_remote) as fetch:
         data = await endpoint()
         fetch.assert_called_once_with("staging")
         assert data["current_version"] == sha[:7]
@@ -153,7 +153,7 @@ async def test_version_staging_with_update_has_update_priority(monkeypatch: pyte
         "commit": {"message": "new commit on main"},
         "html_url": "https://github.com/Aoki222/Tg-up/commit/9999999888888877777776666666555555544444",
     }
-    with patch("src.api.app._fetch_remote_release_sync", return_value=mock_remote):
+    with patch("src.api.version._fetch_remote_release_sync", return_value=mock_remote):
         data = await endpoint()
         assert data["has_update"] is True
         assert data["channel"] == "staging"
@@ -174,7 +174,7 @@ async def test_version_up_to_date_latest(monkeypatch: pytest.MonkeyPatch) -> Non
         "commit": {"message": "release 1.0"},
         "html_url": f"https://github.com/Aoki222/Tg-up/commit/{sha}",
     }
-    with patch("src.api.app._fetch_remote_release_sync", return_value=mock_remote):
+    with patch("src.api.version._fetch_remote_release_sync", return_value=mock_remote):
         data = await endpoint()
         assert data["current_version"] == sha[:7]
         assert data["remote_version"] == sha[:7]
@@ -191,7 +191,7 @@ async def test_version_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
     app = create_api(ProgressHub())
     endpoint = _route(app, "/api/system/version", "GET")
 
-    with patch("src.api.app._fetch_remote_release_sync", return_value=None):
+    with patch("src.api.version._fetch_remote_release_sync", return_value=None):
         data = await endpoint()
         assert data["current_version"] == "abcdef1"
         assert data["remote_version"] is None
@@ -217,7 +217,7 @@ async def test_version_cache_hit(monkeypatch: pytest.MonkeyPatch) -> None:
     app = create_api(ProgressHub())
     endpoint = _route(app, "/api/system/version", "GET")
 
-    with patch("src.api.app._fetch_remote_release_sync", side_effect=RuntimeError("should not be called")):
+    with patch("src.api.version._fetch_remote_release_sync", side_effect=RuntimeError("should not be called")):
         data = await endpoint()
         assert data["current_version"] == "abcdef1"
         assert data["has_update"] is True

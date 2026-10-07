@@ -30,6 +30,8 @@ class FolderRoutePayload(BaseModel):
     dest_id: str = ""
     caption_template: str | None = None
     preview: Literal["off", "first_frame", "grid"] | None = None
+    topic_mode: Literal["off", "auto", "fixed"] | None = None
+    topic_id: int | None = None
 
     @field_validator("path")
     @classmethod

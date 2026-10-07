@@ -73,6 +73,8 @@ class SessionPool:
         self.api_hash = (api_hash or "").strip()
         self.clients: dict[str, TelegramClient] = {}
         self.usernames: dict[str, str | None] = {}
+        # user 或 bot。管理群和话题时只使用 user。
+        self.kinds: dict[str, str] = {}
         self.reconnect: dict[str, ReconnectStatus] = {}
         self._name_locks: dict[str, asyncio.Lock] = {}
         self._dict_lock = asyncio.Lock()
@@ -205,6 +207,7 @@ class SessionPool:
             username = getattr(current_user, "username", None)
             self.clients[name] = client
             self.usernames[name] = username
+            self.kinds[name] = "bot" if getattr(current_user, "bot", False) else "user"
             status.attempt = 0
             status.error = ""
             status.next_at = 0.0
@@ -233,6 +236,7 @@ class SessionPool:
         """从池里拿掉并 disconnect。Application 会先停对应 Worker。"""
         client = self.clients.pop(name, None)
         self.usernames.pop(name, None)
+        self.kinds.pop(name, None)
         self.reconnect.pop(name, None)
         if client is None:
             return

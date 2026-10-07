@@ -150,6 +150,8 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
       dest_id: item.dest_id || (item.chat_id ? String(item.chat_id) : ""),
       caption_template: item.caption_template ?? null,
       preview: item.preview ?? null,
+      topic_mode: item.topic_mode ?? null,
+      topic_id: item.topic_id ?? null,
     })),
     chats: (data.chats ?? []).map((item) => ({
       chat_id: item.chat_id,
@@ -165,6 +167,37 @@ export interface DialogChat {
   id: number;
   title: string;
   type: "group" | "channel";
+  forum?: boolean;
+}
+
+export interface ForumTopic {
+  topic_id: number;
+  title: string;
+}
+
+export async function fetchChatTopics(
+  chatId: number,
+  refresh = false,
+): Promise<{ forum: boolean; topics: ForumTopic[]; reason: string }> {
+  const res = await apiClient.get<{
+    forum: boolean;
+    topics: ForumTopic[];
+    reason?: string;
+  }>(`/api/chats/${chatId}/topics`, { params: { refresh: refresh ? 1 : 0 } });
+  return { forum: res.data.forum, topics: res.data.topics ?? [], reason: res.data.reason || "" };
+}
+
+export async function createChatTopic(chatId: number, title: string): Promise<ForumTopic> {
+  const res = await apiClient.post<ForumTopic>(`/api/chats/${chatId}/topics`, { title });
+  return res.data;
+}
+
+export async function renameChatTopic(chatId: number, topicId: number, title: string): Promise<void> {
+  await apiClient.patch(`/api/chats/${chatId}/topics/${topicId}`, { title });
+}
+
+export async function deleteChatTopic(chatId: number, topicId: number): Promise<void> {
+  await apiClient.delete(`/api/chats/${chatId}/topics/${topicId}`);
 }
 
 export async function fetchDialogChats(): Promise<{

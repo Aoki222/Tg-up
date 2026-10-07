@@ -14,8 +14,18 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useQueryClient } from "@tanstack/vue-query";
-import { fetchDialogChats, fetchFsNodes, fetchSettings, saveSettings, syncDialogChats } from "../api";
-import type { DialogChat } from "../api";
+import {
+  createChatTopic,
+  deleteChatTopic,
+  fetchChatTopics,
+  fetchDialogChats,
+  fetchFsNodes,
+  fetchSettings,
+  renameChatTopic,
+  saveSettings,
+  syncDialogChats,
+} from "../api";
+import type { DialogChat, ForumTopic } from "../api";
 import type { FsNode, UploadConfig } from "../types";
 import { formatBytes } from "../format";
 import { ENABLE_GOOGLE_DRIVE } from "../features";
@@ -81,6 +91,8 @@ function snapshotOf(config: UploadConfig): string {
         topic_enabled: item.topic_enabled,
         caption_template: item.caption_template ?? null,
         preview: item.preview ?? null,
+        topic_mode: item.topic_mode ?? null,
+        topic_id: item.topic_id ?? null,
         enabled: item.enabled !== false,
         platform: item.platform || "telegram",
         dest_id: item.dest_id || (item.chat_id ? String(item.chat_id) : ""),
@@ -121,6 +133,17 @@ const styleDest = ref("");
 const styleCaptionMode = ref<"inherit" | "none" | "custom">("inherit");
 const styleCaption = ref("");
 const stylePreview = ref<"inherit" | "off" | "first_frame" | "grid">("inherit");
+const styleTopicMode = ref<"inherit" | "off" | "auto" | "fixed">("inherit");
+const styleTopicId = ref<number | null>(null);
+const styleTopics = ref<ForumTopic[]>([]);
+const topicChatId = ref<number | null>(null);
+const topicItems = ref<ForumTopic[]>([]);
+const topicTitle = ref("");
+const topicRenameId = ref<number | null>(null);
+const topicRenameTitle = ref("");
+const topicLoading = ref(false);
+const topicForum = ref(true);
+const topicReason = ref("");
 const captionBox = ref<{ textarea?: HTMLTextAreaElement } | null>(null);
 
 const CAPTION_CHIPS = [
@@ -189,44 +212,35 @@ function setPathDest(path: string, key: string): void {
       topic_enabled: null,
       caption_template: null,
       preview: null,
+      topic_mode: null,
+      topic_id: null,
       enabled: true,
       ...next,
     });
   }
 }
 
+
 function folderTail(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
 }
 
-function captionWord(path: string): string {
-  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
-  if (!route || route.caption_template == null) return "跟随";
-  if (route.caption_template === "") return "不要说明";
-  return "自己写";
-}
-
-function previewWord(path: string): string {
-  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
-  const mode = route?.preview;
-  if (mode === "off") return "关闭";
-  if (mode === "first_frame") return "首帧";
-  if (mode === "grid") return "网格";
-  return "跟随";
-}
-
-function routeSummary(data: FsNode): string {
+function getDirDestLabel(data: FsNode): string {
   if (hasExplicitRoute(data.path)) {
-    return `专属 · ${pathDestLabel(data.path)} · 说明：${captionWord(data.path)} · 封面：${previewWord(data.path)}`;
+    const lbl = pathDestLabel(data.path);
+    return lbl !== "未命中" ? lbl : "未分配群组";
   }
   if (data.current_route?.matched) {
-    const from = data.current_route.inherited_from
-      ? folderTail(data.current_route.inherited_from)
-      : data.current_route.dest_name || "上级";
-    return `继承自 ${from} · 说明：跟随 · 封面：跟随`;
+    if (data.current_route.dest_name) {
+      return data.current_route.dest_name;
+    }
+    if (data.current_route.chat_id) {
+      return chatLabel(data.current_route.chat_id);
+    }
+    return "默认目标";
   }
-  return "未命中";
+  return "未分配群组";
 }
 
 function readRouteStyle(path: string): void {
@@ -243,6 +257,9 @@ function readRouteStyle(path: string): void {
     styleCaption.value = route.caption_template;
   }
   stylePreview.value = route?.preview ?? "inherit";
+  styleTopicMode.value = route?.topic_mode ?? "inherit";
+  styleTopicId.value = route?.topic_id ?? null;
+  void loadStyleTopics();
 }
 
 function openRouteSettings(path: string): void {
@@ -332,7 +349,101 @@ function applyRouteSettings(): void {
   else if (styleCaptionMode.value === "none") route.caption_template = "";
   else route.caption_template = styleCaption.value.slice(0, 2000);
   route.preview = stylePreview.value === "inherit" ? null : stylePreview.value;
+  if (styleTopicMode.value === "inherit") {
+    route.topic_mode = null;
+    route.topic_id = null;
+  } else if (styleTopicMode.value === "fixed") {
+    route.topic_mode = "fixed";
+    route.topic_id = styleTopicId.value;
+  } else {
+    route.topic_mode = styleTopicMode.value;
+    route.topic_id = null;
+  }
   stylePath.value = "";
+}
+
+function topicWord(path: string): string {
+  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
+  if (!route || route.topic_mode == null) return "话题：跟随";
+  if (route.topic_mode === "off") return "话题：不使用";
+  if (route.topic_mode === "auto") return "话题：按文件夹名";
+  const named = styleTopics.value.find((item) => item.topic_id === route.topic_id);
+  return named ? `话题：${named.title}` : "话题：已指定";
+}
+
+function styleChatId(): number | null {
+  if (!styleDest.value.startsWith("tg:")) return null;
+  const id = Number(styleDest.value.slice(3));
+  return Number.isFinite(id) ? id : null;
+}
+
+async function loadStyleTopics(): Promise<void> {
+  const chatId = styleChatId();
+  styleTopics.value = [];
+  if (chatId == null) return;
+  try {
+    const data = await fetchChatTopics(chatId, false);
+    styleTopics.value = data.forum ? data.topics : [];
+    if (!data.forum) styleTopicMode.value = styleTopicMode.value === "fixed" || styleTopicMode.value === "auto" ? "off" : styleTopicMode.value;
+  } catch {
+    styleTopics.value = [];
+  }
+}
+
+async function openTopicManager(chatId: number): Promise<void> {
+  topicChatId.value = chatId;
+  topicTitle.value = "";
+  topicRenameId.value = null;
+  await reloadTopics(false);
+}
+
+async function reloadTopics(refresh: boolean): Promise<void> {
+  if (topicChatId.value == null) return;
+  topicLoading.value = true;
+  try {
+    const data = await fetchChatTopics(topicChatId.value, refresh);
+    topicForum.value = data.forum;
+    topicReason.value = data.reason;
+    topicItems.value = data.topics;
+  } catch (error) {
+    topicItems.value = [];
+    topicForum.value = false;
+    topicReason.value = error instanceof Error ? error.message : "读取话题失败";
+  } finally {
+    topicLoading.value = false;
+  }
+}
+
+async function onCreateTopic(): Promise<void> {
+  if (topicChatId.value == null || !topicTitle.value.trim()) return;
+  try {
+    await createChatTopic(topicChatId.value, topicTitle.value.trim());
+    topicTitle.value = "";
+    await reloadTopics(false);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法新建话题");
+  }
+}
+
+async function onRenameTopic(topicId: number): Promise<void> {
+  if (topicChatId.value == null || !topicRenameTitle.value.trim()) return;
+  try {
+    await renameChatTopic(topicChatId.value, topicId, topicRenameTitle.value.trim());
+    topicRenameId.value = null;
+    await reloadTopics(false);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法改名");
+  }
+}
+
+async function onDeleteTopic(topicId: number): Promise<void> {
+  if (topicChatId.value == null) return;
+  try {
+    await deleteChatTopic(topicChatId.value, topicId);
+    await reloadTopics(false);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "无法删除话题");
+  }
 }
 
 function hasExplicitRoute(path: string): boolean {
@@ -537,6 +648,7 @@ defineExpose({ dirty });
           <div v-if="item.alias.trim() && item.title.trim()" class="map-path">官方名 {{ item.title }}</div>
           <div class="map-dest">
             <span class="map-id">{{ item.chat_id }}</span>
+            <el-button size="small" text @click="openTopicManager(item.chat_id)">话题</el-button>
             <el-button size="small" text type="danger" @click="removeChat(item.chat_id)">删除</el-button>
           </div>
         </div>
@@ -583,17 +695,9 @@ defineExpose({ dirty });
               <div class="tree-node-row">
                 <div class="node-left" :class="{ 'is-dir': data.is_dir }">
                   <span v-if="data.is_dir" class="node-icon">📂</span>
-                  <div class="node-copy">
-                    <div class="node-title">
-                      <span class="node-name" :class="{ 'is-root': data.is_root }" :title="data.path">
-                        {{ data.name }}
-                      </span>
-                      <span v-if="data.is_root" class="node-badge root-badge">监控根目录</span>
-                    </div>
-                    <div v-if="data.is_dir" class="node-sub" :class="{ miss: routeSummary(data) === '未命中' }">
-                      {{ routeSummary(data) }}
-                    </div>
-                  </div>
+                  <span class="node-name" :class="{ 'is-root': data.is_root }" :title="data.path">
+                    {{ data.name }}
+                  </span>
                   <template v-if="!data.is_dir">
                     <span class="file-size">{{ formatBytes(data.size || 0) }}</span>
                     <span v-if="!data.supported_ext" class="file-ext-unsupported">未监听格式</span>
@@ -606,6 +710,20 @@ defineExpose({ dirty });
                 </div>
 
                 <div v-if="data.is_dir" class="node-right" @click.stop>
+                  <span
+                    class="node-dest-badge"
+                    :class="{
+                      'is-custom': hasExplicitRoute(data.path),
+                      'is-miss': getDirDestLabel(data) === '未分配群组'
+                    }"
+                  >
+                    <template v-if="getDirDestLabel(data) === '未分配群组'">
+                      ⚠️ 未分配群组
+                    </template>
+                    <template v-else>
+                      📣 目标群: {{ getDirDestLabel(data) }} · {{ topicWord(data.path) }}
+                    </template>
+                  </span>
                   <el-button size="small" @click="openRouteSettings(data.path)">设置</el-button>
                   <el-button
                     v-if="hasExplicitRoute(data.path) && !data.is_root"
@@ -731,6 +849,39 @@ defineExpose({ dirty });
     </el-form>
 
     <el-dialog
+      :model-value="topicChatId != null"
+      title="话题"
+      width="480px"
+      append-to-body
+      @close="topicChatId = null"
+    >
+      <p v-if="topicLoading" class="route-hint">正在读取</p>
+      <p v-else-if="!topicForum" class="route-hint">{{ topicReason || "这个群或频道没有话题。" }}</p>
+      <template v-else>
+        <div class="topic-create">
+          <el-input v-model="topicTitle" placeholder="新话题名称" @keyup.enter="onCreateTopic" />
+          <el-button @click="onCreateTopic">新建</el-button>
+          <el-button @click="reloadTopics(true)">刷新</el-button>
+        </div>
+        <div v-if="topicItems.length === 0" class="route-hint">还没有话题。可以新建，或点刷新从 Telegram 读取。</div>
+        <div v-for="topic in topicItems" :key="topic.topic_id" class="map-card fallback">
+          <template v-if="topicRenameId === topic.topic_id">
+            <el-input v-model="topicRenameTitle" />
+            <el-button size="small" @click="onRenameTopic(topic.topic_id)">保存</el-button>
+          </template>
+          <template v-else>
+            <div class="map-name">{{ topic.title || "未命名" }}</div>
+            <div class="map-dest">
+              <span class="map-id">{{ topic.topic_id }}</span>
+              <el-button size="small" text @click="topicRenameId = topic.topic_id; topicRenameTitle = topic.title">改名</el-button>
+              <el-button size="small" text type="danger" @click="onDeleteTopic(topic.topic_id)">删除</el-button>
+            </div>
+          </template>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       :model-value="stylePath !== ''"
       title="目录设置"
       width="480px"
@@ -740,7 +891,7 @@ defineExpose({ dirty });
       <p class="route-hint">{{ stylePath }}</p>
       <el-form label-position="top">
         <el-form-item label="投递目标">
-          <el-select v-model="styleDest" class="grow" placeholder="跟随父级">
+          <el-select v-model="styleDest" class="grow" placeholder="跟随父级" @change="loadStyleTopics">
             <el-option label="跟随父级" value="" />
             <el-option-group v-if="form.chats.length" label="Telegram">
               <el-option
@@ -759,7 +910,28 @@ defineExpose({ dirty });
               />
             </el-option-group>
           </el-select>
-          <p v-if="!styleDest" class="route-hint">跟随父级会去掉这个目录自己的说明和封面。</p>
+          <p v-if="!styleDest" class="route-hint">跟随父级会去掉这个目录自己的说明、封面和话题。</p>
+        </el-form-item>
+        <el-form-item v-if="styleChatId() != null" label="话题">
+          <el-select v-model="styleTopicMode" class="grow" @change="loadStyleTopics">
+            <el-option label="跟随上一级" value="inherit" />
+            <el-option label="不使用话题" value="off" />
+            <el-option label="按文件夹名自动新建" value="auto" />
+            <el-option label="使用已有话题" value="fixed" />
+          </el-select>
+          <el-select
+            v-if="styleTopicMode === 'fixed'"
+            v-model="styleTopicId"
+            class="grow topic-pick"
+            placeholder="选择话题"
+          >
+            <el-option
+              v-for="topic in styleTopics"
+              :key="topic.topic_id"
+              :label="topic.title || String(topic.topic_id)"
+              :value="topic.topic_id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="说明">
           <el-select v-model="styleCaptionMode" class="grow">
@@ -1140,30 +1312,35 @@ defineExpose({ dirty });
 }
 
 .node-left.is-dir {
-  align-items: flex-start;
+  align-items: center;
 }
 
-.node-copy {
-  min-width: 0;
-}
-
-.node-title {
+.node-right {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
+  flex-shrink: 0;
 }
 
-.node-sub {
-  margin-top: 2px;
-  color: var(--text-secondary);
+.node-dest-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
   font-size: 12px;
   line-height: 1.4;
-  white-space: normal;
+  background: rgba(40, 153, 90, 0.08);
+  color: #28995a;
+  border: 1px solid rgba(40, 153, 90, 0.22);
+  white-space: nowrap;
+  font-weight: 500;
+  user-select: none;
 }
 
-.node-sub.miss {
+.node-dest-badge.is-miss {
+  background: rgba(220, 38, 38, 0.08);
   color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.2);
 }
 
 .caption-chips {
@@ -1187,6 +1364,16 @@ defineExpose({ dirty });
   background: var(--accent-soft);
   border-color: rgba(40, 153, 90, 0.35);
   color: var(--accent);
+}
+
+.topic-pick {
+  margin-top: 8px;
+}
+
+.topic-create {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .node-icon {

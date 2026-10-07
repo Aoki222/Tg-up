@@ -1,9 +1,11 @@
-"""upload_tasks / chat_topic 的唯一写入口。
+"""upload_tasks / upload_slices 的写入口。
 
 返回 dict 行，由调用方装配成领域 Task。
 认领、回 pending、标成功都必须带状态条件或清掉 assigned_worker。
 新写入只维护 platform / dest_id / dest_extra / assigned_worker / remote_id。
 chat_id 因 NOT NULL 仍写入；topic_id、assigned_bot、telegram_msg_id 只留给旧行回填，不再更新。
+
+chat_topic 的 SQL 在 adapters.db.topics。这里的两个方法只是转调，避免一次改完所有调用方。
 """
 
 import uuid
@@ -13,6 +15,7 @@ from pathlib import Path
 from ..database.connection import get_db
 from ..domain import limits
 from ..domain.slices import MSG_CUTTING, MSG_WAIT
+from .db.topics import get_chat_topic, save_chat_topic
 
 
 def _bot_limit() -> int:
@@ -118,27 +121,12 @@ class TaskRepository:
                 return int(row[0]) if row else None
 
     async def get_chat_topic(self, chat_id: int, topic_path: str) -> int | None:
-        """topic_path 是目录绝对路径。同一群同一目录复用 topic_id。"""
-        async with get_db() as database:
-            async with database.execute(
-                "SELECT topic_id FROM chat_topic WHERE chat_id = ? AND topic_path = ?",
-                (chat_id, topic_path),
-            ) as cursor:
-                row = await cursor.fetchone()
-                return int(row[0]) if row else None
+        """转调 adapters.db.topics。topic_path 是目录绝对路径。"""
+        return await get_chat_topic(chat_id, topic_path)
 
     async def save_chat_topic(self, chat_id: int, topic_id: int, topic_path: str) -> None:
-        """保存群组与目录的 topic 映射；重复键更新 topic_id 和时间戳。"""
-        async with get_db() as database:
-            await database.execute(
-                """INSERT INTO chat_topic (chat_id, topic_id, topic_path)
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(chat_id, topic_path) DO UPDATE SET
-                       topic_id = excluded.topic_id,
-                       updated_at = CURRENT_TIMESTAMP""",
-                (chat_id, topic_id, topic_path),
-            )
-            await database.commit()
+        """转调 adapters.db.topics。重复键更新 topic_id。"""
+        await save_chat_topic(chat_id, topic_id, topic_path)
 
     async def count_active_tasks(self, worker_name: str) -> int:
         """assigned + uploading 都占槽。只数内存队列会在崩溃后低估负载。"""

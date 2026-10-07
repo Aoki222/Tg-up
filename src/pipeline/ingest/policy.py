@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...domain.caption import find_route, resolve_preview
+from ...domain.route_topic import resolve_topic
 from ...domain.upload_settings import PreviewMode, UploadSettings
 from .filters import check_transient_file
 
@@ -26,6 +27,8 @@ class IngestDecision:
     chat_id: int
     topic_enabled: bool
     allowed: bool
+    topic_mode: str = "off"
+    fixed_topic_id: int | None = None
     matched: bool = False
     platform: str = ""
     dest_id: str = ""
@@ -134,7 +137,11 @@ class IngestPolicy:
                 allowed=False,
                 matched=False,
             )
-        platform, dest_id, chat_id, topic_enabled = matched
+        platform, dest_id, chat_id, _legacy_topic = matched
+        topic_mode, fixed_topic_id = resolve_topic(file_path, settings)
+        if platform != "telegram":
+            topic_mode, fixed_topic_id = "off", None
+        topic_enabled = topic_mode == "auto"
         if settings.watch_extensions and suffix not in settings.watch_extensions:
             return IngestDecision(
                 need_single=False,
@@ -145,6 +152,8 @@ class IngestPolicy:
                 matched=True,
                 platform=platform,
                 dest_id=dest_id,
+                topic_mode=topic_mode,
+                fixed_topic_id=fixed_topic_id,
             )
 
         preview = resolve_preview(file_path, settings)
@@ -155,9 +164,11 @@ class IngestPolicy:
             need_single=need_single,
             need_content=need_content,
             chat_id=chat_id,
-            topic_enabled=topic_enabled and platform == "telegram",
+            topic_enabled=topic_enabled,
             allowed=True,
             matched=True,
             platform=platform,
             dest_id=dest_id,
+            topic_mode=topic_mode,
+            fixed_topic_id=fixed_topic_id,
         )

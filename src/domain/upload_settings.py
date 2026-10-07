@@ -35,6 +35,9 @@ class FolderRoute:
     # None 表示这项没写，继续往上继承。空字符串表示明确不要说明。
     caption_template: str | None = None
     preview: PreviewMode | None = None
+    # None 表示没写。off 不用话题，auto 按文件夹名，fixed 使用 topic_id。
+    topic_mode: str | None = None
+    topic_id: int | None = None
 
 
 @dataclass(frozen=True)

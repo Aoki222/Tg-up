@@ -74,6 +74,7 @@ async def test_telegram_channel_cache_roundtrip(tmp_path: Path, monkeypatch) -> 
                 "type": "channel",
                 "username": "example",
                 "is_active": True,
+                "forum": False,
             }
         ]
 

@@ -43,7 +43,8 @@ def _session_kind(session_dir, name: str) -> str:
         return "user"
     return "unknown"
 from ..adapters.sessions import SessionPool
-from ..adapters.telegram_chats import list_dialog_chats, resolve_chat_title
+from ..adapters.telegram.chats import list_dialog_chats, resolve_chat_title
+from ..adapters.telegram.topic_admin import TopicAdmin
 from ..adapters.task_store import TaskRepository
 from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
@@ -126,6 +127,7 @@ class UploaderApplication:
         self._scheduler = scheduler
         after_upload = ConfigurableAfterUpload(settings_hub)
         self._after_upload = after_upload
+        # 自动按文件夹建话题：谁先连上就用谁。管理员机器人也可以建。
         topic_creator = TopicCreator(session_pool.any_client, repository)
         file_queue: asyncio.Queue[Path | None] = asyncio.Queue()
         slicer = SliceService(repository, settings_hub, scheduler, after_upload, PROJECT_DIR)
@@ -540,6 +542,7 @@ class UploaderApplication:
             chats_provider=self._list_chats,
             chats_sync=self._sync_chats,
             chat_resolver=self._resolve_chat_title,
+            topic_admin=TopicAdmin(self._user_client, self._settings_hub),
         )
         self._session_login = api.state.session_login
         pool = self._session_pool

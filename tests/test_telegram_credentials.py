@@ -130,7 +130,7 @@ def _route(app, path: str, method: str):
 
 
 async def test_identity_hides_hash_and_keeps_masked_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("src.api.app.PROJECT_DIR", tmp_path)
+    monkeypatch.setattr("src.config.PROJECT_DIR", tmp_path)
     save_telegram_credentials(tmp_path, 5, _HASH)
     app = create_api(ProgressHub())
     get_identity = _route(app, "/api/identity", "GET")
@@ -174,7 +174,7 @@ async def test_identity_hides_hash_and_keeps_masked_value(tmp_path: Path, monkey
 
 
 async def test_sessions_report_live_api_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("src.api.app.PROJECT_DIR", tmp_path)
+    monkeypatch.setattr("src.config.PROJECT_DIR", tmp_path)
     app = create_api(ProgressHub())
     list_sessions = _route(app, "/api/sessions", "GET")
     app.state.session_login.replace_credentials(0, "")

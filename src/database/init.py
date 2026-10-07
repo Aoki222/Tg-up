@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS telegram_channels (
     type         TEXT    NOT NULL DEFAULT 'group',
     username     TEXT    NOT NULL DEFAULT '',
     is_active    INTEGER NOT NULL DEFAULT 1,
+    forum        INTEGER NOT NULL DEFAULT 0,
     updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     synced_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(account_name, chat_id)
@@ -120,6 +121,20 @@ CREATE TABLE IF NOT EXISTS telegram_channels (
 
 CREATE INDEX IF NOT EXISTS idx_telegram_channels_active
     ON telegram_channels(account_name, is_active);
+
+CREATE TABLE IF NOT EXISTS telegram_topics (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_name TEXT    NOT NULL DEFAULT '',
+    chat_id      INTEGER NOT NULL,
+    topic_id     INTEGER NOT NULL,
+    title        TEXT    NOT NULL DEFAULT '',
+    is_active    INTEGER NOT NULL DEFAULT 1,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, topic_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_topics_chat
+    ON telegram_topics(chat_id, is_active);
 """
 
 _UPLOAD_TASK_INDEXES = (
@@ -165,6 +180,7 @@ async def init_db() -> None:
         await _ensure_column(db, "upload_tasks", "part_index", "INTEGER")
         await _ensure_column(db, "upload_tasks", "part_count", "INTEGER")
         await _ensure_column(db, "upload_tasks", "slice_parts", "INTEGER")
+        await _ensure_column(db, "telegram_channels", "forum", "INTEGER NOT NULL DEFAULT 0")
         await _backfill_destination_columns(db)
         await _allow_oversized_status(db)
         await _ensure_upload_task_indexes(db)

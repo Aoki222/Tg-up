@@ -112,6 +112,12 @@ def _render_routes(payload: dict) -> str:
             block += "topic_enabled = true\n"
         elif topic is False:
             block += "topic_enabled = false\n"
+        topic_mode = item.get("topic_mode", None)
+        if topic_mode in {"off", "auto", "fixed"}:
+            block += f"topic_mode = {_toml_string(str(topic_mode))}\n"
+        topic_id = item.get("topic_id", None)
+        if topic_mode == "fixed" and topic_id:
+            block += f"topic_id = {int(topic_id)}\n"
         if "caption_template" in item and item.get("caption_template") is not None:
             block += f"caption_template = {_toml_string(str(item.get('caption_template') or '')[:2000])}\n"
         preview = item.get("preview", None)
@@ -295,6 +301,16 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
             caption_template = str(item.get("caption_template") or "")[:2000]
         else:
             caption_template = None
+        topic_mode = item.get("topic_mode", None)
+        if topic_mode not in {"off", "auto", "fixed"}:
+            topic_mode = None
+        topic_id_raw = item.get("topic_id", None)
+        try:
+            topic_id = int(topic_id_raw) if topic_id_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            topic_id = None
+        if topic_mode != "fixed":
+            topic_id = None
         preview_raw = item.get("preview", None)
         route_preview = None
         if preview_raw not in (None, ""):
@@ -313,6 +329,8 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 dest_id=dest_id,
                 caption_template=caption_template,
                 preview=route_preview,
+                topic_mode=topic_mode,
+                topic_id=topic_id,
             )
         )
     return tuple(routes)
@@ -505,6 +523,8 @@ class SettingsHub:
                     "dest_id": route.dest_id or (str(route.chat_id) if route.chat_id else ""),
                     "caption_template": route.caption_template,
                     "preview": None if route.preview is None else route.preview.value,
+                    "topic_mode": route.topic_mode,
+                    "topic_id": route.topic_id,
                 }
                 for route in settings.routes
             ],

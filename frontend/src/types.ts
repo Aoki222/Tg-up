@@ -155,6 +155,9 @@ export interface FolderRouteItem {
   caption_template: string | null;
   /** null 跟随上一级。 */
   preview: PreviewMode | null;
+  /** null 跟随上一级。off 不用话题，auto 按文件夹名，fixed 使用 topic_id。 */
+  topic_mode: "off" | "auto" | "fixed" | null;
+  topic_id: number | null;
 }
 
 export interface UnmatchedFile {
