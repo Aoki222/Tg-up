@@ -92,7 +92,6 @@ function speedLabel(item: BoardTask): string {
       </label>
       <div class="name-block">
         <div class="name" :title="task.file_name">{{ task.file_name }}</div>
-        <span v-if="task.status === 'preparing'" class="part-chip">封面</span>
         <span v-if="partLabel(task)" class="part-chip">{{ partLabel(task) }}</span>
       </div>
     </div>
