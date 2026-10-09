@@ -621,7 +621,7 @@ onMounted(() => {
   void load();
 });
 
-defineExpose({ dirty });
+defineExpose({ dirty, openRouteSettings });
 </script>
 
 <template>

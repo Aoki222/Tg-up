@@ -13,7 +13,7 @@
  *    - 约束在 960px 舒适视距内，避免宽屏下拉伸失调。
  */
 
-import { computed, ref, onMounted } from "vue";
+import { computed, ref, onMounted, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { getApiToken, saveIdentity, setApiToken } from "../api";
@@ -23,6 +23,14 @@ import { useUnmatchedPolling } from "../composables/useUnmatched";
 import { ENABLE_GOOGLE_DRIVE } from "../features";
 
 defineOptions({ name: "SettingsPage" });
+
+const props = defineProps<{ embedded?: boolean }>();
+const emit = defineEmits<{
+  "update:dirty": [value: boolean];
+  section: [id: string];
+}>();
+const panelRef = ref<InstanceType<typeof ConfigPanel> | null>(null);
+const localSection = ref("telegram");
 useUnmatchedPolling();
 
 const allSections = [
@@ -41,6 +49,7 @@ type PanelId = "routes" | "telegram" | "drive" | "watch" | "process";
 const route = useRoute();
 const tomlDirty = ref(false);
 const section = computed(() => {
+  if (props.embedded) return localSection.value;
   const value = String(route.params.section || "routes");
   return sections.some((item) => item.id === value) ? value : "routes";
 });
@@ -118,6 +127,19 @@ function saveToken(): void {
 }
 
 /** 清空当前 Token */
+function openRouteSettings(path: string): void {
+  panelRef.value?.openRouteSettings(path);
+}
+
+function setSection(id: string): void {
+  localSection.value = id;
+  emit("section", id);
+}
+
+defineExpose({ openRouteSettings, setSection });
+
+watch(tomlDirty, (value) => emit("update:dirty", value), { immediate: true });
+
 function clearToken(): void {
   tokenInput.value = "";
   setApiToken("");
@@ -130,29 +152,34 @@ function clearToken(): void {
 </script>
 
 <template>
-  <div class="settings">
+  <div class="settings" :class="{ embedded }">
     <!-- 页面标题与导读 -->
-    <div class="page-header">
+    <div v-if="!embedded" class="page-header">
       <h2 class="page-title">系统配置</h2>
       <p class="page-desc">投递、监听、处理写入 upload.toml。Telegram 凭据写入 data/telegram.json，保存后立即生效。</p>
     </div>
 
     <div class="settings-layout">
     <nav class="side-nav" aria-label="设置">
-      <router-link
-        v-for="item in sections"
+      <component
+        :is="embedded ? 'button' : 'router-link'"
+        v-for="item in sections.filter((entry) => !embedded || entry.id !== 'routes')"
         :key="item.id"
-        :to="`/settings/${item.id}`"
+        :to="embedded ? undefined : `/settings/${item.id}`"
+        :type="embedded ? 'button' : undefined"
         class="side-link"
-        active-class="active"
+        :class="{ active: embedded ? section === item.id : undefined }"
+        :active-class="embedded ? undefined : 'active'"
+        @click="embedded ? setSection(item.id) : undefined"
       >
         {{ item.label }}
         <span v-if="item.id !== 'account' && tomlDirty" class="tab-dot" aria-hidden="true"></span>
-      </router-link>
+      </component>
     </nav>
 
     <el-card shadow="never" class="settings-board">
       <ConfigPanel
+        ref="panelRef"
         v-show="section !== 'account'"
         :panel="configPanelId"
         @update:dirty="tomlDirty = $event"
@@ -251,6 +278,24 @@ function clearToken(): void {
   overscroll-behavior: contain;
 }
 
+.settings.embedded {
+  max-width: none;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+.settings.embedded .settings-layout {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.settings.embedded .settings-board {
+  height: 100%;
+  overflow: auto;
+}
+
 .page-header {
   margin-bottom: 4px;
 }
@@ -292,12 +337,17 @@ function clearToken(): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
   padding: 8px 10px;
+  border: 0;
   border-radius: 10px;
+  background: transparent;
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 500;
+  text-align: left;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .side-link.active {

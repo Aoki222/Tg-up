@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * 五列观察看板：封面 / 等待 / 上传中 / 过大 / 失败。
- * 列可收起：收起的列进左侧 48px 轨，展开列均分剩余宽度。
+ * 单栏任务流：全部 / 正在上传 / 过大 / 失败 / 排队。
+ * 排队包含封面生成和等待上传。过大、失败才出现批量菜单。
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -23,25 +23,10 @@ import type { SkippedTask } from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
 
-const STORAGE_KEY = "uploader.kanban.collapsed";
-
-const columns = [
-  { key: "preparing", title: "封面", empty: "没有封面任务" },
-  { key: "pending", title: "等待", empty: "队列空闲" },
-  { key: "uploading", title: "上传中", empty: "没有在传" },
-  { key: "oversized", title: "过大", empty: "没有过大文件" },
-  { key: "failed", title: "失败", empty: "没有失败" },
-] as const;
-
-type ColumnKey = (typeof columns)[number]["key"];
-
-const COLUMN_KEYS: ColumnKey[] = columns.map((column) => column.key);
+type BatchKey = "oversized" | "failed";
 
 const props = defineProps<{ items: BoardTask[] }>();
 
-const isNarrow = ref(false);
-const activeMobileTab = ref<ColumnKey>("uploading");
-const collapsed = ref<Set<ColumnKey>>(loadCollapsed());
 const retryingId = ref<number | null>(null);
 const dispatchingId = ref<number | null>(null);
 const slicingId = ref<number | null>(null);
@@ -50,9 +35,13 @@ const clearing = ref(false);
 const oversizedActing = ref(false);
 const selectedIds = ref<Set<number>>(new Set());
 const oversizedIds = ref<Set<number>>(new Set());
-const batchOpen = ref<ColumnKey | null>(null);
+const batchOpen = ref<BatchKey | null>(null);
+type BoardTab = "all" | "uploading" | "oversized" | "failed" | "queue";
+const boardTab = ref<BoardTab>("all");
 
-function toggleBatch(key: ColumnKey): void {
+function toggleStreamBatch(): void {
+  const key = boardTab.value;
+  if (key !== "oversized" && key !== "failed") return;
   batchOpen.value = batchOpen.value === key ? null : key;
 }
 
@@ -76,57 +65,24 @@ const buckets = computed(() => {
   return { preparing, pending, uploading, oversized, failed };
 });
 
-const rail = computed(() => columns.filter((column) => collapsed.value.has(column.key)));
-const open = computed(() => columns.filter((column) => !collapsed.value.has(column.key)));
-const visibleWells = computed(() => {
-  if (isNarrow.value) {
-    const active = columns.find((c) => c.key === activeMobileTab.value) ?? columns[2];
-    return [active];
-  }
-  return open.value;
+const queueItems = computed(() => [...buckets.value.preparing, ...buckets.value.pending]);
+const activeTotal = computed(
+  () =>
+    buckets.value.uploading.length +
+    buckets.value.oversized.length +
+    buckets.value.failed.length +
+    queueItems.value.length,
+);
+const streamSections = computed(() => {
+  const all = [
+    { key: "uploading" as const, title: "正在上传", items: buckets.value.uploading },
+    { key: "oversized" as const, title: "过大", items: buckets.value.oversized },
+    { key: "failed" as const, title: "失败", items: buckets.value.failed },
+    { key: "queue" as const, title: "排队", items: queueItems.value },
+  ];
+  if (boardTab.value === "all") return all.filter((section) => section.items.length > 0);
+  return all.filter((section) => section.key === boardTab.value);
 });
-const canCollapse = computed(() => open.value.length > 1);
-
-function loadCollapsed(): Set<ColumnKey> {
-  // 从浏览器恢复列折叠状态，并过滤掉旧版本或非法列名。
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw == null) return new Set<ColumnKey>(["preparing", "pending"]);
-    if (!raw) return new Set();
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    const keys = parsed.filter((key): key is ColumnKey => COLUMN_KEYS.includes(key as ColumnKey));
-    const next = new Set(keys);
-    if (next.size >= COLUMN_KEYS.length) {
-      next.delete("uploading");
-    }
-    return next;
-  } catch {
-    return new Set();
-  }
-}
-
-function persist(): void {
-  // 将当前列布局持久化到浏览器，供下次打开看板恢复。
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([...collapsed.value]));
-}
-
-function collapse(key: ColumnKey): void {
-  // 收起指定列，但始终保留至少一列展开，避免看板失去主要内容。
-  if (open.value.length <= 1 || collapsed.value.has(key)) return;
-  collapsed.value = new Set([...collapsed.value, key]);
-  persist();
-}
-
-function expand(key: ColumnKey): void {
-  // 从左侧轨道恢复一列，并同步保存布局。
-  if (!collapsed.value.has(key)) return;
-  const next = new Set(collapsed.value);
-  next.delete(key);
-  collapsed.value = next;
-  persist();
-}
-
 async function onRetry(id: number): Promise<void> {
   // 调用后端将单条 failed 任务重新置为 pending。
   if (retryingId.value !== null || retryingAll.value) return;
@@ -412,146 +368,159 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 onMounted(() => {
-  const media = window.matchMedia("(max-width: 768px)");
-  const apply = () => {
-    isNarrow.value = media.matches;
-  };
   const onPointer = (event: Event) => {
     const target = event.target;
     if (target instanceof Element && target.closest(".batch-wrap")) return;
     batchOpen.value = null;
   };
-  apply();
-  media.addEventListener("change", apply);
   document.addEventListener("pointerdown", onPointer);
   onUnmounted(() => {
-    media.removeEventListener("change", apply);
     document.removeEventListener("pointerdown", onPointer);
   });
 });
 </script>
 
 <template>
-  <section class="board" :class="{ 'has-rail': !isNarrow && rail.length > 0, 'is-narrow': isNarrow }" aria-label="任务看板">
-    <!-- 移动端状态 Tab 切换胶囊条 (仅在窄屏呈现) -->
-    <nav v-if="isNarrow" class="mobile-board-tabs" aria-label="看板状态切换">
-      <button
-        v-for="column in columns"
-        :key="column.key"
-        type="button"
-        class="mobile-tab-pill"
-        :class="[column.key, { active: activeMobileTab === column.key }]"
-        @click="activeMobileTab = column.key"
-      >
-        <span class="tab-label">{{ column.title }}</span>
-        <span class="tab-count" :class="{ 'has-items': buckets[column.key].length > 0 }">
-          {{ buckets[column.key].length }}
-        </span>
+  <section class="stream" aria-label="任务看板">
+    <div class="stream-tabs">
+      <button type="button" :class="{ on: boardTab === 'all' }" @click="boardTab = 'all'">
+        全部 <span>{{ activeTotal }}</span>
       </button>
-    </nav>
-
-    <Transition name="rail">
-      <aside v-if="!isNarrow && rail.length" class="rail" aria-label="已收起的列">
-        <button
-          v-for="column in rail"
-          :key="column.key"
-          type="button"
-          class="rail-tab"
-          :class="column.key"
-          :aria-label="`展开${column.title}`"
-          @click="expand(column.key)"
-        >
-          <span class="rail-title">{{ column.title }}</span>
-          <span class="well-count">{{ buckets[column.key].length }}</span>
-        </button>
-      </aside>
-    </Transition>
-
-    <TransitionGroup name="pane" tag="div" class="open-pane">
-      <div v-for="column in visibleWells" :key="column.key" class="well" :class="column.key">
-        <header class="well-head">
-          <span class="well-title">{{ column.title }}</span>
-          <div class="well-actions">
-            <div
-              v-if="column.key === 'oversized' || column.key === 'failed'"
-              class="batch-wrap"
-            >
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy"
-                @click.stop="toggleBatch(column.key)"
-              >
-                批量
-              </button>
-              <div v-if="batchOpen === column.key" class="batch-menu" @click.stop>
-                <template v-if="column.key === 'oversized'">
-                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onSliceBatch([...oversizedIds])">切片选中</button>
-                  <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onSliceBatch([])">全部切片</button>
-                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onDispatchBatch([...oversizedIds])">交给个人号</button>
-                  <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onDispatchBatch([])">全部交给个人号</button>
-                  <hr />
-                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onRemoveOversizedSelected">清除选中</button>
-                  <button type="button" class="danger" :disabled="failedBusy || buckets.oversized.length === 0" @click="onRemoveOversizedAll">全部清除</button>
-                </template>
-                <template v-else>
-                  <button type="button" :disabled="failedBusy || buckets.failed.length === 0" @click="onRetryAll">
-                    {{ retryingAll ? "重试中" : "全部重试" }}
-                  </button>
-                  <button type="button" :disabled="failedBusy || selectedCount === 0" @click="onRemoveSelected">清除选中</button>
-                  <button type="button" class="danger" :disabled="failedBusy || buckets.failed.length === 0" @click="onRemoveAll">全部清除</button>
-                </template>
-              </div>
-            </div>
-            <span class="well-count">{{ buckets[column.key].length }}</span>
-            <button
-              v-if="!isNarrow"
-              type="button"
-              class="collapse-btn"
-              :disabled="!canCollapse"
-              :aria-label="`收起${column.title}`"
-              @click="collapse(column.key)"
-            >
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
-                <path
-                  d="M10 3L5 8l5 5"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-          </div>
-        </header>
-        <div class="well-body">
-          <TransitionGroup name="kanban" tag="div" class="card-stack">
-            <TaskCard
-              v-for="task in buckets[column.key]"
-              :key="task.id"
-              :task="task"
-              :retrying="failedBusy"
-              :dispatching="dispatchingId === task.id"
-              :selectable="column.key === 'failed' || column.key === 'oversized'"
-              :selected="
-                column.key === 'oversized' ? oversizedIds.has(task.id) : selectedIds.has(task.id)
-              "
-              @retry="onRetry"
-              @remove="onRemove"
-              @toggle="column.key === 'oversized' ? toggleOversized($event) : toggleSelect($event)"
-              @dispatch="onDispatch"
-              @slice="onSlice"
-              @continue="onContinueSlice"
-            />
-          </TransitionGroup>
-          <p v-if="buckets[column.key].length === 0" class="empty">{{ column.empty }}</p>
+      <button type="button" :class="{ on: boardTab === 'uploading' }" @click="boardTab = 'uploading'">
+        正在上传 <span>{{ buckets.uploading.length }}</span>
+      </button>
+      <button type="button" :class="{ on: boardTab === 'oversized' }" @click="boardTab = 'oversized'">
+        过大 <span>{{ buckets.oversized.length }}</span>
+      </button>
+      <button type="button" :class="{ on: boardTab === 'failed' }" @click="boardTab = 'failed'">
+        失败 <span>{{ buckets.failed.length }}</span>
+      </button>
+      <button type="button" :class="{ on: boardTab === 'queue' }" @click="boardTab = 'queue'">
+        排队 <span>{{ queueItems.length }}</span>
+      </button>
+      <div v-if="boardTab === 'oversized' || boardTab === 'failed'" class="batch-wrap stream-batch">
+        <button type="button" class="retry-all-btn" :disabled="failedBusy" @click.stop="toggleStreamBatch">批量</button>
+        <div v-if="batchOpen === boardTab" class="batch-menu" @click.stop>
+          <template v-if="boardTab === 'oversized'">
+            <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onSliceBatch([...oversizedIds])">切片选中</button>
+            <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onSliceBatch([])">全部切片</button>
+            <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onDispatchBatch([...oversizedIds])">交给个人号</button>
+            <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onDispatchBatch([])">全部交给个人号</button>
+            <hr />
+            <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onRemoveOversizedSelected">清除选中</button>
+            <button type="button" class="danger" :disabled="failedBusy || buckets.oversized.length === 0" @click="onRemoveOversizedAll">全部清除</button>
+          </template>
+          <template v-else>
+            <button type="button" :disabled="failedBusy || buckets.failed.length === 0" @click="onRetryAll">{{ retryingAll ? "重试中" : "全部重试" }}</button>
+            <button type="button" :disabled="failedBusy || selectedCount === 0" @click="onRemoveSelected">清除选中</button>
+            <button type="button" class="danger" :disabled="failedBusy || buckets.failed.length === 0" @click="onRemoveAll">全部清除</button>
+          </template>
         </div>
       </div>
-    </TransitionGroup>
+    </div>
+    <div class="stream-scroll">
+      <section v-for="section in streamSections" :key="section.key" class="stream-section">
+        <h3 v-if="boardTab === 'all'">{{ section.title }} <span>{{ section.items.length }}</span></h3>
+        <p v-if="section.items.length === 0" class="empty">这一栏是空的</p>
+        <TaskCard
+          v-for="task in section.items"
+          :key="task.id"
+          :task="task"
+          :retrying="failedBusy"
+          :dispatching="dispatchingId === task.id"
+          :selectable="boardTab === section.key && (section.key === 'failed' || section.key === 'oversized')"
+          :selected="section.key === 'oversized' ? oversizedIds.has(task.id) : selectedIds.has(task.id)"
+          @retry="onRetry"
+          @remove="onRemove"
+          @toggle="section.key === 'oversized' ? toggleOversized($event) : toggleSelect($event)"
+          @dispatch="onDispatch"
+          @slice="onSlice"
+          @continue="onContinueSlice"
+        />
+      </section>
+      <p v-if="streamSections.length === 0" class="empty">没有进行中的任务</p>
+    </div>
   </section>
 </template>
 
 <style scoped>
+.stream {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.stream-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.stream-tabs > button {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.stream-tabs > button.on {
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.stream-tabs > button span {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stream-batch {
+  margin-left: auto;
+}
+
+.stream-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stream-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stream-section h3 {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.stream-section h3 span {
+  margin-left: 6px;
+}
+
 .board {
   display: flex;
   gap: 12px;
