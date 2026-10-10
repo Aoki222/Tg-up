@@ -13,8 +13,10 @@ import axios, { type AxiosError } from "axios";
 import { ElMessage } from "element-plus";
 import type {
   BoardSnapshot,
+  FolderRouteItem,
   FsNode,
   ObserverPathInfo,
+  ObserverRootItem,
   SessionLoginResult,
   SessionMeta,
   SessionMode,
@@ -140,6 +142,8 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
   const paths = infos.length ? infos.map((item) => item.path) : data.observer_paths;
   return {
     ...data,
+    watch_enabled: data.watch_enabled !== false,
+    observer_roots: data.observer_roots ?? [],
     observer_paths: paths,
     observer_path_infos: infos,
     caption_template: data.caption_template ?? "",
@@ -252,6 +256,34 @@ export async function saveSettings(payload: UploadConfig): Promise<UploadConfig>
     observer_paths: payload.observer_paths,
   });
   return normalizeSettings(res.data);
+}
+
+/**
+ * 【L1 快捷接口】一键切换全局自动监控总开关
+ */
+export async function toggleGlobalWatch(): Promise<{ watch_enabled: boolean }> {
+  const res = await apiClient.post<{ watch_enabled: boolean }>("/api/settings/watch/toggle");
+  return res.data;
+}
+
+/**
+ * 【L2 快捷接口】单个物理根路径独立启停开关
+ */
+export async function toggleRootPath(path: string): Promise<{ path: string; observer_roots: ObserverRootItem[] }> {
+  const res = await apiClient.post<{ path: string; observer_roots: ObserverRootItem[] }>("/api/settings/roots/toggle", {
+    path,
+  });
+  return res.data;
+}
+
+/**
+ * 【L3 快捷接口】单个子目录路由独立启停开关
+ */
+export async function toggleRoutePath(path: string): Promise<{ path: string; routes: FolderRouteItem[] }> {
+  const res = await apiClient.post<{ path: string; routes: FolderRouteItem[] }>("/api/settings/routes/toggle", {
+    path,
+  });
+  return res.data;
 }
 
 /**

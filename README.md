@@ -82,7 +82,8 @@ python -m src.adapters.generate_session
 
 ```bash
 mkdir -p download sessions data page uploaded logs
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 #### Option B: Local Python Environment
@@ -97,7 +98,7 @@ python -m src.main
 Once the service is running, open your browser and navigate to:
 
 ```
-http://localhost:8000
+http://localhost:8421
 ```
 
 From the dashboard, you can monitor live upload tasks, view transfer speeds, manage accounts, and adjust upload policies and routing rules in real time.

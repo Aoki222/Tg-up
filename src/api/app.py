@@ -80,7 +80,7 @@ def create_api(
     topic_admin=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
-    app = FastAPI(title="uploader", version="0.1.0")
+    app = FastAPI(title="Tg-up", version="0.1.0")
     app.state.progress_hub = progress_hub
     app.state.workers_provider = workers_provider or (lambda: [])
     app.state.settings_hub = settings_hub

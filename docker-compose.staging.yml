@@ -9,21 +9,21 @@
 #      docker compose -f docker-compose.staging.yml pull
 #   3. 启动/平滑更新容器：
 #      docker compose -f docker-compose.staging.yml up -d --remove-orphans
-#   4. 查看控制台：http://<VPS_IP>:8000/
+#   4. 查看控制台：http://<VPS_IP>:8421/
 # ==============================================================================
 
 services:
-  uploader-staging:
+  tg-up-staging:
     image: ghcr.io/aoki222/tg-up:staging
-    container_name: uploader-staging
+    container_name: tg-up-staging
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8421:8421"
     env_file:
       - .env
     environment:
       API_HOST: "0.0.0.0"
-      API_PORT: "8000"
+      API_PORT: "8421"
       APP_CHANNEL: "staging"
     volumes:
       - ./download:/app/download
@@ -40,7 +40,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8421/api/health')",
         ]
       interval: 30s
       timeout: 5s

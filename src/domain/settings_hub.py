@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..logger import get_logger
 from .task import AfterSuccess, TaskPolicy
-from .upload_settings import ChatAlias, DriveFolder, FolderRoute, PreviewMode, UploadSettings
+from .upload_settings import ChatAlias, DriveFolder, FolderRoute, ObserverRoot, PreviewMode, UploadSettings
 
 logger = get_logger(__name__)
 
@@ -51,9 +51,11 @@ def render_upload_toml(payload: dict) -> str:
             cleaned.append(text)
     ext_list = ", ".join(_toml_string(item) for item in cleaned)
     topic = "true" if payload.get("topic_creation_enabled", True) else "false"
+    watch_enabled_str = "true" if payload.get("watch_enabled", True) else "false"
     return (
         "# 由配置页写入。保存后热加载，不必重启。\n"
         f"chat_id = {int(payload['chat_id'])}\n"
+        f"watch_enabled = {watch_enabled_str}\n"
         f"observer_paths = [{_path_list(payload)}]\n"
         f"page_dir = {_toml_string(str(payload.get('page_dir') or 'page'))}\n"
         f"archive_dir = {_toml_string(str(payload.get('archive_dir') or 'uploaded'))}\n"
@@ -68,10 +70,12 @@ def render_upload_toml(payload: dict) -> str:
         f"assigned_timeout_seconds = {max(1, int(payload.get('assigned_timeout_seconds', 600)))}\n"
         f"stable_timeout_seconds = {max(1.0, float(payload.get('stable_timeout_seconds', 1800)))}\n"
         f"watch_extensions = [{ext_list}]\n"
+        f"{_render_observer_roots(payload)}"
         f"{_render_chats(payload)}"
         f"{_render_drive_folders(payload)}"
         f"{_render_routes(payload)}"
     )
+
 
 
 def _render_routes(payload: dict) -> str:
@@ -126,6 +130,35 @@ def _render_routes(payload: dict) -> str:
         enabled = item.get("enabled", True)
         if enabled is False:
             block += "enabled = false\n"
+        chunks.append(block)
+    if len(chunks) == 1:
+        return ""
+    return "".join(chunks)
+
+
+def _render_observer_roots(payload: dict) -> str:
+    """渲染带独立启停状态的物理根目录列表。"""
+    raw = payload.get("observer_roots")
+    if not isinstance(raw, list) or not raw:
+        return ""
+    chunks: list[str] = ["\n# 物理监听根目录（支持独立开启/暂停）。\n"]
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path_text = str(item.get("path") or "").strip()
+        if not path_text:
+            continue
+        resolved_str = str(_resolve_observer_path(path_text))
+        if resolved_str in seen:
+            continue
+        seen.add(resolved_str)
+        enabled = item.get("enabled", True)
+        block = (
+            "[[observer_roots]]\n"
+            f"path = {_toml_string(resolved_str)}\n"
+            f"enabled = {'true' if enabled is not False else 'false'}\n"
+        )
         chunks.append(block)
     if len(chunks) == 1:
         return ""
@@ -229,6 +262,31 @@ def _as_observer_paths(_project_dir: Path, data: dict) -> tuple[Path, ...]:
         seen.add(key)
         paths.append(path)
     return tuple(paths)
+
+
+def _as_observer_roots(project_dir: Path, data: dict) -> tuple[ObserverRoot, ...]:
+    """从配置中提取带启停状态的 ObserverRoot 列表，兼容旧 observer_paths。"""
+    raw_roots = data.get("observer_roots")
+    if isinstance(raw_roots, list) and raw_roots:
+        roots: list[ObserverRoot] = []
+        seen: set[str] = set()
+        for item in raw_roots:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("path") or "").strip()
+            if not text:
+                continue
+            p = _resolve_observer_path(text)
+            key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            enabled = _as_bool(item.get("enabled"), True)
+            roots.append(ObserverRoot(path=p, enabled=enabled))
+        if roots:
+            return tuple(roots)
+    legacy_paths = _as_observer_paths(project_dir, data)
+    return tuple(ObserverRoot(path=p, enabled=True) for p in legacy_paths)
 
 
 def _as_path(project_dir: Path, value: str | None, default: str) -> Path:
@@ -428,10 +486,14 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
     preview = PreviewMode(str(data.get("preview", "off")))
     caption_template = str(data.get("caption_template") or "")[:2000]
     after_success = AfterSuccess(str(data.get("after_success", "keep")))
+    roots = _as_observer_roots(project_dir, data)
+    watch_enabled = _as_bool(data.get("watch_enabled"), True)
 
     return UploadSettings(
         chat_id=chat_id,
-        observer_paths=_as_observer_paths(project_dir, data),
+        observer_paths=tuple(r.path for r in roots),
+        observer_roots=roots,
+        watch_enabled=watch_enabled,
         page_dir=_as_path(project_dir, data.get("page_dir"), "page"),
         archive_dir=_as_path(project_dir, data.get("archive_dir"), "uploaded"),
         preview=preview,
@@ -495,10 +557,19 @@ class SettingsHub:
         """给前端的可编辑字段。监听目录一律返回绝对路径及是否存在。"""
         settings = self._settings
         observer_infos = [inspect_observer_path(path) for path in settings.observer_paths]
+        observer_roots_info = [
+            {
+                **inspect_observer_path(root.path),
+                "enabled": root.enabled,
+            }
+            for root in settings.observer_roots
+        ]
         return {
             "chat_id": settings.chat_id,
+            "watch_enabled": settings.watch_enabled,
             "observer_paths": [item["path"] for item in observer_infos],
             "observer_path_infos": observer_infos,
+            "observer_roots": observer_roots_info,
             "page_dir": _rel_path(self.project_dir, settings.page_dir),
             "archive_dir": _rel_path(self.project_dir, settings.archive_dir),
             "preview": settings.preview.value,
@@ -540,6 +611,16 @@ class SettingsHub:
 
     def save_from_payload(self, payload: dict) -> dict:
         """校验并写入 upload.toml，立刻替换内存配置。"""
+        # 兼容处理：确保 observer_paths 与 observer_roots 双向同步
+        if "observer_roots" in payload and isinstance(payload["observer_roots"], list):
+            if "observer_paths" not in payload or not payload["observer_paths"]:
+                payload["observer_paths"] = [
+                    str(r.get("path")) for r in payload["observer_roots"] if isinstance(r, dict) and r.get("path")
+                ]
+        elif "observer_paths" in payload and isinstance(payload["observer_paths"], list):
+            payload["observer_roots"] = [
+                {"path": str(p), "enabled": True} for p in payload["observer_paths"]
+            ]
         text = render_upload_toml(payload)
         temp_path = self.config_path.with_suffix(".toml.tmp")
         temp_path.write_text(text, encoding="utf-8")

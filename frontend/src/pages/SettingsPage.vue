@@ -1,16 +1,12 @@
 <script setup lang="ts">
 /**
  * @file SettingsPage.vue
- * @description 系统配置页 (Settings Page)
+ * @description 系统配置页 (Settings Page) · 优雅圆角 Craft 风格
  *
- * 核心功能：
- * 1. 【API Token 客户端凭证维护】：
- *    - 维护存放在浏览器 localStorage 中的 API Token，并在保存时即时同步至 `api.ts` 的 Axios 拦截器；
- *    - 支持密码明文/暗文快捷切换；
- * 2. 【upload.toml 热更新控制台】：
- *    - 嵌入 `ConfigPanel`，用于热更新目标频道、监听目录、并发线程数及归档清理策略；
- * 3. 【Apple 居中黄金阅读幅宽】：
- *    - 约束在 960px 舒适视距内，避免宽屏下拉伸失调。
+ * 核心设计：
+ * 1. 200px 紧凑侧栏导航：带实时搜索过滤、未保存小黄点、活跃项目绿点、数据统计胶囊与 SettingsHub 状态；
+ * 2. 局部独立平滑滚动的右侧表单区；
+ * 3. 账号凭据、Telegram 目标、监听目录与处理策略完全对齐原型 rounded inset-card 规范。
  */
 
 import { computed, ref, onMounted, watch } from "vue";
@@ -29,30 +25,31 @@ const emit = defineEmits<{
   "update:dirty": [value: boolean];
   section: [id: string];
 }>();
+
 const panelRef = ref<InstanceType<typeof ConfigPanel> | null>(null);
-const localSection = ref("telegram");
+const localSection = ref("account");
 useUnmatchedPolling();
 
 const allSections = [
-  { id: "routes", label: "路径" },
-  { id: "telegram", label: "Telegram" },
-  { id: "drive", label: "Google Drive" },
-  { id: "watch", label: "监听" },
-  { id: "process", label: "处理" },
-  { id: "account", label: "账号" },
+  { id: "account", label: "账号与凭据" },
+  { id: "telegram", label: "Telegram 目标" },
+  ...(ENABLE_GOOGLE_DRIVE ? [{ id: "drive", label: "Google Drive" }] : []),
+  { id: "watch", label: "监听目录" },
+  { id: "routes", label: "目录文件树" },
+  { id: "process", label: "处理与收尾" },
 ] as const;
-
-const sections = allSections.filter((item) => ENABLE_GOOGLE_DRIVE || item.id !== "drive");
 
 type PanelId = "routes" | "telegram" | "drive" | "watch" | "process";
 
 const route = useRoute();
 const tomlDirty = ref(false);
+
 const section = computed(() => {
   if (props.embedded) return localSection.value;
-  const value = String(route.params.section || "routes");
-  return sections.some((item) => item.id === value) ? value : "routes";
+  const value = String(route.params.section || "account");
+  return allSections.some((item) => item.id === value) ? value : "account";
 });
+
 const configPanelId = computed<PanelId>(() => {
   if (section.value === "telegram" || section.value === "watch" || section.value === "process") {
     return section.value;
@@ -61,25 +58,42 @@ const configPanelId = computed<PanelId>(() => {
   return "routes";
 });
 
-// ── 响应式状态 ─────────────────────────────────────────────────
+// ── 侧栏搜索过滤 ───────────────────────────────────────────────
+const searchQuery = ref("");
+
+const sectionKeywords: Record<string, string[]> = {
+  account: ["账号", "凭据", "api_id", "api_hash", "token", "鉴权", "密码", "credential", "account"],
+  telegram: ["telegram", "目标", "chat", "chat_id", "群组", "频道", "话题", "topic"],
+  drive: ["drive", "google", "云端硬盘", "folder"],
+  watch: ["监听", "目录", "observer", "path", "格式", "扩展名", "extension", "超时", "stable", "watch"],
+  process: ["处理", "收尾", "封面", "缩略图", "preview", "说明", "caption", "归档", "archive", "切片", "slice", "并发", "concurrency", "重试", "retry", "超时", "timeout", "process"],
+  routes: ["路由", "映射", "规则", "routes"],
+};
+
+const visibleSections = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return allSections;
+  return allSections.filter((item) => {
+    if (item.label.toLowerCase().includes(q) || item.id.toLowerCase().includes(q)) return true;
+    const kw = sectionKeywords[item.id] || [];
+    return kw.some((k) => k.toLowerCase().includes(q));
+  });
+});
+
+const chatsCount = computed(() => panelRef.value?.chatsCount ?? 0);
+const pathsCount = computed(() => panelRef.value?.pathsCount ?? 0);
+
+// ── 账号与凭据响应式状态 ─────────────────────────────────────────
 
 const apiId = ref<number>(0);
 const apiHash = ref("");
 const apiHashMasked = ref("");
 const identitySaving = ref(false);
-const showHash = ref(false);
 const { refresh: refreshIdentity } = useTelegramIdentity();
 
-/** 当前输入的 Token 文本值（初始从 localStorage 读取） */
 const tokenInput = ref("");
-
-/** 是否明文展示 Token 字符串 */
-const showToken = ref(false);
-
-/** 保存成功的短暂反馈提示状态 */
 const saved = ref(false);
 
-// 页面挂载时自动读取当前生效的本地 Token
 onMounted(() => {
   tokenInput.value = getApiToken();
   void refreshIdentity().then((info) => {
@@ -114,9 +128,6 @@ async function saveCredentials(): Promise<void> {
   }
 }
 
-// ── 用户操作处理 ───────────────────────────────────────────────
-
-/** 保存并更新 Token 至 localStorage */
 function saveToken(): void {
   setApiToken(tokenInput.value);
   saved.value = true;
@@ -125,20 +136,6 @@ function saveToken(): void {
     saved.value = false;
   }, 2000);
 }
-
-/** 清空当前 Token */
-function openRouteSettings(path: string): void {
-  panelRef.value?.openRouteSettings(path);
-}
-
-function setSection(id: string): void {
-  localSection.value = id;
-  emit("section", id);
-}
-
-defineExpose({ openRouteSettings, setSection });
-
-watch(tomlDirty, (value) => emit("update:dirty", value), { immediate: true });
 
 function clearToken(): void {
   tokenInput.value = "";
@@ -149,389 +146,501 @@ function clearToken(): void {
     saved.value = false;
   }, 2000);
 }
+
+function openRouteSettings(path: string): void {
+  panelRef.value?.openRouteSettings(path);
+}
+
+function setSection(id: string): void {
+  localSection.value = id;
+  emit("section", id);
+}
+
+watch(tomlDirty, (value) => emit("update:dirty", value), { immediate: true });
+
+defineExpose({
+  openRouteSettings,
+  setSection,
+  submitToml: () => panelRef.value?.submit(),
+  saving: computed(() => panelRef.value?.saving ?? false),
+  dirty: tomlDirty,
+});
 </script>
 
 <template>
-  <div class="settings" :class="{ embedded }">
-    <!-- 页面标题与导读 -->
-    <div v-if="!embedded" class="page-header">
-      <h2 class="page-title">系统配置</h2>
-      <p class="page-desc">投递、监听、处理写入 upload.toml。Telegram 凭据写入 data/telegram.json，保存后立即生效。</p>
+  <div class="settings-root" :class="{ embedded }">
+    <!-- 弹窗主体双栏 -->
+    <div class="settings-main-split">
+      <!-- 左侧分类导航 (200px 宽) -->
+      <aside class="settings-sidebar">
+        <div class="sidebar-top">
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="搜索配置项..."
+            class="sidebar-search-input"
+          />
+
+          <nav class="sidebar-nav-list" aria-label="配置导航">
+            <button
+              v-for="item in visibleSections"
+              :key="item.id"
+              type="button"
+              class="nav-tab-btn"
+              :class="{ active: section === item.id }"
+              @click="setSection(item.id)"
+            >
+              <span>{{ item.label }}</span>
+              <span v-if="section === item.id" class="nav-active-dot"></span>
+              <span
+                v-else-if="item.id === 'telegram' && chatsCount > 0"
+                class="nav-count-badge"
+              >{{ chatsCount }}</span>
+              <span
+                v-else-if="item.id === 'watch' && pathsCount > 0"
+                class="nav-count-badge"
+              >{{ pathsCount }}</span>
+              <span
+                v-else-if="item.id !== 'account' && tomlDirty"
+                class="nav-dirty-dot"
+              ></span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- 底部状态指示 -->
+        <div class="sidebar-hub-footer">
+          <div class="hub-line">
+            <span class="hub-name">SettingsHub:</span>
+            <span class="hub-tag">热加载生效</span>
+          </div>
+          <div class="hub-file-names">upload.toml · telegram.json</div>
+        </div>
+      </aside>
+
+      <!-- 右侧真实配置表单区 (局部独立滚动) -->
+      <main class="settings-content-pane">
+        <!-- 账号与凭据 tab -->
+        <div v-show="section === 'account'" class="account-pane space-y-4">
+          <!-- 1. Telegram 凭据 -->
+          <div class="inset-card">
+            <div class="card-head">
+              <h3 class="card-title">Telegram 凭据</h3>
+              <p class="card-hint">
+                来自 <a href="https://my.telegram.org" target="_blank" rel="noreferrer" class="link-url">my.telegram.org</a>。保存后写入 <code>data/telegram.json</code>，当前进程立即生效，不必重启。
+              </p>
+            </div>
+
+            <div class="card-body">
+              <div class="grid-2-cols">
+                <div class="form-group">
+                  <label class="form-label">API_ID</label>
+                  <input
+                    v-model.number="apiId"
+                    type="number"
+                    placeholder="纯数字应用 ID"
+                    class="field-input mono"
+                  />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">API_HASH</label>
+                  <input
+                    v-model="apiHash"
+                    type="password"
+                    :placeholder="apiHashMasked || '留空则不修改'"
+                    class="field-input mono"
+                  />
+                </div>
+              </div>
+
+              <div class="card-foot-flex">
+                <span class="foot-note">凭据仅存储于本地保护目录</span>
+                <button
+                  type="button"
+                  class="save-pill-btn"
+                  :disabled="identitySaving"
+                  @click="saveCredentials"
+                >
+                  <span v-if="identitySaving" class="mini-spinner"></span>
+                  <span>保存凭据</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. 控制台鉴权 -->
+          <div class="inset-card">
+            <div class="card-head">
+              <h3 class="card-title">控制台鉴权</h3>
+              <p class="card-hint">
+                用于访问受保护的 API 端点。与后端 <code>API_TOKEN</code> 环境变量保持一致，存储在浏览器 localStorage 中，留空表示不鉴权。
+              </p>
+            </div>
+
+            <div class="card-body">
+              <div class="form-group max-w-md">
+                <label class="form-label">API Token</label>
+                <input
+                  v-model="tokenInput"
+                  type="password"
+                  placeholder="输入 API Token"
+                  class="field-input mono"
+                />
+              </div>
+
+              <div class="token-btn-row">
+                <button type="button" class="save-pill-btn" @click="saveToken">保存 Token</button>
+                <button type="button" class="cancel-pill-btn" @click="clearToken">清除</button>
+                <span v-if="saved" class="saved-feedback-tag">✓ Token 已保存</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 其余配置项：调用 ConfigPanel -->
+        <ConfigPanel
+          v-show="section !== 'account'"
+          ref="panelRef"
+          :panel="configPanelId"
+          @update:dirty="tomlDirty = $event"
+        />
+      </main>
     </div>
-
-    <div class="settings-layout">
-    <nav class="side-nav" aria-label="设置">
-      <component
-        :is="embedded ? 'button' : 'router-link'"
-        v-for="item in sections.filter((entry) => !embedded || entry.id !== 'routes')"
-        :key="item.id"
-        :to="embedded ? undefined : `/settings/${item.id}`"
-        :type="embedded ? 'button' : undefined"
-        class="side-link"
-        :class="{ active: embedded ? section === item.id : undefined }"
-        :active-class="embedded ? undefined : 'active'"
-        @click="embedded ? setSection(item.id) : undefined"
-      >
-        {{ item.label }}
-        <span v-if="item.id !== 'account' && tomlDirty" class="tab-dot" aria-hidden="true"></span>
-      </component>
-    </nav>
-
-    <el-card shadow="never" class="settings-board">
-      <ConfigPanel
-        ref="panelRef"
-        v-show="section !== 'account'"
-        :panel="configPanelId"
-        @update:dirty="tomlDirty = $event"
-      />
-
-      <section v-if="section === 'account'" class="block first">
-      <h3 class="block-title">Telegram 凭据</h3>
-      <p class="hint">
-        来自 <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a>。
-        保存后写入 <code>data/telegram.json</code>，当前进程立即使用，不必重启。不改 API_HASH 请留空。
-      </p>
-      <div class="creds-grid">
-        <el-form-item label="API_ID">
-          <el-input-number v-model="apiId" :controls="false" :min="1" class="grow" />
-        </el-form-item>
-        <el-form-item label="API_HASH">
-          <el-input
-            v-model="apiHash"
-            :type="showHash ? 'text' : 'password'"
-            :placeholder="apiHashMasked || '留空则不修改'"
-            class="token-input"
-          >
-            <template #suffix>
-              <span class="toggle-eye" @click="showHash = !showHash">
-                <svg v-if="showHash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                  <line x1="1" y1="1" x2="23" y2="23"/>
-                </svg>
-              </span>
-            </template>
-          </el-input>
-        </el-form-item>
-      </div>
-      <el-button type="primary" :loading="identitySaving" @click="saveCredentials">保存凭据</el-button>
-      </section>
-
-      <section v-if="section === 'account'" class="block">
-      <h3 class="block-title">控制台鉴权</h3>
-      <p class="hint">
-        用于访问受保护的 API 端点。与后端 <code>API_TOKEN</code> 环境变量保持一致，留空表示不鉴权。
-      </p>
-
-      <div class="token-row">
-        <el-input
-          v-model="tokenInput"
-          :type="showToken ? 'text' : 'password'"
-          placeholder="输入 API Token"
-          clearable
-          class="token-input"
-        >
-          <!-- 眼睛小图标：切换明文/暗文展示 -->
-          <template #suffix>
-            <span class="toggle-eye" @click="showToken = !showToken">
-              <svg v-if="showToken" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                <circle cx="12" cy="12" r="3"/>
-              </svg>
-              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                <line x1="1" y1="1" x2="23" y2="23"/>
-              </svg>
-            </span>
-          </template>
-        </el-input>
-
-        <el-button type="primary" @click="saveToken">保存</el-button>
-        <el-button @click="clearToken">清除</el-button>
-      </div>
-
-      <transition name="fade">
-        <p v-if="saved" class="saved-hint">✓ 已保存生效</p>
-      </transition>
-      </section>
-    </el-card>
-    </div>
-
   </div>
 </template>
 
 <style scoped>
-.settings {
-  max-width: 1080px;
-  width: 100%;
-  margin: 0 auto;
-  padding: 8px 0 48px;
+.settings-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  width: 100%;
   height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.settings.embedded {
-  max-width: none;
-  height: 100%;
-  padding: 0;
   overflow: hidden;
 }
 
-.settings.embedded .settings-layout {
+.settings-main-split {
+  display: flex;
   flex: 1;
   min-height: 0;
-  align-items: stretch;
-}
-
-.settings.embedded .settings-board {
+  width: 100%;
   height: 100%;
-  overflow: auto;
+  background: #f9fafb;
 }
 
-.page-header {
-  margin-bottom: 4px;
-}
-
-.page-title {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: -0.02em;
-}
-
-.page-desc {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.settings-layout {
-  display: flex;
-  gap: 18px;
-  min-height: 0;
-  align-items: flex-start;
-}
-
-.side-nav {
+/* 左侧分类导航 (200px 宽) */
+.settings-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(0, 0, 0, 0.06);
+  background: #ffffff;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  width: 168px;
-  flex-shrink: 0;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
+  justify-content: space-between;
 }
 
-.side-link {
+.sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sidebar-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  color: #111827;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.sidebar-search-input:focus {
+  background: #ffffff;
+  border-color: #28995a;
+}
+
+.sidebar-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nav-tab-btn {
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  width: 100%;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-sm, 6px);
   background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
-  text-align: left;
-  text-decoration: none;
+  color: #4b5563;
   cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
 }
 
-.side-link.active {
-  background: var(--accent-soft);
-  color: var(--accent);
+.nav-tab-btn:hover {
+  background: #f3f4f6;
+  color: #111827;
 }
 
-.settings-board {
-  flex: 1;
-  min-width: 0;
+.nav-tab-btn.active {
+  background: rgba(40, 153, 90, 0.1);
+  color: #28995a;
+  font-weight: 600;
 }
 
-.tab-dot {
+.nav-active-dot {
   width: 6px;
   height: 6px;
-  border-radius: 9999px;
-  background: var(--accent);
+  border-radius: var(--radius-full, 9999px);
+  background: #28995a;
+  flex-shrink: 0;
 }
 
-.block.first {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: none;
+.nav-count-badge {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm, 6px);
+  background: #f3f4f6;
+  color: #6b7280;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
 }
 
-.settings-board {
-  overflow: visible;
+.nav-dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full, 9999px);
+  background: #f59e0b;
+  flex-shrink: 0;
 }
 
-.settings-board :deep(.el-card__body) {
-  overflow: visible;
-  padding: 20px 22px 24px;
-}
-
-.block {
-  margin-top: 8px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-light);
-}
-
-.block-title {
-  margin: 0 0 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.token-card .hint,
-.block .hint,
-.settings-board .hint {
-  margin: 0 0 14px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.hint code {
-  padding: 2px 6px;
-  background: var(--accent-soft);
-  border-radius: 5px;
-  font-size: 12px;
-  color: var(--accent);
-}
-
-.creds-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 16px;
-  margin-bottom: 12px;
-}
-
-.creds-grid :deep(.el-form-item) {
-  margin-bottom: 12px;
-}
-
-.creds-grid :deep(.el-input-number) {
-  width: 100%;
-}
-
-.grow {
-  width: 100%;
-}
-
-.token-row {
+.sidebar-hub-footer {
+  padding-top: 10px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 11px;
+  color: #9ca3af;
   display: flex;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-  overflow: hidden;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.token-input {
+.hub-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hub-tag {
+  color: #28995a;
+  font-weight: 600;
+}
+
+.hub-file-names {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+/* 右侧真实表单区 (局部独立滚动) */
+.settings-content-pane {
   flex: 1;
   min-width: 0;
-  max-width: 480px;
-  overflow: hidden;
+  padding: 20px;
+  overflow-y: auto;
+  background: #f9fafb;
 }
 
-.token-input :deep(.el-input__wrapper) {
-  overflow: hidden;
+.account-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.token-input :deep(.el-input__inner) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  overscroll-behavior: none;
+.inset-card {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-md, 10px);
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.toggle-eye {
-  cursor: pointer;
+.card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #111827;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.card-hint {
+  margin: 0;
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.card-hint code {
+  background: rgba(0, 0, 0, 0.04);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm, 6px);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10.5px;
+  color: #374151;
+}
+
+.link-url {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.grid-2-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.field-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 12px;
+  color: #111827;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.field-input:focus {
+  background: #ffffff;
+  border-color: #28995a;
+}
+
+.field-input.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+
+.card-foot-flex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 4px;
+}
+
+.foot-note {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.save-pill-btn {
   display: inline-flex;
-  color: var(--text-secondary);
-  transition: color 0.15s;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: #28995a;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: all 0.15s ease;
 }
 
-.toggle-eye:hover {
-  color: var(--text);
+.save-pill-btn:hover:not(:disabled) {
+  background: #23864f;
 }
 
-.saved-hint {
-  margin: 10px 0 0;
-  color: var(--ok);
-  font-size: 13px;
+.save-pill-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.token-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.cancel-pill-btn {
+  padding: 6px 14px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 12px;
   font-weight: 500;
+  color: #4b5563;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.3s;
+.cancel-pill-btn:hover {
+  background: #f9fafb;
 }
 
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
+.saved-feedback-tag {
+  font-size: 11px;
+  color: #28995a;
+  font-weight: 600;
 }
 
-@media (max-width: 860px) {
-  .settings-layout {
-    flex-direction: column;
-    gap: 12px;
-  }
+.mini-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #ffffff;
+  border-top-color: transparent;
+  border-radius: var(--radius-full, 9999px);
+  animation: spin 0.8s linear infinite;
+}
 
-  .side-nav {
-    width: 100%;
-    flex-direction: row;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-    padding: 6px;
-    gap: 6px;
-  }
+.max-w-md {
+  max-width: 440px;
+}
 
-  .side-nav::-webkit-scrollbar {
-    display: none;
-  }
-
-  .side-link {
-    white-space: nowrap;
-    padding: 6px 12px;
-    font-size: 13px;
-  }
-
-  .settings {
-    padding: 8px 0 40px;
-    gap: 12px;
-  }
-
-  .settings-board :deep(.el-card__body) {
-    padding: 14px 14px 18px;
-  }
-
-  .creds-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .token-row {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .token-input {
-    max-width: 100%;
-    width: 100%;
-    flex: 1 1 100%;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>

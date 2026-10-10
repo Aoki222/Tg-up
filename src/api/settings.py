@@ -77,8 +77,23 @@ class DriveFolderPayload(BaseModel):
         return text
 
 
+class ObserverRootPayload(BaseModel):
+    path: str
+    enabled: bool = True
+
+    @field_validator("path")
+    @classmethod
+    def root_path_not_empty(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("根路径不能为空")
+        return text
+
+
 class SettingsPayload(BaseModel):
     chat_id: int
+    watch_enabled: bool = True
+    observer_roots: list[ObserverRootPayload] = Field(default_factory=list)
     observer_paths: list[str] = Field(default_factory=lambda: ["download"])
     observer_path: str | None = None
     page_dir: str = "page"

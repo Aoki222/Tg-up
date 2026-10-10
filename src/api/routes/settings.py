@@ -7,11 +7,17 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 
+from pydantic import BaseModel
+
 from ...pipeline.ingest.policy import inspect_path_route
 from ..app_auth import require_token
 from ..present import _resolve_dest_name
 from ..settings import SettingsPayload
 from ...domain.settings_hub import SettingsHub
+
+
+class TogglePathPayload(BaseModel):
+    path: str
 
 
 def register(app: FastAPI) -> None:
@@ -33,6 +39,69 @@ def register(app: FastAPI) -> None:
             return hub.save_from_payload(payload.model_dump())
         except Exception as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+    # 快捷切换 L1：全局自动监控总开关
+    @app.post("/api/settings/watch/toggle", dependencies=[Depends(require_token)])
+    async def toggle_global_watch() -> dict:
+        hub: SettingsHub | None = app.state.settings_hub
+        if hub is None:
+            raise HTTPException(status_code=503, detail="配置服务未就绪")
+        current = hub.public_dict()
+        new_state = not current.get("watch_enabled", True)
+        current["watch_enabled"] = new_state
+        hub.save_from_payload(current)
+        return {"watch_enabled": new_state}
+
+    # 快捷切换 L2：单个物理根路径启停
+    @app.post("/api/settings/roots/toggle", dependencies=[Depends(require_token)])
+    async def toggle_root_path(payload: TogglePathPayload) -> dict:
+        hub: SettingsHub | None = app.state.settings_hub
+        if hub is None:
+            raise HTTPException(status_code=503, detail="配置服务未就绪")
+        target_path = payload.path.strip()
+        current = hub.public_dict()
+        roots = current.get("observer_roots", [])
+        found = False
+        target_resolved = Path(target_path).resolve()
+        for root in roots:
+            if Path(root["path"]).resolve() == target_resolved:
+                root["enabled"] = not root.get("enabled", True)
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail="未找到该物理根路径配置")
+        hub.save_from_payload(current)
+        return {"path": target_path, "observer_roots": roots}
+
+    # 快捷切换 L3：单个子目录路由启停
+    @app.post("/api/settings/routes/toggle", dependencies=[Depends(require_token)])
+    async def toggle_route_path(payload: TogglePathPayload) -> dict:
+        hub: SettingsHub | None = app.state.settings_hub
+        if hub is None:
+            raise HTTPException(status_code=503, detail="配置服务未就绪")
+        target_path = payload.path.strip()
+        current = hub.public_dict()
+        routes = current.get("routes", [])
+        found = False
+        target_resolved = Path(target_path).resolve()
+        for route in routes:
+            if Path(route["path"]).resolve() == target_resolved:
+                route["enabled"] = not route.get("enabled", True)
+                found = True
+                break
+        if not found:
+            # 若该子目录尚未配置专属规则，首次点击禁用时自动生成一条禁用的路由规则就地阻断
+            routes.append({
+                "name": target_resolved.name or str(target_resolved),
+                "path": str(target_resolved),
+                "enabled": False,
+                "platform": "telegram",
+                "dest_id": "",
+                "chat_id": 0,
+            })
+            current["routes"] = routes
+        hub.save_from_payload(current)
+        return {"path": target_path, "routes": routes}
 
     # 浏览已映射路径下的子文件夹与文件（支持按需懒加载 + 路由与任务状态计算）。
     @app.get("/api/fs/nodes")

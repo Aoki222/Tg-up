@@ -331,7 +331,7 @@ async function onDelete(name: string): Promise<void> {
   color: var(--text-secondary);
   background: var(--hover);
   padding: 1px 7px;
-  border-radius: 9999px;
+  border-radius: var(--radius-full, 9999px);
 }
 
 .empty-state {
@@ -346,7 +346,7 @@ async function onDelete(name: string): Promise<void> {
 .empty-icon {
   width: 44px;
   height: 44px;
-  border-radius: 50%;
+  border-radius: var(--radius-full, 9999px);
   background: #f0f5f2;
   color: #799480;
   display: flex;
@@ -368,29 +368,16 @@ async function onDelete(name: string): Promise<void> {
   color: var(--text-secondary);
 }
 
+
 .list {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-@media (max-width: 1100px) and (min-width: 769px) {
-  .list {
-    flex-direction: row;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    padding-bottom: 4px;
-  }
-
-  .item {
-    min-width: 260px;
-    scroll-snap-align: start;
-  }
-}
-
 @media (max-width: 768px) {
   .worker-card {
-    border-radius: 14px !important;
+    border-radius: var(--radius-lg, 14px) !important;
   }
 
   .list {
@@ -417,7 +404,7 @@ async function onDelete(name: string): Promise<void> {
 .item {
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md, 10px);
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -444,7 +431,7 @@ async function onDelete(name: string): Promise<void> {
 .kind {
   margin-left: 6px;
   padding: 1px 6px;
-  border-radius: 9999px;
+  border-radius: var(--radius-full, 9999px);
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 11px;
@@ -468,7 +455,7 @@ async function onDelete(name: string): Promise<void> {
   align-items: center;
   gap: 5px;
   padding: 2px 7px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm, 6px);
   font-size: 11px;
   font-weight: 500;
   background: #f4f7f5;
@@ -478,7 +465,7 @@ async function onDelete(name: string): Promise<void> {
 .status-dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-full, 9999px);
 }
 
 .status-badge.idle .status-dot {
@@ -527,7 +514,7 @@ async function onDelete(name: string): Promise<void> {
   margin-top: 10px;
   padding: 6px 10px;
   background: #f8faf8;
-  border-radius: 6px;
+  border-radius: var(--radius-sm, 6px);
   border: 1px solid var(--border-light);
 }
 
@@ -565,7 +552,7 @@ async function onDelete(name: string): Promise<void> {
   margin-top: 6px;
   padding: 5px 8px;
   background: #fdf5f5;
-  border-radius: 6px;
+  border-radius: var(--radius-sm, 6px);
   color: var(--bad);
   font-size: 11.5px;
   word-break: break-all;

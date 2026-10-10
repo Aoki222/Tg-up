@@ -501,7 +501,7 @@ onUnmounted(() => {
   justify-content: center;
   gap: 14px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md, 10px);
   background: var(--surface-muted, #f7f8fa);
 }
 
@@ -515,7 +515,7 @@ onUnmounted(() => {
   height: 30px;
   border: 3px solid var(--border);
   border-top-color: var(--primary, #409eff);
-  border-radius: 50%;
+  border-radius: var(--radius-full, 9999px);
   animation: qr-spin 0.8s linear infinite;
 }
 
@@ -529,7 +529,7 @@ onUnmounted(() => {
   width: 260px;
   height: 260px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md, 10px);
   background: #fff;
 }
 

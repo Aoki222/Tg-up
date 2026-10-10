@@ -11,8 +11,8 @@
  * 3. 【多监听目录健康诊断】：展示各个监听目录的存在性与读取权限状态。
  */
 
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { useQueryClient } from "@tanstack/vue-query";
 import {
   createChatTopic,
@@ -30,6 +30,7 @@ import type { FsNode, UploadConfig } from "../types";
 import { formatBytes } from "../format";
 import { ENABLE_GOOGLE_DRIVE } from "../features";
 import { useUnmatchedFiles } from "../composables/useUnmatched";
+import DirectoryPolicyModal from "./DirectoryPolicyModal.vue";
 
 const { panel } = defineProps<{
   panel: "routes" | "telegram" | "drive" | "watch" | "process";
@@ -129,13 +130,6 @@ const dialogChats = ref<DialogChat[]>([]);
 const dialogReason = ref("");
 const chatQuery = ref("");
 const stylePath = ref("");
-const styleDest = ref("");
-const styleCaptionMode = ref<"inherit" | "none" | "custom">("inherit");
-const styleCaption = ref("");
-const stylePreview = ref<"inherit" | "off" | "first_frame" | "grid">("inherit");
-const styleTopicMode = ref<"inherit" | "off" | "auto" | "fixed">("inherit");
-const styleTopicId = ref<number | null>(null);
-const styleTopics = ref<ForumTopic[]>([]);
 const topicChatId = ref<number | null>(null);
 const topicItems = ref<ForumTopic[]>([]);
 const topicTitle = ref("");
@@ -144,18 +138,6 @@ const topicRenameTitle = ref("");
 const topicLoading = ref(false);
 const topicForum = ref(true);
 const topicReason = ref("");
-const captionBox = ref<{ textarea?: HTMLTextAreaElement } | null>(null);
-
-const CAPTION_CHIPS = [
-  { label: "文件名", token: "{file_name}" },
-  { label: "主文件名", token: "{stem}" },
-  { label: "后缀", token: "{ext}" },
-  { label: "所在目录", token: "{folder}" },
-  { label: "相对路径", token: "{rel_path}" },
-  { label: "路由名", token: "{route}" },
-  { label: "大小", token: "{size}" },
-  { label: "日期", token: "{date}" },
-] as const;
 
 function samePath(left: string, right: string): boolean {
   // 统一斜杠、去掉末尾分隔符并忽略大小写，用于匹配目录路由。
@@ -221,11 +203,6 @@ function setPathDest(path: string, key: string): void {
 }
 
 
-function folderTail(path: string): string {
-  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts[parts.length - 1] || path;
-}
-
 function getDirDestLabel(data: FsNode): string {
   if (hasExplicitRoute(data.path)) {
     const lbl = pathDestLabel(data.path);
@@ -243,123 +220,8 @@ function getDirDestLabel(data: FsNode): string {
   return "未分配群组";
 }
 
-function readRouteStyle(path: string): void {
-  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
-  styleDest.value = pathDestKey(path);
-  if (!route || route.caption_template == null) {
-    styleCaptionMode.value = "inherit";
-    styleCaption.value = "";
-  } else if (route.caption_template === "") {
-    styleCaptionMode.value = "none";
-    styleCaption.value = "";
-  } else {
-    styleCaptionMode.value = "custom";
-    styleCaption.value = route.caption_template;
-  }
-  stylePreview.value = route?.preview ?? "inherit";
-  styleTopicMode.value = route?.topic_mode ?? "inherit";
-  styleTopicId.value = route?.topic_id ?? null;
-  void loadStyleTopics();
-}
-
 function openRouteSettings(path: string): void {
-  readRouteStyle(path);
   stylePath.value = path;
-}
-
-function chipOn(token: string): boolean {
-  return styleCaption.value.includes(token);
-}
-
-async function toggleChip(token: string): Promise<void> {
-  const current = styleCaption.value;
-  if (current.includes(token)) {
-    styleCaption.value = current
-      .split(token)
-      .join("")
-      .replace(/[ \t]{2,}/g, " ")
-      .replace(/\s+\/\s+/g, " / ")
-      .trim();
-    return;
-  }
-  const box = captionBox.value?.textarea;
-  if (box && document.activeElement === box) {
-    const start = box.selectionStart ?? current.length;
-    const end = box.selectionEnd ?? start;
-    const before = current.slice(0, start);
-    const after = current.slice(end);
-    const pad = before && !/\s$/.test(before) ? " " : "";
-    styleCaption.value = `${before}${pad}${token}${after}`;
-    await nextTick();
-    const pos = (before + pad + token).length;
-    box.focus();
-    box.setSelectionRange(pos, pos);
-    return;
-  }
-  styleCaption.value = current ? `${current} ${token}` : token;
-}
-
-const stylePreviewText = computed(() => {
-  const folder = folderTail(stylePath.value) || "目录";
-  const sample: Record<string, string> = {
-    file_name: "电影.mp4",
-    stem: "电影",
-    ext: "mp4",
-    folder,
-    rel_path: "电影.mp4",
-    route: folder,
-    size: "1.4 GB",
-    date: new Date().toISOString().slice(0, 10),
-  };
-  const template = styleCaption.value;
-  if (!template.trim()) return "不写说明";
-  let position = 0;
-  let text = "";
-  const pattern = /\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-  for (const match of template.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    text += template.slice(position, index);
-    const token = match[0];
-    const name = match[1];
-    if (token === "{{") text += "{";
-    else if (token === "}}") text += "}";
-    else if (name && name in sample) text += sample[name];
-    else text += token;
-    position = index + token.length;
-  }
-  text += template.slice(position);
-  return text.trim() || "不写说明";
-});
-
-function applyRouteSettings(): void {
-  const path = stylePath.value;
-  if (!path) return;
-  if (!styleDest.value) {
-    setPathDest(path, "");
-    stylePath.value = "";
-    return;
-  }
-  setPathDest(path, styleDest.value);
-  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
-  if (!route) {
-    stylePath.value = "";
-    return;
-  }
-  if (styleCaptionMode.value === "inherit") route.caption_template = null;
-  else if (styleCaptionMode.value === "none") route.caption_template = "";
-  else route.caption_template = styleCaption.value.slice(0, 2000);
-  route.preview = stylePreview.value === "inherit" ? null : stylePreview.value;
-  if (styleTopicMode.value === "inherit") {
-    route.topic_mode = null;
-    route.topic_id = null;
-  } else if (styleTopicMode.value === "fixed") {
-    route.topic_mode = "fixed";
-    route.topic_id = styleTopicId.value;
-  } else {
-    route.topic_mode = styleTopicMode.value;
-    route.topic_id = null;
-  }
-  stylePath.value = "";
 }
 
 function topicWord(path: string): string {
@@ -367,27 +229,7 @@ function topicWord(path: string): string {
   if (!route || route.topic_mode == null) return "话题：跟随";
   if (route.topic_mode === "off") return "话题：不使用";
   if (route.topic_mode === "auto") return "话题：按文件夹名";
-  const named = styleTopics.value.find((item) => item.topic_id === route.topic_id);
-  return named ? `话题：${named.title}` : "话题：已指定";
-}
-
-function styleChatId(): number | null {
-  if (!styleDest.value.startsWith("tg:")) return null;
-  const id = Number(styleDest.value.slice(3));
-  return Number.isFinite(id) ? id : null;
-}
-
-async function loadStyleTopics(): Promise<void> {
-  const chatId = styleChatId();
-  styleTopics.value = [];
-  if (chatId == null) return;
-  try {
-    const data = await fetchChatTopics(chatId, false);
-    styleTopics.value = data.forum ? data.topics : [];
-    if (!data.forum) styleTopicMode.value = styleTopicMode.value === "fixed" || styleTopicMode.value === "auto" ? "off" : styleTopicMode.value;
-  } catch {
-    styleTopics.value = [];
-  }
+  return route.topic_id ? `话题 ID: ${route.topic_id}` : "话题：已指定";
 }
 
 async function openTopicManager(chatId: number): Promise<void> {
@@ -617,71 +459,516 @@ async function submit(): Promise<void> {
   }
 }
 
+async function promptAddObserverPath(): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt("请输入本地监听目录的绝对或相对路径", "添加监听路径", {
+      confirmButtonText: "添加",
+      cancelButtonText: "取消",
+      inputPlaceholder: "例如 D:\\Downloads\\Telegram 或 download",
+      inputValidator: (val) => {
+        if (!val || !val.trim()) return "路径不能为空";
+        if (form.observer_paths.some((p) => samePath(p, val.trim()))) return "该路径已在监听列表中";
+        return true;
+      },
+    });
+    if (value && value.trim()) {
+      form.observer_paths.push(value.trim());
+      ElMessage.success("已添加监听路径，点击右上角保存即可生效");
+    }
+  } catch {
+    // 用户取消输入
+  }
+}
+
+function removeObserverPath(path: string): void {
+  form.observer_paths = form.observer_paths.filter((p) => !samePath(p, path));
+}
+
+function getPathStatus(path: string): { ok: boolean; text: string } {
+  const info = form.observer_path_infos.find((item) => samePath(item.path, path));
+  if (!info) {
+    return { ok: true, text: "状态: 监听配置已就绪" };
+  }
+  if (info.ok) {
+    return { ok: true, text: "状态: 正常监听中 · 读写权限正常" };
+  }
+  return { ok: false, text: `状态: 异常 · ${info.error || "目录不可读或不存在"}` };
+}
+
+const newExtInput = ref("");
+
+function addExtension(): void {
+  const ext = newExtInput.value.trim().replace(/^\./, "").toLowerCase();
+  if (!ext) return;
+  if (!form.watch_extensions.includes(ext)) {
+    form.watch_extensions.push(ext);
+  }
+  newExtInput.value = "";
+}
+
+function removeExtension(ext: string): void {
+  form.watch_extensions = form.watch_extensions.filter((item) => item !== ext);
+}
+
+function hasCaptionChip(token: string): boolean {
+  return Boolean(form.caption_template && form.caption_template.includes(token));
+}
+
+function toggleCaptionChip(token: string): void {
+  const current = form.caption_template || "";
+  if (hasCaptionChip(token)) {
+    form.caption_template = current
+      .replaceAll(token, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  } else {
+    form.caption_template = current ? `${current} ${token}` : token;
+  }
+}
+
 onMounted(() => {
   void load();
 });
 
-defineExpose({ dirty, openRouteSettings });
+defineExpose({
+  dirty,
+  openRouteSettings,
+  submit,
+  saving,
+  form,
+  chatsCount: computed(() => form.chats.length),
+  pathsCount: computed(() => form.observer_paths.length),
+});
 </script>
 
 <template>
-  <div v-loading="loading" class="config-block">
-    <div class="head">
-      <span>{{
-        panel === "routes" ? "路径" : panel === "telegram" ? "Telegram" : panel === "drive" ? "Google Drive" : panel === "watch" ? "监听" : "处理"
-      }}</span>
-      <el-button type="primary" :loading="saving" :disabled="!dirty" @click="submit">
-        保存到 upload.toml
-      </el-button>
+  <div v-loading="loading" class="config-pane-wrap">
+    <!-- ── 1. Telegram 目标 (telegram) ── -->
+    <div v-if="panel === 'telegram'" class="panel-section-group">
+      <!-- 默认目标群组 / 频道 -->
+      <div class="inset-card">
+        <div class="card-head">
+          <h3 class="card-title">默认投递目标 (chat_id)</h3>
+          <p class="card-hint">全局默认上传的 Telegram 群组或频道 ID (纯数字，不可为 0)。目录规则未命中时使用此默认目标。</p>
+        </div>
+
+        <div class="form-field-sm">
+          <label class="form-label">默认 chat_id</label>
+          <input
+            v-model.number="form.chat_id"
+            type="number"
+            placeholder="-100192837482"
+            class="app-input mono max-w-sm"
+          />
+        </div>
+      </div>
+
+      <!-- 已配置的目标列表 (chats) -->
+      <div class="inset-card">
+        <div class="card-head-row">
+          <div>
+            <h3 class="card-title">已配置的目标列表 (chats)</h3>
+            <p class="card-hint">供各监控目录分配路由的目标列表，支持自定义别名与话题。</p>
+          </div>
+          <button type="button" class="btn-light-green" @click="openAddChat">
+            + 添加群组 / 频道
+          </button>
+        </div>
+
+        <div class="chats-list-wrap">
+          <div v-if="form.chats.length === 0" class="empty-list-notice">
+            还没有配置群组或频道。点击右上角添加。
+          </div>
+          <div
+            v-for="item in form.chats"
+            :key="item.chat_id"
+            class="chat-row-item"
+          >
+            <div class="chat-row-main">
+              <div class="chat-title-line">
+                <span class="chat-main-name">{{ item.alias.trim() || item.title.trim() || "未命名目标" }}</span>
+                <span class="chat-mono-id">({{ item.chat_id }})</span>
+              </div>
+              <div v-if="item.alias.trim() && item.title.trim()" class="chat-sub-line">
+                别名: {{ item.alias }} · 官方名: {{ item.title }}
+              </div>
+            </div>
+            <div class="chat-row-actions">
+              <button
+                type="button"
+                class="btn-outline-sm"
+                @click="openTopicManager(item.chat_id)"
+              >
+                管理话题
+              </button>
+              <button
+                type="button"
+                class="btn-danger-text"
+                @click="removeChat(item.chat_id)"
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 全局话题新建开关 -->
+      <div class="inset-card">
+        <div class="card-switch-row">
+          <div>
+            <h3 class="card-title">全局话题新建开关 (topic_creation_enabled)</h3>
+            <p class="card-hint">当目标群组开启论坛话题模式且目录策略未指定固定话题时，是否允许自动创建新话题（如按文件夹名）。</p>
+          </div>
+          <el-switch v-model="form.topic_creation_enabled" />
+        </div>
+      </div>
     </div>
 
-    <el-form label-position="top" class="form">
-      <section v-if="panel === 'telegram'" class="section">
-        <div class="route-head">
-          <span class="section-title">群与频道</span>
-          <el-button size="small" @click="openAddChat">添加</el-button>
+    <!-- ── 2. 监听目录 (watch) ── -->
+    <div v-if="panel === 'watch'" class="panel-section-group">
+      <!-- 监控目录列表 -->
+      <div class="inset-card">
+        <div class="card-head-row">
+          <div>
+            <h3 class="card-title">已挂载的监听路径 (observer_paths)</h3>
+            <p class="card-hint">系统 watchdog 实时监听的本地文件系统目录，可多条。保存后热重载生效。</p>
+          </div>
+          <button type="button" class="btn-light-green" @click="promptAddObserverPath">
+            + 添加监听路径
+          </button>
         </div>
-        <p class="route-hint">从已登录的个人号里选择群或频道。名称先用官方标题，可以之后再改。</p>
-        <div v-if="form.chats.length === 0" class="route-empty">还没有群。点右上角添加。</div>
-        <div v-for="item in form.chats" :key="item.chat_id" class="map-card fallback">
-          <div class="map-name">{{ item.alias.trim() || item.title.trim() || "未命名" }}</div>
-          <div v-if="item.alias.trim() && item.title.trim()" class="map-path">官方名 {{ item.title }}</div>
-          <div class="map-dest">
-            <span class="map-id">{{ item.chat_id }}</span>
-            <el-button size="small" text @click="openTopicManager(item.chat_id)">话题</el-button>
-            <el-button size="small" text type="danger" @click="removeChat(item.chat_id)">删除</el-button>
+
+        <div class="paths-list-wrap">
+          <div v-if="form.observer_paths.length === 0" class="empty-list-notice">
+            暂无监听路径。点击右上角添加。
+          </div>
+          <div
+            v-for="path in form.observer_paths"
+            :key="path"
+            class="path-card-item"
+          >
+            <div class="path-card-left">
+              <span class="path-status-dot" :class="getPathStatus(path).ok ? 'ok' : 'err'"></span>
+              <div class="path-card-text">
+                <div class="path-card-name">{{ path }}</div>
+                <div class="path-card-sub">{{ getPathStatus(path).text }}</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="btn-danger-text"
+              @click="removeObserverPath(path)"
+            >
+              删除
+            </button>
           </div>
         </div>
-        <div class="cols">
-          <el-form-item label="全局话题">
-            <el-switch v-model="form.topic_creation_enabled" />
-          </el-form-item>
-        </div>
-      </section>
+      </div>
 
-      <section v-if="ENABLE_GOOGLE_DRIVE && panel === 'drive'" class="section">
-        <div class="route-head">
-          <span class="section-title">文件夹</span>
-          <el-button size="small" @click="showAddDrive = true; newDriveName = ''; newDriveId = ''">添加</el-button>
+      <!-- 文件格式过滤白名单 -->
+      <div class="inset-card">
+        <div class="card-head">
+          <h3 class="card-title">文件格式白名单 (watch_extensions)</h3>
+          <p class="card-hint">仅监听匹配此后缀的文件。若列表为空则处理所有文件。</p>
         </div>
-        <p class="route-hint">手动添加要投递的 Drive 文件夹。上传客户端接入前，这里的目标可以先选，文件会停在等待。</p>
-        <div v-if="form.drive_folders.length === 0" class="route-empty">还没有文件夹。</div>
-        <div v-for="item in form.drive_folders" :key="item.folder_id" class="map-card fallback">
-          <div class="map-name">{{ item.name.trim() || item.folder_id }}</div>
-          <div class="map-dest">
-            <span class="map-id">{{ item.folder_id }}</span>
-            <el-button size="small" text type="danger" @click="removeDrive(item.folder_id)">删除</el-button>
+
+        <div class="ext-chips-box">
+          <span
+            v-for="ext in form.watch_extensions"
+            :key="ext"
+            class="ext-chip"
+          >
+            {{ ext }}
+            <button type="button" class="chip-remove" @click="removeExtension(ext)">✕</button>
+          </span>
+          <div class="ext-add-row">
+            <input
+              v-model="newExtInput"
+              type="text"
+              placeholder="如 mkv"
+              class="ext-inline-input"
+              @keyup.enter="addExtension"
+            />
+            <button type="button" class="ext-inline-btn" @click="addExtension">+ 添加格式</button>
           </div>
         </div>
-      </section>
+      </div>
 
-      <section v-if="panel === 'routes'" class="section">
-        <div class="route-head">
-          <span class="section-title">映射目录与文件路由</span>
-          <el-button size="small" @click="refreshAllFsNodes">全部刷新</el-button>
+      <!-- 文件稳定静默超时 -->
+      <div class="inset-card">
+        <div class="card-split-row">
+          <div>
+            <h3 class="card-title">文件稳定超时 (stable_timeout_seconds)</h3>
+            <p class="card-hint">文件最后修改后需静默等待的秒数，确保大文件下载或复制完全写盘后再触发上传。</p>
+          </div>
+          <div class="input-with-unit-box">
+            <input
+              v-model.number="form.stable_timeout_seconds"
+              type="number"
+              min="1"
+              class="app-input mono w-32"
+            />
+            <span class="unit-label">秒</span>
+          </div>
         </div>
-        <p class="route-hint">每个目录一行状态。目标、说明和封面都在「设置」里改。未命中规则的文件不会上传。</p>
-        <div v-if="form.observer_paths.length === 0" class="route-empty">请先在「监听」里添加目录。</div>
+      </div>
+    </div>
+
+    <!-- ── 3. 处理与收尾 (process) ── -->
+    <div v-if="panel === 'process'" class="panel-section-group">
+      <!-- 视频封面与说明模板 -->
+      <div class="inset-card">
+        <div class="card-head">
+          <h3 class="card-title">视频封面与说明模板</h3>
+          <p class="card-hint">未配置单独目录策略时继承的默认全局设定。</p>
+        </div>
+
+        <div class="table-list-divide">
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">视频缩略图策略 (preview)</div>
+              <div class="row-info-sub">自动为 MKV/MP4 生成预览封面</div>
+            </div>
+            <div class="row-ctrl-col w-56">
+              <select v-model="form.preview" class="app-select">
+                <option value="first_frame">首帧截图 (first_frame)</option>
+                <option value="grid">九宫格剧情拼图 (grid)</option>
+                <option value="off">关闭缩略图 (off)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">缩略图目录 (page_dir)</div>
+              <div class="row-info-sub">临时生成缩略图的本地存放路径</div>
+            </div>
+            <div class="row-ctrl-col w-48">
+              <input v-model="form.page_dir" type="text" class="app-input mono" />
+            </div>
+          </div>
+
+          <div class="table-row-item vertical">
+            <div class="row-top-flex">
+              <div>
+                <div class="row-info-title">全局说明模板 (caption_template)</div>
+                <div class="row-info-sub">未设模板时默认采用此模板，留空则不写说明</div>
+              </div>
+              <div class="token-chips-group">
+                <button
+                  type="button"
+                  class="token-btn"
+                  :class="{ active: hasCaptionChip('{file_name}') }"
+                  @click="toggleCaptionChip('{file_name}')"
+                >
+                  <span v-if="hasCaptionChip('{file_name}')">✓ </span>{file_name}
+                </button>
+                <button
+                  type="button"
+                  class="token-btn"
+                  :class="{ active: hasCaptionChip('{size}') }"
+                  @click="toggleCaptionChip('{size}')"
+                >
+                  <span v-if="hasCaptionChip('{size}')">✓ </span>{size}
+                </button>
+                <button
+                  type="button"
+                  class="token-btn"
+                  :class="{ active: hasCaptionChip('{folder}') }"
+                  @click="toggleCaptionChip('{folder}')"
+                >
+                  <span v-if="hasCaptionChip('{folder}')">✓ </span>{folder}
+                </button>
+              </div>
+            </div>
+            <input
+              v-model="form.caption_template"
+              type="text"
+              placeholder="<b>{file_name}</b> | 规格: {size}"
+              class="app-input mono"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- 上传完成与超限处理 -->
+      <div class="inset-card">
+        <div class="card-head">
+          <h3 class="card-title">上传完成与超限处理</h3>
+          <p class="card-hint">本地源文件处置与超过 2GB 大文件的自动化处理动作。</p>
+        </div>
+
+        <div class="table-list-divide">
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">上传成功后处理 (after_success)</div>
+              <div class="row-info-sub">文件完整送达 Telegram 后的动作</div>
+            </div>
+            <div class="row-ctrl-col w-56">
+              <select v-model="form.after_success" class="app-select">
+                <option value="keep">保留本地源文件 (keep)</option>
+                <option value="delete">直接删除本地源文件 (delete)</option>
+                <option value="move_to_archive">移入归档目录 (move_to_archive)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">归档目录 (archive_dir)</div>
+              <div class="row-info-sub">选择移入归档时移动的目标子目录</div>
+            </div>
+            <div class="row-ctrl-col w-48">
+              <input v-model="form.archive_dir" type="text" class="app-input mono" />
+            </div>
+          </div>
+
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">超限自动切片 (auto_slice)</div>
+              <div class="row-info-sub">新发现超过 2GB 的视频按最少段数自动切片</div>
+            </div>
+            <div class="row-ctrl-col">
+              <el-switch v-model="form.auto_slice" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 并发与超时控制 -->
+      <div class="inset-card">
+        <div class="card-head">
+          <h3 class="card-title">并发与超时控制</h3>
+          <p class="card-hint">账号级任务并发与底层网络超时容错参数。</p>
+        </div>
+
+        <div class="table-list-divide">
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">账号级上传并发 (concurrency)</div>
+              <div class="row-info-sub">默认 1，文件内部由 FastTelethon 负责分块并发</div>
+            </div>
+            <div class="row-ctrl-col w-28">
+              <input
+                v-model.number="form.concurrency"
+                type="number"
+                min="1"
+                max="32"
+                class="app-input mono"
+              />
+            </div>
+          </div>
+
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">最大重试次数 (max_retries)</div>
+              <div class="row-info-sub">失败后自动重新排队的最大尝试次数 (默认 3)</div>
+            </div>
+            <div class="row-ctrl-col w-28">
+              <input
+                v-model.number="form.max_retries"
+                type="number"
+                min="1"
+                max="20"
+                class="app-input mono"
+              />
+            </div>
+          </div>
+
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">上传超时时间 (upload_timeout_seconds)</div>
+              <div class="row-info-sub">单个文件传输的最长超时限制 (默认 1200 秒)</div>
+            </div>
+            <div class="row-ctrl-col w-36 input-with-unit-box">
+              <input
+                v-model.number="form.upload_timeout_seconds"
+                type="number"
+                min="30"
+                class="app-input mono"
+              />
+              <span class="unit-label">秒</span>
+            </div>
+          </div>
+
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">Worker 分配超时 (assigned_timeout_seconds)</div>
+              <div class="row-info-sub">已指派 Worker 但未进入传输的最大等待时间 (默认 600 秒)</div>
+            </div>
+            <div class="row-ctrl-col w-36 input-with-unit-box">
+              <input
+                v-model.number="form.assigned_timeout_seconds"
+                type="number"
+                min="30"
+                class="app-input mono"
+              />
+              <span class="unit-label">秒</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 4. Google Drive (可选) ── -->
+    <div v-if="ENABLE_GOOGLE_DRIVE && panel === 'drive'" class="panel-section-group">
+      <div class="inset-card">
+        <div class="card-head-row">
+          <div>
+            <h3 class="card-title">Google Drive 文件夹</h3>
+            <p class="card-hint">手动添加要投递的 Drive 文件夹。上传客户端接入前，这里的目标可以先选，文件会停在等待。</p>
+          </div>
+          <button type="button" class="btn-light-green" @click="showAddDrive = true; newDriveName = ''; newDriveId = ''">
+            + 添加文件夹
+          </button>
+        </div>
+
+        <div class="chats-list-wrap">
+          <div v-if="form.drive_folders.length === 0" class="empty-list-notice">
+            还没有文件夹。点击右上角添加。
+          </div>
+          <div
+            v-for="item in form.drive_folders"
+            :key="item.folder_id"
+            class="chat-row-item"
+          >
+            <div class="chat-row-main">
+              <div class="chat-title-line">
+                <span class="chat-main-name">{{ item.name.trim() || item.folder_id }}</span>
+                <span class="chat-mono-id">({{ item.folder_id }})</span>
+              </div>
+            </div>
+            <div class="chat-row-actions">
+              <button
+                type="button"
+                class="btn-danger-text"
+                @click="removeDrive(item.folder_id)"
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 5. 映射路由 (routes - 独立页面时展示) ── -->
+    <div v-if="panel === 'routes'" class="panel-section-group">
+      <div class="inset-card">
+        <div class="card-head-row">
+          <div>
+            <h3 class="card-title">映射目录与文件路由</h3>
+            <p class="card-hint">每个目录一行状态。目标、说明和封面都在「设置」里改。未命中规则的文件不会上传。</p>
+          </div>
+          <button type="button" class="btn-outline-sm" @click="refreshAllFsNodes">
+            全部刷新
+          </button>
+        </div>
+
+        <div v-if="form.observer_paths.length === 0" class="empty-list-notice">
+          请先在「监听目录」里添加目录。
+        </div>
         <div v-else class="fs-tree-wrapper">
           <el-tree
             ref="treeRef"
@@ -749,104 +1036,21 @@ defineExpose({ dirty, openRouteSettings });
             </template>
           </el-tree>
         </div>
-        <div v-if="unmatchedFiles.length" class="unmatched">
-          <div class="section-title later">未命中的文件</div>
-          <p class="route-hint">这些文件没有配到群或 Drive，未进入上传队列。</p>
-          <div v-for="file in unmatchedFiles" :key="file.id" class="map-card fallback">
-            <div class="map-name">{{ file.file_name }}</div>
-            <div class="map-path">{{ file.file_path }}</div>
+
+        <div v-if="unmatchedFiles.length" class="unmatched-section">
+          <h4 class="card-title text-amber-700">未命中的文件</h4>
+          <p class="card-hint">这些文件没有配到群或 Drive，未进入上传队列。</p>
+          <div class="chats-list-wrap">
+            <div v-for="file in unmatchedFiles" :key="file.id" class="chat-row-item">
+              <div class="chat-row-main">
+                <div class="chat-main-name">{{ file.file_name }}</div>
+                <div class="chat-sub-line font-mono">{{ file.file_path }}</div>
+              </div>
+            </div>
           </div>
         </div>
-      </section>
-
-      <section v-if="panel === 'watch'" class="section">
-        <p class="route-hint">相对路径相对进程工作目录。目录必须已存在，程序不会创建。</p>
-        <el-form-item label="监听目录（可配置多条路径）">
-          <el-select
-            v-model="form.observer_paths"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            placeholder="相对或绝对路径，回车添加"
-            class="grow"
-          />
-          <ul v-if="form.observer_path_infos.length" class="path-hints">
-            <li v-for="item in form.observer_path_infos" :key="item.path">
-              <span>{{ item.path }}</span>
-              <span v-if="item.ok" class="ok">可用</span>
-              <span v-else class="bad">{{ item.error || "目录不存在" }}</span>
-            </li>
-          </ul>
-        </el-form-item>
-        <div class="cols">
-          <el-form-item label="监听文件格式">
-            <el-select
-              v-model="form.watch_extensions"
-              multiple
-              filterable
-              allow-create
-              default-first-option
-              placeholder="留空表示任意格式；回车添加"
-              class="grow"
-            />
-          </el-form-item>
-          <el-form-item label="写稳等待（秒）">
-            <el-input-number v-model="form.stable_timeout_seconds" :min="1" :step="30" />
-          </el-form-item>
-        </div>
-      </section>
-
-      <section v-if="panel === 'process'" class="section">
-        <h3 class="section-title">封面与收尾</h3>
-        <div class="cols">
-          <el-form-item label="封面模式">
-            <el-select v-model="form.preview" class="grow">
-              <el-option label="关闭" value="off" />
-              <el-option label="首帧截图" value="first_frame" />
-              <el-option label="网格缩略图" value="grid" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="默认说明" class="wide">
-            <el-input
-              v-model="form.caption_template"
-              type="textarea"
-              :rows="2"
-              maxlength="2000"
-              placeholder="路由都没写说明时使用。留空表示不写说明。"
-            />
-          </el-form-item>
-          <el-form-item label="封面临时目录">
-            <el-input v-model="form.page_dir" />
-          </el-form-item>
-          <el-form-item label="上传成功后">
-            <el-select v-model="form.after_success" class="grow">
-              <el-option label="保留本地文件" value="keep" />
-              <el-option label="删除本地文件" value="delete" />
-              <el-option label="归档到 uploaded/" value="move_to_archive" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="过大视频">
-            <el-switch v-model="form.auto_slice" active-text="自动切片" />
-          </el-form-item>
-          <el-form-item label="归档目录">
-            <el-input v-model="form.archive_dir" />
-          </el-form-item>
-        </div>
-        <h3 class="section-title later">并发与容错</h3>
-        <div class="cols">
-          <el-form-item label="最大重试次数">
-            <el-input-number v-model="form.max_retries" :min="1" :max="20" />
-          </el-form-item>
-          <el-form-item label="上传超时（秒）">
-            <el-input-number v-model="form.upload_timeout_seconds" :min="30" :step="30" />
-          </el-form-item>
-          <el-form-item label="抢占超时（秒）">
-            <el-input-number v-model="form.assigned_timeout_seconds" :min="30" :step="30" />
-          </el-form-item>
-        </div>
-      </section>
-    </el-form>
+      </div>
+    </div>
 
     <el-dialog
       :model-value="topicChatId != null"
@@ -881,104 +1085,12 @@ defineExpose({ dirty, openRouteSettings });
       </template>
     </el-dialog>
 
-    <el-dialog
+    <DirectoryPolicyModal
       :model-value="stylePath !== ''"
-      title="目录设置"
-      width="480px"
-      append-to-body
-      @close="stylePath = ''"
-    >
-      <p class="route-hint">{{ stylePath }}</p>
-      <el-form label-position="top">
-        <el-form-item label="投递目标">
-          <el-select v-model="styleDest" class="grow" placeholder="跟随父级" @change="loadStyleTopics">
-            <el-option label="跟随父级" value="" />
-            <el-option-group v-if="form.chats.length" label="Telegram">
-              <el-option
-                v-for="chat in form.chats"
-                :key="chat.chat_id"
-                :label="chatLabel(chat.chat_id)"
-                :value="`tg:${chat.chat_id}`"
-              />
-            </el-option-group>
-            <el-option-group v-if="ENABLE_GOOGLE_DRIVE && form.drive_folders.length" label="Google Drive">
-              <el-option
-                v-for="folder in form.drive_folders"
-                :key="folder.folder_id"
-                :label="folder.name.trim() || folder.folder_id"
-                :value="`gd:${folder.folder_id}`"
-              />
-            </el-option-group>
-          </el-select>
-          <p v-if="!styleDest" class="route-hint">跟随父级会去掉这个目录自己的说明、封面和话题。</p>
-        </el-form-item>
-        <el-form-item v-if="styleChatId() != null" label="话题">
-          <el-select v-model="styleTopicMode" class="grow" @change="loadStyleTopics">
-            <el-option label="跟随上一级" value="inherit" />
-            <el-option label="不使用话题" value="off" />
-            <el-option label="按文件夹名自动新建" value="auto" />
-            <el-option label="使用已有话题" value="fixed" />
-          </el-select>
-          <el-select
-            v-if="styleTopicMode === 'fixed'"
-            v-model="styleTopicId"
-            class="grow topic-pick"
-            placeholder="选择话题"
-          >
-            <el-option
-              v-for="topic in styleTopics"
-              :key="topic.topic_id"
-              :label="topic.title || String(topic.topic_id)"
-              :value="topic.topic_id"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="说明">
-          <el-select v-model="styleCaptionMode" class="grow">
-            <el-option label="跟随上一级" value="inherit" />
-            <el-option label="不要说明" value="none" />
-            <el-option label="自己写" value="custom" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="styleCaptionMode === 'custom'" label="说明模板">
-          <el-input
-            ref="captionBox"
-            v-model="styleCaption"
-            type="textarea"
-            :rows="3"
-            maxlength="2000"
-            placeholder="{folder} / {stem}"
-          />
-          <div class="caption-chips">
-            <button
-              v-for="chip in CAPTION_CHIPS"
-              :key="chip.token"
-              type="button"
-              class="caption-chip"
-              :class="{ on: chipOn(chip.token) }"
-              @mousedown.prevent
-              @click="toggleChip(chip.token)"
-            >
-              {{ chip.label }}
-            </button>
-          </div>
-          <p class="route-hint">预览　{{ stylePreviewText }}</p>
-        </el-form-item>
-        <el-form-item label="封面">
-          <el-select v-model="stylePreview" class="grow">
-            <el-option label="跟随上一级" value="inherit" />
-            <el-option label="关闭" value="off" />
-            <el-option label="首帧截图" value="first_frame" />
-            <el-option label="网格缩略图" value="grid" />
-          </el-select>
-          <p class="route-hint">没写时用处理页的封面模式。一路往上都没写说明时，用处理页的默认说明。</p>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="stylePath = ''">取消</el-button>
-        <el-button type="primary" @click="applyRouteSettings">保存</el-button>
-      </template>
-    </el-dialog>
+      :path="stylePath"
+      @update:model-value="stylePath = $event ? stylePath : ''"
+      @saved="load"
+    />
 
     <el-dialog v-model="showAddChat" title="选择群或频道" width="440px" append-to-body>
       <p v-if="dialogReason" class="route-hint">{{ dialogReason }}</p>
@@ -1026,19 +1138,466 @@ defineExpose({ dirty, openRouteSettings });
 </template>
 
 <style scoped>
-.config-block {
+.config-pane-wrap {
+  width: 100%;
+}
+
+.panel-section-group {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.inset-card {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-md, 10px);
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #111827;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.card-hint {
+  margin: 0;
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.form-field-sm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.app-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 12px;
+  color: #111827;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.app-input:focus {
+  background: #ffffff;
+  border-color: #28995a;
+}
+
+.app-input.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.max-w-sm {
+  max-width: 320px;
+}
+
+.btn-light-green {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(40, 153, 90, 0.1);
+  color: #28995a;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-light-green:hover {
+  background: rgba(40, 153, 90, 0.18);
+}
+
+.chats-list-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-row-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  font-size: 12px;
+}
+
+.chat-row-item:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.chat-row-main {
   min-width: 0;
 }
 
-.head {
+.chat-title-line {
+  font-weight: 700;
+  color: #111827;
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
+}
+
+.chat-main-name {
+  color: #111827;
+}
+
+.chat-mono-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 400;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.chat-sub-line {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.chat-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-outline-sm {
+  padding: 3px 8px;
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 11px;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-outline-sm:hover {
+  background: #f3f4f6;
+}
+
+.btn-danger-text {
+  border: 0;
+  background: transparent;
+  color: #ef4444;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 6px);
+  transition: all 0.15s ease;
+}
+
+.btn-danger-text:hover {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.empty-list-notice {
+  padding: 16px 0;
+  text-align: center;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.card-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
-  font-size: 13px;
+}
+
+.paths-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.path-card-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm, 6px);
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.path-card-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.path-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full, 9999px);
+  flex-shrink: 0;
+}
+
+.path-status-dot.ok {
+  background: #28995a;
+}
+
+.path-status-dot.err {
+  background: #f59e0b;
+}
+
+.path-card-text {
+  min-width: 0;
+}
+
+.path-card-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  color: #1f2937;
+  font-size: 12px;
+}
+
+.path-card-sub {
+  font-size: 10.5px;
+  color: #9ca3af;
+  margin-top: 1px;
+}
+
+.ext-chips-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-sm, 6px);
+  align-items: center;
+}
+
+.ext-chip {
+  padding: 2px 7px;
+  border-radius: var(--radius-sm, 6px);
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: #374151;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chip-remove {
+  border: 0;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0;
+}
+
+.chip-remove:hover {
+  color: #ef4444;
+}
+
+.ext-add-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ext-inline-input {
+  width: 70px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  outline: none;
+}
+
+.ext-inline-input:focus {
+  border-color: #28995a;
+}
+
+.ext-inline-btn {
+  border: 0;
+  background: transparent;
+  color: #28995a;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.ext-inline-btn:hover {
+  text-decoration: underline;
+}
+
+.card-split-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.input-with-unit-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.unit-label {
+  font-size: 11.5px;
+  color: #9ca3af;
+}
+
+.w-28 {
+  width: 80px;
+}
+
+.w-32 {
+  width: 100px;
+}
+
+.w-36 {
+  width: 120px;
+}
+
+.w-48 {
+  width: 180px;
+}
+
+.w-56 {
+  width: 220px;
+}
+
+.table-list-divide {
+  display: flex;
+  flex-direction: column;
+}
+
+.table-row-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  font-size: 12px;
+}
+
+.table-row-item:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.table-row-item.vertical {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.row-info-title {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.row-info-sub {
+  font-size: 10.5px;
+  color: #9ca3af;
+  margin-top: 1px;
+}
+
+.row-top-flex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.token-chips-group {
+  display: flex;
+  gap: 4px;
+}
+
+.token-btn {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 6px);
+  background: #f3f4f6;
+  border: 0;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10.5px;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.token-btn:hover {
+  background: #e5e7eb;
+}
+
+.token-btn.active {
+  background: rgba(40, 153, 90, 0.15);
+  color: #28995a;
+  font-weight: 700;
+}
+
+.app-select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 12px;
+  color: #111827;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.app-select:focus {
+  background: #ffffff;
+  border-color: #28995a;
+}
+
+.config-block {
+  min-width: 0;
 }
 
 .hint {
@@ -1103,7 +1662,7 @@ defineExpose({ dirty, openRouteSettings });
   margin-bottom: 8px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md, 10px);
   background: var(--surface);
   text-align: left;
   cursor: pointer;
@@ -1136,7 +1695,7 @@ defineExpose({ dirty, openRouteSettings });
   margin-bottom: 8px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md, 10px);
   background: var(--surface);
 }
 
@@ -1176,7 +1735,7 @@ defineExpose({ dirty, openRouteSettings });
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md, 10px);
   background: var(--surface);
   text-align: left;
   cursor: pointer;
@@ -1269,7 +1828,7 @@ defineExpose({ dirty, openRouteSettings });
 .fs-tree-wrapper {
   margin-top: 10px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg, 14px);
   background: var(--surface);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
@@ -1286,7 +1845,7 @@ defineExpose({ dirty, openRouteSettings });
   min-height: 40px;
   padding-top: 3px;
   padding-bottom: 3px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 6px);
   transition: background-color 0.15s ease;
 }
 
@@ -1326,7 +1885,7 @@ defineExpose({ dirty, openRouteSettings });
   display: inline-flex;
   align-items: center;
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-full, 9999px);
   font-size: 12px;
   line-height: 1.4;
   background: rgba(40, 153, 90, 0.08);
@@ -1354,7 +1913,7 @@ defineExpose({ dirty, openRouteSettings });
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  border-radius: 999px;
+  border-radius: var(--radius-full, 9999px);
   padding: 2px 9px;
   font-size: 12px;
   cursor: pointer;
@@ -1398,7 +1957,7 @@ defineExpose({ dirty, openRouteSettings });
 .node-badge {
   font-size: 10.5px;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 6px);
   flex-shrink: 0;
 }
 
@@ -1419,7 +1978,7 @@ defineExpose({ dirty, openRouteSettings });
 .file-ext-unsupported {
   font-size: 10px;
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 6px);
   background: #f3f4f6;
   color: #6b7280;
   border: 1px solid #e5e7eb;
@@ -1429,7 +1988,7 @@ defineExpose({ dirty, openRouteSettings });
 .file-status {
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 6px);
   font-weight: 500;
   flex-shrink: 0;
 }
@@ -1474,7 +2033,7 @@ defineExpose({ dirty, openRouteSettings });
 .route-pill {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm, 6px);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -1560,7 +2119,7 @@ defineExpose({ dirty, openRouteSettings });
     max-width: calc(100vw - 24px) !important;
     width: auto !important;
     margin: 16px auto !important;
-    border-radius: 16px;
+    border-radius: var(--radius-xl, 16px);
   }
 }
 </style>

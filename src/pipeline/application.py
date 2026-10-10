@@ -59,7 +59,7 @@ from ..domain.task import task_from_row
 from ..logger import get_logger
 from ..utils.sender_pool import SenderPool
 from ..utils.topic_creactor import TopicCreator
-from .discover import FolderWatcher, iter_existing_files_many
+from .discover import FolderWatcher, iter_existing_files, iter_existing_files_many
 from .ingest import FileIngestor, PreviewJob, PreviewPool
 from .schedule import UploadScheduler
 from .slicer import SliceService
@@ -98,6 +98,7 @@ class UploaderApplication:
         self._logged_unconfigured = False
         self._session_login = None
         self._channel_cache = TelegramChannelCache()
+        self._last_active_routes: set[Path] = set()
 
     async def run(self) -> None:
         """启动整条流水线，直到收到 SIGINT/SIGTERM。
@@ -147,11 +148,19 @@ class UploaderApplication:
         )
         self._preview_pool = preview_pool
         watcher = FolderWatcher(file_queue.put)
-        usable = [path for path in settings.observer_paths if path.is_dir()]
+        if not settings.watch_enabled:
+            usable = []
+        elif settings.observer_roots:
+            usable = [root.path for root in settings.observer_roots if root.enabled and root.path.is_dir()]
+        else:
+            usable = [path for path in settings.observer_paths if path.is_dir()]
         watcher.apply_paths(usable)
         self._ingestor = ingestor
         self._watcher = watcher
         self._file_queue = file_queue
+        self._last_active_routes = {
+            route.path.resolve() for route in settings.routes if route.enabled and route.path.is_dir()
+        } if settings.watch_enabled else set()
 
         for existing in iter_existing_files_many(usable, settings.watch_extensions):
             await file_queue.put(existing)
@@ -275,19 +284,42 @@ class UploaderApplication:
             os._exit(1)
 
     async def _sync_watch_paths(self) -> None:
-        """配置里的监听目录和 watchdog 对齐；新加的目录补扫已有文件。"""
+        """配置里的监听目录和 watchdog 对齐；新加的目录补扫已有文件。同时处理单目录路由从禁用变为启用的局部补扫。"""
         if self._watcher is None or self._settings_hub is None or self._file_queue is None:
             return
         settings = self._settings_hub.get()
-        usable = [path for path in settings.observer_paths if path.is_dir()]
+        if not settings.watch_enabled:
+            usable = []
+        elif settings.observer_roots:
+            usable = [root.path for root in settings.observer_roots if root.enabled and root.path.is_dir()]
+        else:
+            usable = [path for path in settings.observer_paths if path.is_dir()]
         added = self._watcher.apply_paths(usable)
-        if not added:
-            return
-        queued = 0
-        for path in iter_existing_files_many(added, settings.watch_extensions):
-            await self._file_queue.put(path)
-            queued += 1
-        logger.info("监听目录已更新: %s  新目录扫入 %s 个文件", [str(p) for p in added], queued)
+        if added:
+            queued = 0
+            for path in iter_existing_files_many(added, settings.watch_extensions):
+                await self._file_queue.put(path)
+                queued += 1
+            logger.info("物理监听目录已更新: %s  扫入 %s 个文件", [str(p) for p in added], queued)
+
+        # 检查是否有单目录路由 (B 粒度) 从 disabled 变为了 enabled，进行局部增量补扫
+        if settings.watch_enabled:
+            current_active_routes = {
+                route.path.resolve()
+                for route in settings.routes
+                if route.enabled and route.path.is_dir()
+            }
+            reactivated = current_active_routes - self._last_active_routes
+            if reactivated:
+                route_queued = 0
+                for r_path in reactivated:
+                    for path in iter_existing_files(r_path, settings.watch_extensions):
+                        await self._file_queue.put(path)
+                        route_queued += 1
+                logger.info("路由重新启用: %s  局部扫入 %s 个文件", [str(p) for p in reactivated], route_queued)
+            self._last_active_routes = current_active_routes
+        else:
+            self._last_active_routes = set()
 
     async def _sync_sessions(
         self,

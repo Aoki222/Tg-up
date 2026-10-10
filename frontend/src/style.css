@@ -27,6 +27,13 @@
   --col-oversized: #fbf6ee;
   --col-failed: #fdf5f5;
 
+  /* ── 统一同心圆角层级规范 (Concentric Radius Tokens) ── */
+  --radius-xl: 16px;      /* 浮层模态大弹窗 / 全景画幅 (Modal Dialogs) */
+  --radius-lg: 14px;      /* 主界面并列大舱体：监控目录舱 .dock & 看板舱 .board */
+  --radius-md: 10px;      /* 中层卡片：.dock-item, .task-card, .inset-card, 分组卡片 */
+  --radius-sm: 6px;       /* 交互按钮, 输入框, 下拉框, Tab切换项, 标签徽章 */
+  --radius-full: 9999px;  /* 状态指示点, 进度条微轨 */
+
   /* Double-Bezel 苹果双层微切削内阴影与自然光扩散 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.03);
   --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 3px rgba(0, 0, 0, 0.03), 0 4px 14px rgba(0, 0, 0, 0.03);
@@ -72,7 +79,7 @@ body {
 .el-card {
   --el-card-border-color: var(--border);
   --el-card-bg-color: var(--surface);
-  border-radius: 16px !important;
+  border-radius: var(--radius-lg, 14px) !important;
   box-shadow: var(--shadow);
   border: 1px solid var(--border) !important;
   transition: box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s;
@@ -92,7 +99,7 @@ body {
 }
 
 .el-button {
-  border-radius: 8px !important;
+  border-radius: var(--radius-sm, 6px) !important;
   font-weight: 500 !important;
   transition: transform 0.15s cubic-bezier(0.32, 0.72, 0, 1), background-color 0.15s, border-color 0.15s !important;
 }
@@ -109,14 +116,43 @@ body {
   box-shadow: 0 1px 2px rgba(40, 153, 90, 0.2);
 }
 
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  border-radius: var(--radius-sm, 6px) !important;
+}
+
+.el-tag {
+  border-radius: var(--radius-sm, 6px) !important;
+}
+
+.el-dialog,
+.el-message-box {
+  border-radius: var(--radius-xl, 16px) !important;
+}
+
+.el-switch {
+  --el-switch-on-color: var(--accent);
+}
+
+.el-dropdown-menu,
+.el-select__popper.el-popper,
+.el-popover.el-popper {
+  border-radius: var(--radius-md, 10px) !important;
+}
+
+.el-tooltip__popper {
+  border-radius: var(--radius-sm, 6px) !important;
+}
+
 /* 精密微轨进度条 */
 .el-progress-bar__outer {
   background-color: #e8ede9 !important;
-  border-radius: 9999px !important;
+  border-radius: var(--radius-full, 9999px) !important;
 }
 
 .el-progress-bar__inner {
-  border-radius: 9999px !important;
+  border-radius: var(--radius-full, 9999px) !important;
   transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 

@@ -179,6 +179,14 @@ export interface ObserverPathInfo {
   error: string;
 }
 
+/** 物理根路径配置与启用状态 */
+export interface ObserverRootItem {
+  path: string;
+  enabled: boolean;
+  ok: boolean;
+  error: string;
+}
+
 export interface FsRouteInfo {
   matched: boolean;
   is_explicit: boolean;
@@ -189,6 +197,7 @@ export interface FsRouteInfo {
   chat_id?: number;
   topic_enabled?: boolean;
   name?: string;
+  enabled?: boolean;
 }
 
 export interface FsNode {
@@ -209,6 +218,10 @@ export interface FsNode {
 
 /** upload.toml 对应的完整配置负载 */
 export interface UploadConfig {
+  /** 全局自动监控总开关（L1） */
+  watch_enabled?: boolean;
+  /** 各物理根路径独立启停配置（L2） */
+  observer_roots?: ObserverRootItem[];
   /** Telegram 目标频道或群组 chat_id（通常以 -100 开头） */
   chat_id: number;
   /** 监听目录路径数组（支持多目录并行监听） */

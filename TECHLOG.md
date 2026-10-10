@@ -11,7 +11,7 @@
 **文件只从监听目录进。** 曾经做过 HTTP 投喂和阻塞等待，已按需求撤掉。
 
 入口：`python -m src.main`  
-控制台：`http://127.0.0.1:8000/`
+控制台：`http://127.0.0.1:8421/`
 
 ---
 
@@ -247,9 +247,9 @@ release：`pending`，清空 `assigned_bot` / `assigned_at` / `started_at`，**�
 ```bash
 python -m src.main
 python -m src.adapters.generate_session
-cd frontend && npm run dev      # 代理 /api → 8000
+cd frontend && npm run dev      # 代理 /api → 8421
 cd frontend && npm run build    # → frontend/dist
-docker compose up -d --build    # 容器名 uploader，数据在 ./data
+docker compose pull && docker compose up -d    # 镜像 ghcr.io/aoki222/tg-up:latest，容器名 tg-up，数据在 ./data
 ```
 
-push `main` 构建并推送 `ghcr.io/aoki222/tg-up:staging`（改动只有 Markdown 时不触发）。换成 `latest` 要手动跑「Promote Staging to Latest」。测试机 compose 是 `docker-compose.staging.yml`，容器名 `uploader-staging`。
+push `main` 构建并推送 `ghcr.io/aoki222/tg-up:staging`（改动只有 Markdown 时不触发）。换成 `latest` 要手动跑「Promote Staging to Latest」。测试机 compose 是 `docker-compose.staging.yml`，容器名 `tg-up-staging`。

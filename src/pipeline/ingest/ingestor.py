@@ -122,7 +122,9 @@ class FileIngestor:
             existing = await self.task_repository.find_active_by_file_path(path_key)
             if existing:
                 return existing
-            if not decision.matched:
+            if decision.is_disabled:
+                logger.info("目录监控已单独禁用，不上传: %s", file_path)
+            elif not decision.matched:
                 logger.info("未命中路由，不上传: %s", file_path)
             else:
                 logger.info("跳过非目标扩展名: %s", file_path)
@@ -173,6 +175,9 @@ class FileIngestor:
                 file_size,
             )
             logger.info("未命中路由，不上传: %s", file_path)
+            return None
+        if decision.is_disabled:
+            logger.info("目录监控已单独禁用，不上传: %s", file_path)
             return None
         if not decision.allowed:
             logger.info("跳过非目标文件: %s", file_path)

@@ -48,6 +48,14 @@ class DriveFolder:
     name: str = ""
 
 
+@dataclass(frozen=True)
+class ObserverRoot:
+    """物理监听根目录及其监控状态。"""
+
+    path: Path
+    enabled: bool = True
+
+
 class PreviewMode(StrEnum):
     OFF = "off"
     FIRST_FRAME = "first_frame"
@@ -79,3 +87,8 @@ class UploadSettings:
     auto_slice: bool = False
     # 路由都没写说明时用这份。空字符串表示不写说明。
     caption_template: str = ""
+    # 全局自动监控总开关
+    watch_enabled: bool = True
+    # 带启停状态的物理根目录列表
+    observer_roots: tuple[ObserverRoot, ...] = ()
+

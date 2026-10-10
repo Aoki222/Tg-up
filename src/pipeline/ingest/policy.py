@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...domain.caption import find_route, resolve_preview
+from ...domain.caption import find_nearest_route, find_route, resolve_preview
 from ...domain.route_topic import resolve_topic
 from ...domain.upload_settings import PreviewMode, UploadSettings
 from .filters import check_transient_file
@@ -34,15 +34,20 @@ class IngestDecision:
     dest_id: str = ""
     is_transient: bool = False
     transient_reason: str = ""
+    is_disabled: bool = False
 
 
-def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[str, str, int, bool] | None:
-    """父目录哈希回溯。没有启用中的规则，或祖先都不在表里，返回 None，不回退全局群。"""
-    route = find_route(file_path, settings)
+def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[str, str, int, bool, bool] | None:
+    """父目录哈希回溯。返回 (platform, dest_id, chat_id, topic_on, is_disabled)。
+    没有命中任何规则返回 None。若最近规则被禁用，is_disabled 为 True。
+    """
+    route = find_nearest_route(file_path, settings)
     if route is None:
         return None
+    if not route.enabled:
+        return route.platform, _route_dest(route), route.chat_id or _chat_id_of(route), False, True
     topic_on = settings.topic_creation_enabled if route.topic_enabled is None else route.topic_enabled
-    return route.platform, _route_dest(route), route.chat_id or _chat_id_of(route), topic_on
+    return route.platform, _route_dest(route), route.chat_id or _chat_id_of(route), topic_on, False
 
 
 def _route_dest(route) -> str:
@@ -63,10 +68,10 @@ def _chat_id_of(route) -> int:
 
 def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
     """检查一个目录或文件当前的路由归属、目标标识以及是专属还是继承。"""
-    active = [route for route in settings.routes if route.enabled and _route_dest(route)]
-    if not active:
+    all_configured = [route for route in settings.routes if _route_dest(route)]
+    if not all_configured:
         return {"matched": False, "is_explicit": False}
-    route_map = {route.path.resolve(): route for route in active}
+    route_map = {route.path.resolve(): route for route in all_configured}
     resolved = target_path.resolve()
 
     # 1. 自身就是一条路由规则（针对目录）
@@ -84,6 +89,7 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
             "chat_id": route.chat_id or _chat_id_of(route),
             "topic_enabled": topic_on,
             "name": route.name,
+            "enabled": route.enabled,
         }
 
     # 2. 自底向上回溯父级目录（继承规则）
@@ -103,6 +109,7 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
             "chat_id": parent_route.chat_id or _chat_id_of(parent_route),
             "topic_enabled": topic_on,
             "name": parent_route.name,
+            "enabled": parent_route.enabled,
         }
 
     return {"matched": False, "is_explicit": False}
@@ -137,7 +144,20 @@ class IngestPolicy:
                 allowed=False,
                 matched=False,
             )
-        platform, dest_id, chat_id, _legacy_topic = matched
+        platform, dest_id, chat_id, _legacy_topic, is_disabled = matched
+        if is_disabled:
+            return IngestDecision(
+                need_single=False,
+                need_content=False,
+                chat_id=chat_id,
+                topic_enabled=False,
+                allowed=False,
+                matched=False,
+                is_disabled=True,
+                platform=platform,
+                dest_id=dest_id,
+                transient_reason="目录监控已单独禁用",
+            )
         topic_mode, fixed_topic_id = resolve_topic(file_path, settings)
         if platform != "telegram":
             topic_mode, fixed_topic_id = "off", None
