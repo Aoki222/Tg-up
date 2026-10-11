@@ -13,24 +13,19 @@
 
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { useQueryClient } from "@tanstack/vue-query";
 import {
   createChatTopic,
   deleteChatTopic,
   fetchChatTopics,
   fetchDialogChats,
-  fetchFsNodes,
   fetchSettings,
   renameChatTopic,
   saveSettings,
   syncDialogChats,
 } from "../api";
 import type { DialogChat, ForumTopic } from "../api";
-import type { FsNode, UploadConfig } from "../types";
-import { formatBytes } from "../format";
+import type { UploadConfig } from "../types";
 import { ENABLE_GOOGLE_DRIVE } from "../features";
-import { useUnmatchedFiles } from "../composables/useUnmatched";
-import DirectoryPolicyModal from "./DirectoryPolicyModal.vue";
 
 const { panel } = defineProps<{
   panel: "routes" | "telegram" | "drive" | "watch" | "process";
@@ -54,7 +49,8 @@ const savedSnapshot = ref("");
 /** 表单绑定的配置实体数据 */
 const form = reactive<UploadConfig>({
   chat_id: 0,
-  observer_paths: ["download"],
+  observer_roots: [],
+  observer_paths: [],
   observer_path_infos: [],
   page_dir: "page",
   archive_dir: "uploaded",
@@ -82,7 +78,9 @@ const form = reactive<UploadConfig>({
 function snapshotOf(config: UploadConfig): string {
   return JSON.stringify({
     ...config,
-    observer_paths: [...config.observer_paths].map((item) => item.trim()).sort(),
+    observer_roots: [...(config.observer_roots ?? [])]
+      .map((item) => ({ path: item.path.trim(), enabled: item.enabled }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
     watch_extensions: [...config.watch_extensions].map((item) => item.trim()).sort(),
     routes: [...(config.routes ?? [])]
       .map((item) => ({
@@ -117,6 +115,7 @@ function snapshotOf(config: UploadConfig): string {
  */
 function applyServer(data: UploadConfig): void {
   Object.assign(form, data, {
+    observer_roots: data.observer_roots ?? [],
     routes: data.routes ?? [],
     chats: data.chats ?? [],
     drive_folders: data.drive_folders ?? [],
@@ -144,92 +143,10 @@ function samePath(left: string, right: string): boolean {
   return left.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === right.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
-const { files: unmatchedFiles } = useUnmatchedFiles();
 
-function chatLabel(chatId: number): string {
-  // 优先显示用户配置的别名，其次显示 Telegram 标题，最后回退到 chat_id。
-  if (!chatId) return "未命中";
-  const item = form.chats.find((entry) => entry.chat_id === chatId);
-  if (!item) return String(chatId);
-  return item.alias.trim() || item.title.trim() || String(chatId);
-}
-
-function pathDestKey(path: string): string {
-  // 将监听目录映射为前端选择器使用的 tg:<id> 或 gd:<folder_id> 标识。
-  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
-  if (!route) return "";
-  if ((route.platform || "telegram") === "gdrive") return `gd:${route.dest_id}`;
-  if (!route.chat_id) return "";
-  return `tg:${route.chat_id}`;
-}
-
-function pathDestLabel(path: string): string {
-  // 把路由标识转换为界面上的群组别名或 Drive 文件夹名称。
-  const key = pathDestKey(path);
-  if (!key) return "未命中";
-  if (key.startsWith("gd:")) {
-    const folderId = key.slice(3);
-    const folder = form.drive_folders.find((item) => item.folder_id === folderId);
-    return folder?.name.trim() || folderId;
-  }
-  return chatLabel(Number(key.slice(3)));
-}
-
-function setPathDest(path: string, key: string): void {
-  // 修改单个目录的目标路由；空目标表示移除该目录路由。
-  const index = form.routes.findIndex((item) => samePath(item.path, path));
-  if (!key) {
-    if (index >= 0) form.routes.splice(index, 1);
-    return;
-  }
-  const next = key.startsWith("gd:")
-    ? { platform: "gdrive", dest_id: key.slice(3), chat_id: 0 }
-    : { platform: "telegram", dest_id: key.slice(3), chat_id: Number(key.slice(3)) };
-  if (index >= 0) {
-    Object.assign(form.routes[index], next, { enabled: true });
-  } else {
-    form.routes.push({
-      name: "",
-      path,
-      topic_enabled: null,
-      caption_template: null,
-      preview: null,
-      topic_mode: null,
-      topic_id: null,
-      enabled: true,
-      ...next,
-    });
-  }
-}
-
-
-function getDirDestLabel(data: FsNode): string {
-  if (hasExplicitRoute(data.path)) {
-    const lbl = pathDestLabel(data.path);
-    return lbl !== "未命中" ? lbl : "未分配群组";
-  }
-  if (data.current_route?.matched) {
-    if (data.current_route.dest_name) {
-      return data.current_route.dest_name;
-    }
-    if (data.current_route.chat_id) {
-      return chatLabel(data.current_route.chat_id);
-    }
-    return "默认目标";
-  }
-  return "未分配群组";
-}
 
 function openRouteSettings(path: string): void {
   stylePath.value = path;
-}
-
-function topicWord(path: string): string {
-  const route = form.routes.find((item) => item.enabled && samePath(item.path, path));
-  if (!route || route.topic_mode == null) return "话题：跟随";
-  if (route.topic_mode === "off") return "话题：不使用";
-  if (route.topic_mode === "auto") return "话题：按文件夹名";
-  return route.topic_id ? `话题 ID: ${route.topic_id}` : "话题：已指定";
 }
 
 async function openTopicManager(chatId: number): Promise<void> {
@@ -288,43 +205,7 @@ async function onDeleteTopic(topicId: number): Promise<void> {
   }
 }
 
-function hasExplicitRoute(path: string): boolean {
-  return form.routes.some((item) => item.enabled && samePath(item.path, path));
-}
 
-const queryClient = useQueryClient();
-const treeRef = ref();
-
-async function loadFsNodes(node: any, resolve: (data: FsNode[]) => void): Promise<void> {
-  const targetPath = node.level === 0 ? "" : (node.data as FsNode).path;
-  try {
-    const items = await queryClient.fetchQuery({
-      queryKey: ["fs-nodes", targetPath],
-      queryFn: () => fetchFsNodes(targetPath),
-    });
-    resolve(items);
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "获取目录结构失败");
-    resolve([]);
-  }
-}
-
-async function refreshFsNode(node: any, data: FsNode): Promise<void> {
-  await queryClient.invalidateQueries({ queryKey: ["fs-nodes", data.path] });
-  if (node) {
-    node.loaded = false;
-    node.expand();
-  }
-}
-
-async function refreshAllFsNodes(): Promise<void> {
-  await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
-  if (treeRef.value?.store) {
-    treeRef.value.store.root.loaded = false;
-    treeRef.value.store.root.loadChildren();
-  }
-  ElMessage.success("目录结构与任务状态已刷新");
-}
 
 const showAddDrive = ref(false);
 const newDriveName = ref("");
@@ -467,12 +348,19 @@ async function promptAddObserverPath(): Promise<void> {
       inputPlaceholder: "例如 D:\\Downloads\\Telegram 或 download",
       inputValidator: (val) => {
         if (!val || !val.trim()) return "路径不能为空";
-        if (form.observer_paths.some((p) => samePath(p, val.trim()))) return "该路径已在监听列表中";
+        if (form.observer_roots.some((p) => samePath(p.path, val.trim()))) return "该路径已在监听列表中";
         return true;
       },
     });
     if (value && value.trim()) {
-      form.observer_paths.push(value.trim());
+      const trimmed = value.trim();
+      form.observer_roots.push({
+        path: trimmed,
+        enabled: true,
+        ok: true,
+        error: "",
+      });
+      form.observer_paths = form.observer_roots.map((r) => r.path);
       ElMessage.success("已添加监听路径，点击右上角保存即可生效");
     }
   } catch {
@@ -481,18 +369,22 @@ async function promptAddObserverPath(): Promise<void> {
 }
 
 function removeObserverPath(path: string): void {
-  form.observer_paths = form.observer_paths.filter((p) => !samePath(p, path));
+  form.observer_roots = form.observer_roots.filter((p) => !samePath(p.path, path));
+  form.observer_paths = form.observer_roots.map((r) => r.path);
 }
 
 function getPathStatus(path: string): { ok: boolean; text: string } {
-  const info = form.observer_path_infos.find((item) => samePath(item.path, path));
-  if (!info) {
-    return { ok: true, text: "状态: 监听配置已就绪" };
+  const root = form.observer_roots.find((item) => samePath(item.path, path));
+  if (root) {
+    if (!root.enabled) {
+      return { ok: false, text: "状态: 监控已暂停（可在此处重新开启）" };
+    }
+    if (root.ok) {
+      return { ok: true, text: "状态: 正常监听中 · 读写权限正常" };
+    }
+    return { ok: false, text: `状态: 异常 · ${root.error || "目录不可读或不存在"}` };
   }
-  if (info.ok) {
-    return { ok: true, text: "状态: 正常监听中 · 读写权限正常" };
-  }
-  return { ok: false, text: `状态: 异常 · ${info.error || "目录不可读或不存在"}` };
+  return { ok: true, text: "状态: 监听配置已就绪" };
 }
 
 const newExtInput = ref("");
@@ -537,7 +429,7 @@ defineExpose({
   saving,
   form,
   chatsCount: computed(() => form.chats.length),
-  pathsCount: computed(() => form.observer_paths.length),
+  pathsCount: computed(() => form.observer_roots.length),
 });
 </script>
 
@@ -631,8 +523,8 @@ defineExpose({
       <div class="inset-card">
         <div class="card-head-row">
           <div>
-            <h3 class="card-title">已挂载的监听路径 (observer_paths)</h3>
-            <p class="card-hint">系统 watchdog 实时监听的本地文件系统目录，可多条。保存后热重载生效。</p>
+            <h3 class="card-title">已挂载的监听根路径 (observer_roots)</h3>
+            <p class="card-hint">系统 watchdog 实时监听的物理根目录，支持独立启停。保存后热重载生效。</p>
           </div>
           <button type="button" class="btn-light-green" @click="promptAddObserverPath">
             + 添加监听路径
@@ -640,28 +532,37 @@ defineExpose({
         </div>
 
         <div class="paths-list-wrap">
-          <div v-if="form.observer_paths.length === 0" class="empty-list-notice">
+          <div v-if="form.observer_roots.length === 0" class="empty-list-notice">
             暂无监听路径。点击右上角添加。
           </div>
           <div
-            v-for="path in form.observer_paths"
-            :key="path"
+            v-for="root in form.observer_roots"
+            :key="root.path"
             class="path-card-item"
           >
             <div class="path-card-left">
-              <span class="path-status-dot" :class="getPathStatus(path).ok ? 'ok' : 'err'"></span>
+              <span class="path-status-dot" :class="getPathStatus(root.path).ok ? 'ok' : 'err'"></span>
               <div class="path-card-text">
-                <div class="path-card-name">{{ path }}</div>
-                <div class="path-card-sub">{{ getPathStatus(path).text }}</div>
+                <div class="path-card-name">{{ root.path }}</div>
+                <div class="path-card-sub">{{ getPathStatus(root.path).text }}</div>
               </div>
             </div>
-            <button
-              type="button"
-              class="btn-danger-text"
-              @click="removeObserverPath(path)"
-            >
-              删除
-            </button>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <el-switch
+                v-model="root.enabled"
+                size="small"
+                active-text="开启"
+                inactive-text="暂停"
+                inline-prompt
+              />
+              <button
+                type="button"
+                class="btn-danger-text"
+                @click="removeObserverPath(root.path)"
+              >
+                删除
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -953,104 +854,7 @@ defineExpose({
       </div>
     </div>
 
-    <!-- ── 5. 映射路由 (routes - 独立页面时展示) ── -->
-    <div v-if="panel === 'routes'" class="panel-section-group">
-      <div class="inset-card">
-        <div class="card-head-row">
-          <div>
-            <h3 class="card-title">映射目录与文件路由</h3>
-            <p class="card-hint">每个目录一行状态。目标、说明和封面都在「设置」里改。未命中规则的文件不会上传。</p>
-          </div>
-          <button type="button" class="btn-outline-sm" @click="refreshAllFsNodes">
-            全部刷新
-          </button>
-        </div>
 
-        <div v-if="form.observer_paths.length === 0" class="empty-list-notice">
-          请先在「监听目录」里添加目录。
-        </div>
-        <div v-else class="fs-tree-wrapper">
-          <el-tree
-            ref="treeRef"
-            lazy
-            :load="loadFsNodes"
-            node-key="path"
-            :props="{ label: 'name', isLeaf: (data: FsNode) => !data.is_dir }"
-            class="fs-tree"
-          >
-            <template #default="{ node, data }">
-              <div class="tree-node-row">
-                <div class="node-left" :class="{ 'is-dir': data.is_dir }">
-                  <span v-if="data.is_dir" class="node-icon">📂</span>
-                  <span class="node-name" :class="{ 'is-root': data.is_root }" :title="data.path">
-                    {{ data.name }}
-                  </span>
-                  <template v-if="!data.is_dir">
-                    <span class="file-size">{{ formatBytes(data.size || 0) }}</span>
-                    <span v-if="!data.supported_ext" class="file-ext-unsupported">未监听格式</span>
-                    <span v-else-if="data.task_status === 'uploading'" class="file-status status-uploading">上传中</span>
-                    <span v-else-if="data.task_status === 'success'" class="file-status status-success">已上传</span>
-                    <span v-else-if="data.task_status === 'pending' || data.task_status === 'preparing'" class="file-status status-pending">排队中</span>
-                    <span v-else-if="data.task_status === 'failed'" class="file-status status-failed" :title="data.task_error || '失败'">失败</span>
-                    <span v-else-if="data.task_status === 'unmatched'" class="file-status status-unmatched">未命中</span>
-                  </template>
-                </div>
-
-                <div v-if="data.is_dir" class="node-right" @click.stop>
-                  <span
-                    class="node-dest-badge"
-                    :class="{
-                      'is-custom': hasExplicitRoute(data.path),
-                      'is-miss': getDirDestLabel(data) === '未分配群组'
-                    }"
-                  >
-                    <template v-if="getDirDestLabel(data) === '未分配群组'">
-                      ⚠️ 未分配群组
-                    </template>
-                    <template v-else>
-                      📣 目标群: {{ getDirDestLabel(data) }} · {{ topicWord(data.path) }}
-                    </template>
-                  </span>
-                  <el-button size="small" @click="openRouteSettings(data.path)">设置</el-button>
-                  <el-button
-                    v-if="hasExplicitRoute(data.path) && !data.is_root"
-                    size="small"
-                    text
-                    type="danger"
-                    title="清除专属规则，恢复跟随父级"
-                    @click="setPathDest(data.path, '')"
-                  >
-                    恢复继承
-                  </el-button>
-                  <el-button
-                    size="small"
-                    text
-                    class="btn-refresh"
-                    title="刷新此目录"
-                    @click="refreshFsNode(node, data)"
-                  >
-                    🔄
-                  </el-button>
-                </div>
-              </div>
-            </template>
-          </el-tree>
-        </div>
-
-        <div v-if="unmatchedFiles.length" class="unmatched-section">
-          <h4 class="card-title text-amber-700">未命中的文件</h4>
-          <p class="card-hint">这些文件没有配到群或 Drive，未进入上传队列。</p>
-          <div class="chats-list-wrap">
-            <div v-for="file in unmatchedFiles" :key="file.id" class="chat-row-item">
-              <div class="chat-row-main">
-                <div class="chat-main-name">{{ file.file_name }}</div>
-                <div class="chat-sub-line font-mono">{{ file.file_path }}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <el-dialog
       :model-value="topicChatId != null"
@@ -1183,7 +987,7 @@ defineExpose({
 
 .card-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: 12.5px;
   color: #6b7280;
   line-height: 1.5;
 }
@@ -1195,7 +999,7 @@ defineExpose({
 }
 
 .form-label {
-  font-size: 11.5px;
+  font-size: 13px;
   font-weight: 600;
   color: #374151;
 }
@@ -1207,7 +1011,7 @@ defineExpose({
   background: #f9fafb;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: var(--radius-sm, 6px);
-  font-size: 12px;
+  font-size: 13px;
   color: #111827;
   outline: none;
   transition: all 0.15s ease;
@@ -1227,8 +1031,8 @@ defineExpose({
 }
 
 .btn-light-green {
-  padding: 4px 10px;
-  font-size: 12px;
+  padding: 5px 12px;
+  font-size: 12.5px;
   font-weight: 600;
   background: rgba(40, 153, 90, 0.1);
   color: #28995a;
@@ -1282,11 +1086,11 @@ defineExpose({
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-weight: 400;
   color: #9ca3af;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .chat-sub-line {
-  font-size: 11px;
+  font-size: 12.5px;
   color: #6b7280;
   margin-top: 2px;
 }
@@ -1299,11 +1103,11 @@ defineExpose({
 }
 
 .btn-outline-sm {
-  padding: 3px 8px;
+  padding: 4px 10px;
   background: #f9fafb;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: var(--radius-sm, 6px);
-  font-size: 11px;
+  font-size: 12px;
   color: #374151;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -1317,7 +1121,7 @@ defineExpose({
   border: 0;
   background: transparent;
   color: #ef4444;
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
   padding: 2px 6px;
   border-radius: var(--radius-sm, 6px);
@@ -1332,7 +1136,7 @@ defineExpose({
 .empty-list-notice {
   padding: 16px 0;
   text-align: center;
-  font-size: 12px;
+  font-size: 13px;
   color: #9ca3af;
 }
 
@@ -1389,11 +1193,11 @@ defineExpose({
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-weight: 700;
   color: #1f2937;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .path-card-sub {
-  font-size: 10.5px;
+  font-size: 12px;
   color: #9ca3af;
   margin-top: 1px;
 }
@@ -1410,13 +1214,13 @@ defineExpose({
 }
 
 .ext-chip {
-  padding: 2px 7px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm, 6px);
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   color: #374151;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1427,7 +1231,7 @@ defineExpose({
   background: transparent;
   color: #9ca3af;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 11.5px;
   padding: 0;
 }
 
@@ -1442,9 +1246,9 @@ defineExpose({
 }
 
 .ext-inline-input {
-  width: 70px;
-  padding: 2px 6px;
-  font-size: 11px;
+  width: 76px;
+  padding: 3px 7px;
+  font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, monospace;
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.1);
@@ -1460,7 +1264,7 @@ defineExpose({
   border: 0;
   background: transparent;
   color: #28995a;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   padding: 2px 4px;
@@ -1485,7 +1289,7 @@ defineExpose({
 }
 
 .unit-label {
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: #9ca3af;
 }
 
@@ -1520,7 +1324,7 @@ defineExpose({
   justify-content: space-between;
   padding: 10px 0;
   border-top: 1px solid rgba(0, 0, 0, 0.05);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .table-row-item:first-child {
@@ -1540,7 +1344,7 @@ defineExpose({
 }
 
 .row-info-sub {
-  font-size: 10.5px;
+  font-size: 12px;
   color: #9ca3af;
   margin-top: 1px;
 }
@@ -1557,12 +1361,12 @@ defineExpose({
 }
 
 .token-btn {
-  padding: 2px 6px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm, 6px);
   background: #f3f4f6;
   border: 0;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: #374151;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -1581,11 +1385,11 @@ defineExpose({
 .app-select {
   width: 100%;
   box-sizing: border-box;
-  padding: 6px 10px;
+  padding: 7px 10px;
   background: #f9fafb;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: var(--radius-sm, 6px);
-  font-size: 12px;
+  font-size: 13px;
   color: #111827;
   outline: none;
   transition: all 0.15s ease;
@@ -1941,7 +1745,7 @@ defineExpose({
 }
 
 .node-name {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 500;
   color: var(--text);
   overflow: hidden;
@@ -1955,8 +1759,8 @@ defineExpose({
 }
 
 .node-badge {
-  font-size: 10.5px;
-  padding: 1px 6px;
+  font-size: 11.5px;
+  padding: 1.5px 7px;
   border-radius: var(--radius-sm, 6px);
   flex-shrink: 0;
 }
@@ -1969,15 +1773,15 @@ defineExpose({
 }
 
 .file-size {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   font-family: ui-monospace, "SF Mono", monospace;
   flex-shrink: 0;
 }
 
 .file-ext-unsupported {
-  font-size: 10px;
-  padding: 1px 5px;
+  font-size: 11.5px;
+  padding: 1.5px 6px;
   border-radius: var(--radius-sm, 6px);
   background: #f3f4f6;
   color: #6b7280;
@@ -1986,8 +1790,8 @@ defineExpose({
 }
 
 .file-status {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 11.5px;
+  padding: 1.5px 7px;
   border-radius: var(--radius-sm, 6px);
   font-weight: 500;
   flex-shrink: 0;
@@ -2031,7 +1835,7 @@ defineExpose({
 }
 
 .route-pill {
-  font-size: 11px;
+  font-size: 12px;
   padding: 2px 8px;
   border-radius: var(--radius-sm, 6px);
   font-weight: 500;
@@ -2057,7 +1861,7 @@ defineExpose({
 }
 
 .btn-refresh {
-  font-size: 11px;
+  font-size: 12px;
   padding: 0 4px !important;
   opacity: 0.65;
   transition: opacity 0.15s ease;

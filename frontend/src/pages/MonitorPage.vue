@@ -11,6 +11,7 @@ import WorkerPanel from "../components/WorkerPanel.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import SessionPanel from "../components/SessionPanel.vue";
 import DirectoryPolicyModal from "../components/DirectoryPolicyModal.vue";
+import ManualDispatchModal from "../components/ManualDispatchModal.vue";
 import SettingsPage from "./SettingsPage.vue";
 import { useQueryClient } from "@tanstack/vue-query";
 import {
@@ -32,6 +33,7 @@ import { formatBytes, formatSpeed } from "../format";
 import type {
   FolderRouteItem,
   FsNode,
+  ManualDispatchResult,
   ObserverPathInfo,
   ObserverRootItem,
   SystemVersionInfo,
@@ -44,6 +46,7 @@ defineOptions({ name: "MonitorPage" });
 
 /** 控制添加 Session 模态弹窗的显示与隐藏 */
 const showSessionForm = ref(false);
+const manualDispatchOpen = ref(false);
 const route = useRoute();
 const router = useRouter();
 const { configured, refresh: refreshIdentity } = useTelegramIdentity();
@@ -142,6 +145,17 @@ async function restoreSubfolderInheritance(subPath: string): Promise<void> {
 }
 
 async function onPolicySaved(): Promise<void> {
+  await loadWatchPaths();
+  await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
+  for (const [_, treeEl] of treeRefsMap) {
+    if (treeEl?.store) {
+      treeEl.store.root.loaded = false;
+      treeEl.store.root.loadChildren();
+    }
+  }
+}
+
+async function onManualDispatched(_res: ManualDispatchResult): Promise<void> {
   await loadWatchPaths();
   await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
   for (const [_, treeEl] of treeRefsMap) {
@@ -418,11 +432,11 @@ function longestWatch(path: string): string | null {
 async function loadWatchPaths(): Promise<void> {
   try {
     const settings = await fetchSettings();
-    watchPaths.value = settings.observer_paths;
-    pathInfos.value = settings.observer_path_infos;
+    observerRoots.value = settings.observer_roots ?? [];
+    watchPaths.value = observerRoots.value.map((r) => r.path);
+    pathInfos.value = settings.observer_path_infos ?? [];
     routes.value = settings.routes;
     watchEnabled.value = settings.watch_enabled !== false;
-    observerRoots.value = settings.observer_roots ?? [];
   } catch {
     watchPaths.value = [];
     pathInfos.value = [];
@@ -437,10 +451,13 @@ async function handleToggleGlobalWatch(): Promise<void> {
   try {
     const res = await toggleGlobalWatch();
     watchEnabled.value = res.watch_enabled;
+    if (res.observer_roots) {
+      observerRoots.value = res.observer_roots;
+    }
     if (res.watch_enabled) {
       ElMessage.success("已开启全局自动监控，正在全量补扫各目录");
     } else {
-      ElMessage.warning("已暂停全局自动监控，文件将不会自动入库");
+      ElMessage.warning("已暂停全局自动监控，各目录已联动暂停");
     }
     await loadWatchPaths();
     await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
@@ -458,6 +475,9 @@ async function handleToggleRoot(path: string): Promise<void> {
   try {
     const res = await toggleRootPath(path);
     observerRoots.value = res.observer_roots;
+    if (typeof res.watch_enabled === "boolean") {
+      watchEnabled.value = res.watch_enabled;
+    }
     const root = res.observer_roots.find((r) => samePath(r.path, path));
     const isNowOn = root ? root.enabled !== false : true;
     if (isNowOn) {
@@ -484,7 +504,7 @@ function isSubfolderEnabled(data: FsNode): boolean {
   return true;
 }
 
-async function handleToggleSubfolder(path: string, node?: any, data?: FsNode): Promise<void> {
+async function handleToggleSubfolder(path: string, _node?: any, data?: FsNode): Promise<void> {
   const key = normPath(path);
   if (togglingRoutes.value.has(key)) return;
   togglingRoutes.value.add(key);
@@ -498,11 +518,16 @@ async function handleToggleSubfolder(path: string, node?: any, data?: FsNode): P
     } else {
       ElMessage.warning(`已就地阻断「${pathName(path)}」，阻止落入父级规则`);
     }
-    if (node && data) {
-      await refreshCardFsNode(node, data);
-    } else {
-      await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
+    if (data) {
+      if (!data.current_route) {
+        data.current_route = { matched: true, is_explicit: !isNowOn, is_inherited: isNowOn, enabled: isNowOn };
+      } else {
+        data.current_route.enabled = isNowOn;
+        data.current_route.is_inherited = isNowOn;
+        data.current_route.is_explicit = !isNowOn;
+      }
     }
+    await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : "切换子目录监控失败");
   } finally {
@@ -540,6 +565,51 @@ function openPolicy(path: string): void {
   policyModalOpen.value = true;
 }
 
+async function promptAddWatchPath(): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "请输入本地监控目录的绝对或相对路径",
+      "添加监控路径",
+      {
+        confirmButtonText: "添加并生效",
+        cancelButtonText: "取消",
+        inputPlaceholder: "例如 D:\\Downloads 或 download",
+        inputValidator: (val) => {
+          if (!val || !val.trim()) return "路径不能为空";
+          if (observerRoots.value.some((r) => samePath(r.path, val.trim()))) return "该路径已在监控列表中";
+          return true;
+        },
+      },
+    );
+    if (value && value.trim()) {
+      const trimmed = value.trim();
+      const config = await fetchSettings();
+      const roots = [...(config.observer_roots || [])];
+      if (!roots.some((r) => samePath(r.path, trimmed))) {
+        roots.push({
+          path: trimmed,
+          enabled: true,
+          ok: true,
+          error: "",
+        });
+        config.observer_roots = roots;
+        if (config.observer_paths) {
+          config.observer_paths = roots.map((r) => r.path);
+        }
+        if (!config.watch_enabled) {
+          config.watch_enabled = true;
+        }
+        await saveSettings(config);
+        await loadWatchPaths();
+        await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
+        ElMessage.success(`已成功添加监控路径「${pathName(trimmed)}」，配置立即生效`);
+      }
+    }
+  } catch {
+    // 用户取消输入
+  }
+}
+
 async function removeWatchPath(path: string): Promise<void> {
   const name = pathName(path);
   try {
@@ -555,7 +625,14 @@ async function removeWatchPath(path: string): Promise<void> {
       },
     );
     const config = await fetchSettings();
-    config.observer_paths = (config.observer_paths || []).filter((p) => !samePath(p, path));
+    config.observer_roots = (config.observer_roots || []).filter((r) => !samePath(r.path, path));
+    if (config.observer_paths) {
+      config.observer_paths = config.observer_roots.map((r) => r.path);
+    }
+    const remainingActive = (config.observer_roots || []).filter((r) => r.enabled !== false).length;
+    if (remainingActive === 0) {
+      config.watch_enabled = false;
+    }
     await saveSettings(config);
     expandedPaths.value.delete(normPath(path));
     await loadWatchPaths();
@@ -646,8 +723,9 @@ watch(
          - 上传数胶囊：支持点击弹出历史流水，右侧带独立的“切换今天/总数”按钮
     ══════════════════════════════════════════════════════════ -->
     <header class="work-header">
+      <!-- 区域 1：品牌与版本状态岛 -->
       <div class="header-lead">
-        <!-- 侧栏收折按键 -->
+        <!-- 侧栏收折按键 (32x32px 实体圆角按钮) -->
         <button
           type="button"
           class="sidebar-toggle-btn"
@@ -662,7 +740,7 @@ watch(
 
         <strong class="brand">Tg-up</strong>
 
-        <!-- 版本提示按钮补在遥测带的左边 -->
+        <!-- 版本提示按钮 -->
         <button
           v-if="versionLabel"
           type="button"
@@ -676,47 +754,63 @@ watch(
         </button>
       </div>
 
-      <!-- 实时系统遥测带 -->
-      <div class="header-stats">
-        <div class="stat-item">
-          <span class="stat-label">实时速度:</span>
-          <b class="stat-val font-mono">{{ liveSpeed }}</b>
-        </div>
-
-        <span class="stat-gap"></span>
-
-        <button
-          type="button"
-          class="stat-item stat-btn"
-          title="点击查看与管理 Worker 节点"
-          @click="workerModalOpen = true"
-        >
-          <span class="stat-label">Worker 在线:</span>
-          <b class="stat-val stat-worker">{{ activeWorkersCount }} / {{ totalWorkersCount }}</b>
-          <span class="stat-arrow">↗</span>
-        </button>
-
-        <span class="stat-gap"></span>
-
-        <!-- 上传数胶囊：点击查看流水，带独立的今天/总数切换按钮 -->
-        <div class="scope-pill">
-          <button type="button" class="scope-view-btn" title="查看传输历史记录 (Ctrl+H)" @click="openSuccess">
-            <span class="scope-dot"></span>
-            <span class="scope-label">{{ successScope === "today" ? "今日上传:" : "累计上传:" }}</span>
-            <b class="scope-count font-mono">{{ successScope === "today" ? successCount : (successAllTotal || successCount) }}</b>
-            <span class="scope-arrow">↗</span>
-          </button>
-          <span class="scope-divider"></span>
-          <button type="button" class="scope-toggle-btn" title="切换今日/累计总数" @click.stop="toggleSuccessScope">
-            {{ successScope === "today" ? "切换为总数" : "切换为今日" }}
-          </button>
+      <!-- 区域 2：只读遥测浮岛（实时传输仪表盘） -->
+      <div class="telemetry-island">
+        <div class="telemetry-badge" title="当前所有 Worker 的瞬时上传汇总速度">
+          <svg class="telemetry-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M8.5 1.5L2.5 9h5l-1 5.5 6-7.5h-5l1-5.5z" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="telemetry-label">实时传输:</span>
+          <b class="telemetry-val font-mono">{{ liveSpeed }}</b>
         </div>
       </div>
 
-      <!-- 右侧偏好设置按钮 -->
-      <div class="header-right">
-        <button type="button" class="text-btn settings-btn" title="系统偏好设置 (Ctrl+,)" @click="openSettings('telegram')">
-          设置
+      <!-- 区域 3：控制中心交互岛（Worker 节点管理、上传流水、设置） -->
+      <div class="header-action-island">
+        <!-- ★★★ Worker 节点管理芯片按钮（微芯片图标 + 状态灯 + 独立管理操作胶囊） ★★★ -->
+        <button
+          type="button"
+          class="worker-chip-btn"
+          :class="{ 'has-offline': activeWorkersCount < totalWorkersCount }"
+          title="点击打开 Worker 节点调度管理面板"
+          @click="workerModalOpen = true"
+        >
+          <!-- 服务器微芯片图标 -->
+          <span class="worker-chip-icon">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13">
+              <path d="M1.5 3A1.5 1.5 0 0 1 3 1.5h10A1.5 1.5 0 0 1 14.5 3v2A1.5 1.5 0 0 1 13 6.5H3A1.5 1.5 0 0 1 1.5 5V3zm0 6A1.5 1.5 0 0 1 3 7.5h10A1.5 1.5 0 0 1 14.5 9v2a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 11V9zM3 2.5a.5.5 0 0 0-.5.5v2a.5.5 0 0 0 .5.5h10a.5.5 0 0 0 .5-.5V3a.5.5 0 0 0-.5-.5H3zm0 6a.5.5 0 0 0-.5.5v2a.5.5 0 0 0 .5.5h10a.5.5 0 0 0 .5-.5V9a.5.5 0 0 0-.5-.5H3z"/>
+              <circle cx="12" cy="4" r=".75" fill="currentColor"/>
+              <circle cx="12" cy="10" r=".75" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="worker-chip-status-dot"></span>
+          <span class="worker-chip-label">Worker 在线</span>
+          <b class="worker-chip-count font-mono">{{ activeWorkersCount }}/{{ totalWorkersCount }}</b>
+          <span class="worker-chip-action-pill">管理</span>
+        </button>
+
+        <!-- 上传流水与口径切换复合胶囊 -->
+        <div class="scope-island-pill">
+          <button type="button" class="scope-island-view-btn" title="查看传输历史记录 (Ctrl+H)" @click="openSuccess">
+            <svg class="scope-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M2.5 4.5h11M2.5 8h7M2.5 11.5h5" stroke-linecap="round"/>
+            </svg>
+            <span class="scope-island-label">{{ successScope === "today" ? "今日已传:" : "累计已传:" }}</span>
+            <b class="scope-island-count font-mono">{{ successScope === "today" ? successCount : (successAllTotal || successCount) }}</b>
+          </button>
+          <span class="scope-island-divider"></span>
+          <button type="button" class="scope-island-toggle-btn" title="切换今日 / 累计总数" @click.stop="toggleSuccessScope">
+            {{ successScope === "today" ? "切总数 ▾" : "切今日 ▾" }}
+          </button>
+        </div>
+
+        <!-- 偏好设置按钮 -->
+        <button type="button" class="settings-pill-btn" title="系统偏好设置 (Ctrl+,)" @click="openSettings('telegram')">
+          <svg class="settings-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+            <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319z"/>
+          </svg>
+          <span>设置</span>
           <span v-if="settingsDirty" class="dirty-dot" aria-label="有未保存的修改"></span>
         </button>
       </div>
@@ -881,6 +975,25 @@ watch(
                       >
                         {{ data.name }}
                       </span>
+                      <!-- 状态胶囊跟随目录名称，不推挤右侧操作按钮 -->
+                      <span
+                        v-if="data.is_dir && !isSubfolderEnabled(data)"
+                        class="node-route-badge blocked-rule"
+                        title="此子目录监控已阻断，不会上传"
+                      >
+                        已阻断
+                      </span>
+                      <span
+                        v-else-if="data.is_dir && data.current_route?.matched"
+                        class="node-route-badge"
+                        :class="{
+                          'custom-rule': !data.current_route?.is_inherited,
+                          'inherited-rule': data.current_route?.is_inherited,
+                        }"
+                        :title="data.current_route?.dest_name || ''"
+                      >
+                        {{ data.current_route?.is_inherited ? '继承' : '专属' }}: {{ data.current_route?.dest_name }}
+                      </span>
                       <template v-if="!data.is_dir">
                         <span class="file-size font-mono">{{ formatBytes(data.size || 0) }}</span>
                         <span v-if="!data.supported_ext" class="file-status status-gray">未监听</span>
@@ -892,28 +1005,8 @@ watch(
                       </template>
                     </div>
 
-                    <!-- 子文件夹操作区：保持完整操作性 -->
+                    <!-- 子文件夹操作区：保持完整操作性与位置绝对稳定性 -->
                     <div v-if="data.is_dir" class="node-right shrink-0" @click.stop>
-                      <!-- 目标/继承/阻断规则胶囊 -->
-                      <span
-                        v-if="!isSubfolderEnabled(data)"
-                        class="node-route-badge blocked-rule"
-                        title="此子目录监控已阻断，不会上传"
-                      >
-                        已阻断
-                      </span>
-                      <span
-                        v-else-if="data.current_route?.matched"
-                        class="node-route-badge"
-                        :class="{
-                          'custom-rule': !data.current_route?.is_inherited,
-                          'inherited-rule': data.current_route?.is_inherited,
-                        }"
-                        :title="data.current_route?.dest_name || ''"
-                      >
-                        {{ data.current_route?.is_inherited ? '继承' : '专属' }}: {{ data.current_route?.dest_name }}
-                      </span>
-
                       <el-switch
                         :model-value="isSubfolderEnabled(data)"
                         size="small"
@@ -932,7 +1025,7 @@ watch(
                         策略
                       </button>
                       <button
-                        v-if="data.current_route?.matched && !data.current_route?.is_inherited"
+                        v-if="data.current_route?.matched && !data.current_route?.is_inherited && !data.current_route?.auto_blocked && isSubfolderEnabled(data)"
                         type="button"
                         class="tree-inherit-btn"
                         title="清除专属规则，恢复跟随父级"
@@ -956,22 +1049,32 @@ watch(
           </article>
         </div>
 
-        <!-- 侧栏底部：并列的添加监控路径与一键全局自动监控总开关 -->
+        <!-- 侧栏底部：双层布局（🚀 手动投递主按钮 + 并列的管理开关） -->
         <div class="dock-bottom-bar">
-          <button type="button" class="dock-bottom-btn add-path-btn" @click="openSettings('watch')">
-            + 添加监控路径
-          </button>
           <button
             type="button"
-            class="dock-bottom-btn global-toggle-btn"
-            :class="{ 'is-running': watchEnabled, 'is-paused': !watchEnabled }"
-            :disabled="togglingGlobalWatch"
-            :title="watchEnabled ? '点击一键暂停全局自动监控' : '点击一键开启全局自动监控并全量补扫'"
-            @click="handleToggleGlobalWatch"
+            class="dock-bottom-btn manual-dispatch-btn"
+            title="打开手动投递窗口，勾选文件立即投递上传"
+            @click="manualDispatchOpen = true"
           >
-            <span class="global-watch-dot" :class="{ 'on': watchEnabled }"></span>
-            <span>{{ watchEnabled ? "全局监控中" : "监控已暂停" }}</span>
+            🚀 手动投递任务
           </button>
+          <div class="dock-bottom-sub-row">
+            <button type="button" class="dock-bottom-btn add-path-btn" @click="promptAddWatchPath">
+              + 添加监控路径
+            </button>
+            <button
+              type="button"
+              class="dock-bottom-btn global-toggle-btn"
+              :class="{ 'is-running': watchEnabled, 'is-paused': !watchEnabled }"
+              :disabled="togglingGlobalWatch"
+              :title="watchEnabled ? '点击一键暂停全局自动监控' : '点击一键开启全局自动监控并全量补扫'"
+              @click="handleToggleGlobalWatch"
+            >
+              <span class="global-watch-dot" :class="{ 'on': watchEnabled }"></span>
+              <span>{{ watchEnabled ? "全局监控中" : "监控已暂停" }}</span>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -1129,6 +1232,12 @@ watch(
       :path="policyPath"
       @saved="onPolicySaved"
     />
+
+    <!-- 手动投递任务模态弹窗 (Manual Dispatch Modal) -->
+    <ManualDispatchModal
+      v-model="manualDispatchOpen"
+      @dispatched="onManualDispatched"
+    />
   </div>
 </template>
 
@@ -1147,34 +1256,29 @@ watch(
 .work-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   flex-shrink: 0;
-  min-height: 48px;
-  padding: 8px 16px;
+  min-height: 52px;
+  padding: 8px 18px;
   background: var(--surface, #ffffff);
   border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.08));
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
 }
 
-.header-lead,
-.header-stats,
-.header-right {
+.header-lead {
   display: flex;
   align-items: center;
+  gap: 12px;
   min-width: 0;
-}
-
-.header-lead {
-  gap: 10px;
 }
 
 .sidebar-toggle-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm, 6px);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm, 8px);
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
   background: #f9fafb;
   color: var(--text-secondary);
@@ -1185,11 +1289,12 @@ watch(
 .sidebar-toggle-btn:hover {
   background: #f3f4f6;
   color: var(--text);
+  border-color: rgba(0, 0, 0, 0.15);
 }
 
 .toggle-icon {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -1198,24 +1303,24 @@ watch(
 }
 
 .brand {
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 16.5px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
   color: var(--text, #111827);
-  padding-right: 8px;
+  padding-right: 10px;
   border-right: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
 }
 
 .version-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm, 6px);
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full, 9999px);
   border: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
   background: #f3f4f6;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   font-family: ui-monospace, "SF Mono", monospace;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -1227,8 +1332,8 @@ watch(
 }
 
 .version-dot {
-  width: 6px;
-  height: 6px;
+  width: 6.5px;
+  height: 6.5px;
   border-radius: var(--radius-full, 9999px);
   background: var(--accent, #28995a);
 }
@@ -1241,157 +1346,248 @@ watch(
   background: #f59e0b;
 }
 
-.header-stats {
+/* 区域 2：只读遥测浮岛（实时传输仪表盘） */
+.telemetry-island {
+  display: flex;
+  align-items: center;
   margin-left: auto;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  white-space: nowrap;
+  min-width: 0;
 }
 
-.stat-item {
-  display: flex;
+.telemetry-badge {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  background: #f8fafc;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-sm, 8px);
+  user-select: none;
 }
 
-.stat-label {
+.telemetry-icon {
+  width: 14px;
+  height: 14px;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.telemetry-label {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12.5px;
 }
 
-.stat-val {
+.telemetry-val {
   color: var(--text);
+  font-size: 13.5px;
   font-weight: 700;
 }
 
-.stat-worker {
-  color: var(--accent, #28995a);
-}
-
-.stat-btn {
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  padding: 3px 6px;
-  border-radius: var(--radius-sm, 6px);
-  transition: all 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.stat-btn:hover {
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.stat-arrow {
-  font-size: 10px;
-  color: var(--text-secondary);
-  opacity: 0.6;
-}
-
-.stat-gap {
-  width: 1px;
-  height: 12px;
-  background: var(--border, rgba(0, 0, 0, 0.08));
-}
-
-.scope-pill {
-  display: inline-flex;
-  align-items: center;
-  background: rgba(40, 153, 90, 0.06);
-  border: 1px solid rgba(40, 153, 90, 0.22);
-  border-radius: var(--radius-sm, 6px);
-  padding: 2px 4px 2px 8px;
-  transition: all 0.15s ease;
-}
-
-.scope-pill:hover {
-  background: rgba(40, 153, 90, 0.1);
-}
-
-.scope-view-btn {
+/* 区域 3：控制中心交互岛 */
+.header-action-island {
   display: flex;
   align-items: center;
-  gap: 6px;
-  border: 0;
-  background: transparent;
-  padding: 0 4px 0 0;
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
-.scope-dot {
-  width: 7px;
-  height: 7px;
+/* ★★★ Worker 节点管理芯片按钮（微芯片图标 + 状态灯 + 独立管理操作胶囊） ★★★ */
+.worker-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 6px 0 10px;
+  background: #f0fdf4;
+  border: 1.2px solid #86efac;
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.worker-chip-btn:hover {
+  background: #dcfce7;
+  border-color: #4ade80;
+  box-shadow: 0 3px 8px rgba(34, 197, 94, 0.2);
+  transform: translateY(-1px);
+}
+
+.worker-chip-btn:active {
+  transform: scale(0.98);
+}
+
+.worker-chip-btn.has-offline {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.worker-chip-btn.has-offline:hover {
+  background: #fef3c7;
+  border-color: #f59e0b;
+}
+
+.worker-chip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #16a34a;
+}
+
+.worker-chip-btn.has-offline .worker-chip-icon {
+  color: #d97706;
+}
+
+.worker-chip-status-dot {
+  width: 6px;
+  height: 6px;
   border-radius: var(--radius-full, 9999px);
-  background: var(--accent, #28995a);
+  background: #22c55e;
+  animation: pulse-glow 2s infinite;
 }
 
-.scope-label {
-  color: var(--text-secondary);
+.worker-chip-btn.has-offline .worker-chip-status-dot {
+  background: #f59e0b;
+  animation: pulse-glow-warn 2s infinite;
+}
+
+.worker-chip-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #166534;
+}
+
+.worker-chip-btn.has-offline .worker-chip-label {
+  color: #92400e;
+}
+
+.worker-chip-count {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #15803d;
+}
+
+.worker-chip-btn.has-offline .worker-chip-count {
+  color: #b45309;
+}
+
+.worker-chip-action-pill {
+  display: inline-flex;
+  align-items: center;
   font-size: 11.5px;
-}
-
-.scope-count {
-  color: var(--text);
-  font-size: 12px;
   font-weight: 700;
+  color: #16a34a;
+  background: #ffffff;
+  border: 1px solid #bbf7d0;
+  padding: 2px 7px;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
-.scope-arrow {
-  font-size: 10px;
-  color: var(--accent, #28995a);
-  opacity: 0.8;
+.worker-chip-btn.has-offline .worker-chip-action-pill {
+  color: #b45309;
+  border-color: #fde68a;
 }
 
-.scope-divider {
+/* 上传流水复合胶囊 */
+.scope-island-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  background: #ffffff;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: var(--radius-sm, 8px);
+  padding: 0 4px 0 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: all 0.15s ease;
+}
+
+.scope-island-pill:hover {
+  border-color: rgba(40, 153, 90, 0.4);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.scope-island-view-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0 6px 0 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.scope-icon {
+  width: 14px;
+  height: 14px;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.scope-island-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.scope-island-count {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.scope-island-divider {
   width: 1px;
-  height: 12px;
-  background: rgba(40, 153, 90, 0.2);
+  height: 14px;
+  background: var(--border, rgba(0, 0, 0, 0.1));
   margin: 0 4px;
 }
 
-.scope-toggle-btn {
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: #ffffff;
-  border-radius: var(--radius-sm, 6px);
-  padding: 2px 7px;
-  font-size: 10.5px;
+.scope-island-toggle-btn {
+  border: 0;
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
-.scope-toggle-btn:hover {
-  background: #f3f5f3;
+.scope-island-toggle-btn:hover {
+  background: #f1f5f9;
   color: var(--text);
 }
 
-.header-right {
-  margin-left: 12px;
-}
-
-.settings-btn {
+/* 偏好设置按钮 */
+.settings-pill-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
-  font-size: 12px;
+  height: 32px;
+  padding: 0 12px;
+  background: #ffffff;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: var(--radius-sm, 8px);
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
-  background: #ffffff;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
-  border-radius: var(--radius-sm, 6px);
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   transition: all 0.15s ease;
+  position: relative;
 }
 
-.settings-btn:hover {
-  background: #f9fafb;
+.settings-pill-btn:hover {
+  background: #f8fafc;
+  border-color: rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.settings-icon {
+  color: #64748b;
 }
 
 .dirty-dot {
@@ -1483,18 +1679,18 @@ watch(
 
 .dock-head h2 {
   margin: 0;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text);
-  letter-spacing: 0.02em;
+  letter-spacing: -0.01em;
 }
 
 .dock-count-badge {
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: var(--radius-sm, 6px);
   background: rgba(40, 153, 90, 0.1);
   color: var(--accent, #28995a);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   transition: all 0.15s ease;
 }
@@ -1508,7 +1704,7 @@ watch(
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -1530,8 +1726,8 @@ watch(
   border: 1px solid rgba(0, 0, 0, 0.08);
   background: #f3f4f6;
   color: var(--text-secondary, #6b7280);
-  font-size: 10px;
-  padding: 1.5px 6px;
+  font-size: 11.5px;
+  padding: 2px 7px;
   border-radius: var(--radius-sm, 6px);
   cursor: pointer;
   transition: all 0.15s ease;
@@ -1578,12 +1774,12 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border: 0;
   background: transparent;
   color: #9ca3af;
-  font-size: 9px;
+  font-size: 11px;
   cursor: pointer;
   border-radius: var(--radius-sm, 6px);
   transition: all 0.15s ease;
@@ -1606,7 +1802,7 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
 }
@@ -1614,7 +1810,7 @@ watch(
 .dock-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   flex-shrink: 0;
 }
 
@@ -1631,6 +1827,7 @@ watch(
   --el-switch-off-color: #d1d5db;
   height: 16px;
   min-width: 28px;
+  width: 28px;
 }
 
 .dock-root-switch :deep(.el-switch__action),
@@ -1640,12 +1837,12 @@ watch(
 }
 
 .dock-policy-btn {
-  padding: 2px 7px;
+  padding: 4px 10px;
   border-radius: var(--radius-sm, 6px);
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
   background: #ffffff;
   color: var(--text);
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -1657,12 +1854,12 @@ watch(
 }
 
 .dock-delete-btn {
-  padding: 2px 8px;
+  padding: 4px 10px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid #ef4444;
   background: #ef4444;
   color: #ffffff;
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -1693,9 +1890,9 @@ watch(
 }
 
 .dock-path {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1704,17 +1901,17 @@ watch(
 .dock-children {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 5px;
   margin-top: 6px;
 }
 
 .dock-child-chip {
-  padding: 1px 6px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid rgba(59, 130, 246, 0.2);
   background: rgba(59, 130, 246, 0.06);
   color: #2563eb;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
 }
@@ -1755,19 +1952,19 @@ watch(
 }
 
 .inline-tree-hint {
-  font-size: 9.5px;
+  font-size: 12.5px;
   color: #9ca3af;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .inline-refresh-btn {
   border: 0;
   background: transparent;
   color: var(--accent, #28995a);
-  font-size: 10px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  padding: 1px 5px;
+  padding: 2px 6px;
   border-radius: var(--radius-sm, 6px);
   transition: background 0.12s ease;
 }
@@ -1779,14 +1976,14 @@ watch(
 /* ── 嵌入卡片内的 Element Plus 文件树 ── */
 .dock-fs-tree {
   background: transparent !important;
-  font-size: 11px;
+  font-size: 13.5px;
   overflow-x: hidden;
 }
 
 .dock-fs-tree :deep(.el-tree-node__content) {
   height: auto;
-  min-height: 26px;
-  padding: 2.5px 0;
+  min-height: 30px;
+  padding: 3px 0;
   border-radius: var(--radius-sm, 6px);
   transition: background 0.12s ease;
 }
@@ -1797,7 +1994,7 @@ watch(
 
 .dock-fs-tree :deep(.el-tree-node__expand-icon) {
   padding: 3px 2px;
-  font-size: 10.5px;
+  font-size: 12px;
   color: #9ca3af;
 }
 
@@ -1813,26 +2010,26 @@ watch(
   width: 100%;
   min-width: 0;
   padding-right: 4px;
-  gap: 4px;
+  gap: 6px;
 }
 
 .node-left {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
   flex: 1;
 }
 
 .node-icon {
-  font-size: 11.5px;
+  font-size: 14px;
   flex-shrink: 0;
 }
 
 .node-name {
-  font-size: 11px;
+  font-size: 13.5px;
   color: #1f2937;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
 .node-name.is-folder {
@@ -1847,14 +2044,14 @@ watch(
 }
 
 .file-size {
-  font-size: 9.5px;
+  font-size: 12.5px;
   color: #9ca3af;
   flex-shrink: 0;
 }
 
 .file-status {
-  font-size: 9px;
-  padding: 1px 4px;
+  font-size: 12px;
+  padding: 2px 6px;
   border-radius: var(--radius-sm, 6px);
   font-weight: 600;
   flex-shrink: 0;
@@ -1894,20 +2091,21 @@ watch(
 .node-right {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .node-route-badge {
-  font-size: 9px;
+  font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  padding: 1px 4px;
+  padding: 2px 6px;
   border-radius: var(--radius-sm, 6px);
   white-space: nowrap;
-  max-width: 72px;
+  max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.2;
+  line-height: 1.25;
+  flex-shrink: 0;
 }
 
 .node-route-badge.custom-rule {
@@ -1931,12 +2129,12 @@ watch(
 }
 
 .tree-policy-btn {
-  padding: 1px 5px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm, 6px);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   background: #ffffff;
   color: #374151;
-  font-size: 9.5px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.12s ease;
@@ -1950,12 +2148,12 @@ watch(
 }
 
 .tree-inherit-btn {
-  padding: 1px 4px;
+  padding: 3px 7px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid rgba(239, 68, 68, 0.25);
   background: #fff5f5;
   color: #dc2626;
-  font-size: 9px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.12s ease;
@@ -1970,9 +2168,9 @@ watch(
 .tree-refresh-icon-btn {
   border: 0;
   background: transparent;
-  font-size: 9.5px;
+  font-size: 12px;
   cursor: pointer;
-  padding: 1px 2px;
+  padding: 2px 4px;
   border-radius: var(--radius-sm, 6px);
   line-height: 1;
 }
@@ -2023,14 +2221,14 @@ watch(
 
 .worker-modal-head h2 {
   margin: 0;
-  font-size: 14.5px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text);
 }
 
 .worker-sub {
   margin: 2px 0 0;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--text-secondary);
 }
 
@@ -2041,12 +2239,12 @@ watch(
 }
 
 .add-session-btn {
-  padding: 5px 12px;
+  padding: 6px 14px;
   border-radius: var(--radius-sm, 6px);
   border: 0;
   background: var(--accent, #28995a);
   color: #ffffff;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -2082,11 +2280,35 @@ watch(
 
 .dock-bottom-bar {
   margin-top: auto;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   padding-top: 6px;
   flex-shrink: 0;
+}
+
+.manual-dispatch-btn {
+  width: 100%;
+  background: var(--accent, #28995a);
+  color: #ffffff;
+  border: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  padding: 9px 12px;
+  border-radius: var(--radius-md, 10px);
+  box-shadow: 0 2px 6px rgba(40, 153, 90, 0.28);
+  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.manual-dispatch-btn:hover:not(:disabled) {
+  background: #22834d;
+  box-shadow: 0 4px 12px rgba(40, 153, 90, 0.35);
+}
+
+.dock-bottom-sub-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .dock-bottom-btn {
@@ -2094,9 +2316,9 @@ watch(
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 7px 8px;
+  padding: 8px 10px;
   border-radius: var(--radius-md, 10px);
-  font-size: 11.5px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
@@ -2229,7 +2451,7 @@ watch(
 
 .settings-head-left h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #111827;
 }
@@ -2239,7 +2461,7 @@ watch(
   border-radius: var(--radius-sm, 6px);
   background: #fef3c7;
   color: #b45309;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
@@ -2254,12 +2476,12 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 14px;
+  padding: 7px 16px;
   border: 0;
   border-radius: var(--radius-sm, 6px);
   background: #28995a;
   color: #ffffff;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -2301,13 +2523,13 @@ watch(
 }
 
 .modal-close-btn {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: var(--radius-sm, 6px);
   border: 0;
   background: transparent;
   color: #9ca3af;
-  font-size: 14px;
+  font-size: 16px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -2373,14 +2595,14 @@ watch(
 
 .success-head h2 {
   margin: 0;
-  font-size: 14.5px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text);
 }
 
 .success-sub {
   margin: 2px 0 0;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--text-secondary);
 }
 
@@ -2401,8 +2623,8 @@ watch(
   border: 0;
   background: transparent;
   border-radius: var(--radius-sm, 6px);
-  padding: 4px 10px;
-  font-size: 11.5px;
+  padding: 5px 12px;
+  font-size: 12.5px;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
@@ -2423,11 +2645,11 @@ watch(
 .success-search-input {
   width: 100%;
   box-sizing: border-box;
-  padding: 7px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
   border-radius: var(--radius-sm, 6px);
   background: #f9fafb;
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
   transition: all 0.15s ease;
 }
@@ -2449,7 +2671,7 @@ watch(
 .success-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
 }
 
@@ -2461,15 +2683,15 @@ watch(
 }
 
 .success-table th {
-  padding: 8px 12px;
+  padding: 10px 12px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.08));
 }
 
 .success-table td {
-  padding: 10px 12px;
+  padding: 11px 12px;
   border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.04));
   color: var(--text);
 }
@@ -2493,11 +2715,11 @@ watch(
 .part-chip {
   display: inline-block;
   margin-top: 2px;
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: var(--radius-sm, 6px);
   background: rgba(40, 153, 90, 0.1);
   color: var(--accent, #28995a);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -2511,9 +2733,9 @@ watch(
 
 .status-pill {
   display: inline-block;
-  padding: 2px 7px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm, 6px);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -2526,7 +2748,7 @@ watch(
   padding: 32px 16px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: 13.5px;
 }
 
 .success-pager {
@@ -2536,7 +2758,7 @@ watch(
   padding-top: 10px;
   border-top: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
   flex-shrink: 0;
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--text-secondary);
 }
 
@@ -2550,8 +2772,8 @@ watch(
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
   background: #ffffff;
   border-radius: var(--radius-sm, 6px);
-  padding: 3px 10px;
-  font-size: 11.5px;
+  padding: 4px 12px;
+  font-size: 12.5px;
   cursor: pointer;
   transition: all 0.15s ease;
 }

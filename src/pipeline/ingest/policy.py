@@ -70,7 +70,7 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
     """检查一个目录或文件当前的路由归属、目标标识以及是专属还是继承。"""
     all_configured = [route for route in settings.routes if _route_dest(route)]
     if not all_configured:
-        return {"matched": False, "is_explicit": False}
+        return {"matched": False, "is_explicit": False, "is_inherited": False}
     route_map = {route.path.resolve(): route for route in all_configured}
     resolved = target_path.resolve()
 
@@ -83,6 +83,7 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
         return {
             "matched": True,
             "is_explicit": True,
+            "is_inherited": False,
             "inherited_from": "",
             "platform": route.platform,
             "dest_id": _route_dest(route),
@@ -103,6 +104,7 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
         return {
             "matched": True,
             "is_explicit": False,
+            "is_inherited": True,
             "inherited_from": str(parent_route.path),
             "platform": parent_route.platform,
             "dest_id": _route_dest(parent_route),
@@ -112,7 +114,7 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
             "enabled": parent_route.enabled,
         }
 
-    return {"matched": False, "is_explicit": False}
+    return {"matched": False, "is_explicit": False, "is_inherited": False}
 
 
 class IngestPolicy:

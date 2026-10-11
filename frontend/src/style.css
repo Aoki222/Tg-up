@@ -34,6 +34,14 @@
   --radius-sm: 6px;       /* 交互按钮, 输入框, 下拉框, Tab切换项, 标签徽章 */
   --radius-full: 9999px;  /* 状态指示点, 进度条微轨 */
 
+  /* ── 统一全局字号梯度规范 (Typography Scale Tokens - 彻底告别偏小字) ── */
+  --font-xs: 12px;        /* 极小下限：次要徽标、时间戳微小注记、极小标签 (淘汰 9px/10px) */
+  --font-sm: 13px;        /* 次要正文：侧栏目录名、表单 Label、辅助描述、状态标注 */
+  --font-base: 14px;      /* 标准正文：默认正文、按钮文字、输入框正文、卡片正文 (阅读基准) */
+  --font-md: 15px;        /* 强调与中标题：卡片标题、统计突出小数值、面板子项标题 */
+  --font-lg: 16.5px;      /* 大标题与关键数字：面板大标题、顶栏Logo、弹窗大标题 */
+  --font-xl: 19px;        /* 核心大数值、看板主标题 */
+
   /* Double-Bezel 苹果双层微切削内阴影与自然光扩散 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.03);
   --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 3px rgba(0, 0, 0, 0.03), 0 4px 14px rgba(0, 0, 0, 0.03);
@@ -67,6 +75,8 @@ body,
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Geist", "Plus Jakarta Sans", "SF Pro Display", "PingFang SC", "Segoe UI", sans-serif;
+  font-size: var(--font-base, 14px);
+  line-height: 1.5;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;

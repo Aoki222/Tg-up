@@ -78,6 +78,7 @@ def create_api(
     chats_sync=None,
     chat_resolver=None,
     topic_admin=None,
+    ingestor=None,
 ) -> FastAPI:
     """workers_provider / settings_hub 由 Application 注入，避免 API 层 import Worker。"""
     app = FastAPI(title="Tg-up", version="0.1.0")
@@ -96,6 +97,7 @@ def create_api(
     app.state.chats_sync = chats_sync
     app.state.chat_resolver = chat_resolver
     app.state.topic_admin = topic_admin
+    app.state.ingestor = ingestor
     app.state.apply_credentials = None
     initial = load_telegram_credentials(config.PROJECT_DIR)
     app.state.session_login = SessionLoginService(

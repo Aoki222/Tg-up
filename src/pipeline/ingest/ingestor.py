@@ -10,18 +10,22 @@
 from __future__ import annotations
 
 import asyncio
-import time
+from dataclasses import replace
 from pathlib import Path
+import time
 
 from ...adapters.task_store import TaskRepository
 from ...domain import limits
+from ...domain.caption import build_ingest_caption, find_nearest_route, resolve_preview
+from ...domain.route_topic import resolve_topic
 from ...domain.settings_hub import SettingsHub
-from ...domain.caption import build_ingest_caption
-from ...domain.task import TaskStatus
+from ...domain.task import AfterSuccess, TaskStatus
+from ...domain.upload_settings import PreviewMode
 from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
 from ...utils.topic_creactor import TopicCreator, TopicSessionUnavailable
-from .policy import IngestPolicy
+from .filters import check_transient_file
+from .policy import IngestPolicy, _PREVIEWABLE_SUFFIXES, _chat_id_of, _route_dest
 from .preview import PreviewJob, PreviewPool
 
 logger = get_logger(__name__)
@@ -145,6 +149,207 @@ class FileIngestor:
         finally:
             async with self._paths_lock:
                 self._inflight_paths.discard(path_key)
+
+    async def manual_dispatch(
+        self,
+        file_path: Path | str,
+        chat_id: int | None = None,
+        topic_id: int | None = None,
+        caption: str | None = None,
+        after_success: str | None = None,
+        need_preview: bool | None = None,
+    ) -> dict:
+        """手动选择文件投递上传，不依赖自动监控和等待写稳。"""
+        resolved_path = Path(file_path).resolve()
+        path_str = str(resolved_path)
+
+        if not resolved_path.is_file():
+            return {
+                "ok": False,
+                "reason": "文件不存在或不是常规文件",
+                "file_path": path_str,
+            }
+
+        try:
+            file_size = resolved_path.stat().st_size
+        except OSError:
+            return {
+                "ok": False,
+                "reason": "无法读取文件大小",
+                "file_path": path_str,
+            }
+
+        transient_res = check_transient_file(resolved_path)
+        if transient_res.is_transient:
+            return {
+                "ok": False,
+                "reason": f"文件属于下载中间或临时文件 ({transient_res.reason})",
+                "file_path": path_str,
+            }
+
+        existing = await self.task_repository.find_active_by_file_path(path_str)
+        if existing:
+            return {
+                "ok": False,
+                "reason": "已有未完成任务正在排队或上传",
+                "task_id": existing,
+                "file_path": path_str,
+            }
+
+        settings = self.settings_hub.get()
+        nearest_route = find_nearest_route(resolved_path, settings)
+
+        # 决议目标群组
+        if chat_id is not None:
+            target_chat_id = int(chat_id)
+            platform = "telegram"
+            dest_id = str(target_chat_id)
+        elif nearest_route is not None:
+            target_chat_id = nearest_route.chat_id or _chat_id_of(nearest_route)
+            platform = nearest_route.platform or "telegram"
+            dest_id = _route_dest(nearest_route)
+            if not target_chat_id and not dest_id:
+                return {
+                    "ok": False,
+                    "reason": "匹配的路由未配置目标群组，且未手动指定 chat_id",
+                    "file_path": path_str,
+                }
+        else:
+            return {
+                "ok": False,
+                "reason": "未指定目标群组且该路径未匹配任何路由规则",
+                "file_path": path_str,
+            }
+
+        # 决议话题
+        if topic_id is not None:
+            target_topic_id = int(topic_id)
+        elif nearest_route is not None:
+            topic_mode, fixed_topic_id = resolve_topic(resolved_path, settings)
+            if platform != "telegram":
+                topic_mode, fixed_topic_id = "off", None
+            if topic_mode == "fixed" and fixed_topic_id is not None:
+                target_topic_id = fixed_topic_id
+            elif topic_mode == "auto" and self.topic_creator is not None:
+                target_topic_id = await self.topic_creator.get_or_create_topic(
+                    fold_path=str(resolved_path.parent.resolve()),
+                    folder_name=resolved_path.parent.name,
+                    chat_id=target_chat_id,
+                )
+            else:
+                target_topic_id = None
+        else:
+            target_topic_id = None
+
+        # 决议封面
+        previewable = resolved_path.suffix.lower() in _PREVIEWABLE_SUFFIXES and platform == "telegram"
+        preview_mode = resolve_preview(resolved_path, settings)
+        if need_preview is True:
+            if previewable:
+                need_content = preview_mode is PreviewMode.GRID
+                need_single = not need_content
+            else:
+                need_single = False
+                need_content = False
+        elif need_preview is False:
+            need_single = False
+            need_content = False
+        else:
+            need_single = previewable and preview_mode is PreviewMode.FIRST_FRAME
+            need_content = previewable and preview_mode is PreviewMode.GRID
+
+        has_preview = need_single or need_content
+
+        # 决议说明文案
+        if caption is not None and caption.strip():
+            target_caption = caption.strip()
+        else:
+            target_caption = build_ingest_caption(resolved_path, settings, file_size)
+
+        # 决议任务策略
+        policy = self.settings_hub.policy_for_new_task(has_preview)
+        if after_success:
+            try:
+                policy = replace(policy, after_success=AfterSuccess(after_success))
+            except ValueError:
+                pass
+
+        file_name = resolved_path.name
+        folder_name = resolved_path.parent.name
+
+        async with self._insert_lock:
+            existing = await self.task_repository.find_active_by_file_path(path_str)
+            if existing:
+                return {
+                    "ok": False,
+                    "reason": "已有未完成任务正在排队或上传",
+                    "task_id": existing,
+                    "file_path": path_str,
+                }
+
+            oversized = limits.telegram_bot_blocked(file_size, platform)
+            if has_preview:
+                status = TaskStatus.PREPARING
+            elif oversized:
+                status = TaskStatus.OVERSIZED
+            else:
+                status = TaskStatus.PENDING
+
+            task_id = await self.task_repository.add_task(
+                file_path=path_str,
+                file_name=file_name,
+                file_size=file_size,
+                folder_name=folder_name,
+                single_page=need_single,
+                content_page=need_content,
+                chat_id=target_chat_id if platform == "telegram" else 0,
+                topic_id=target_topic_id,
+                platform=platform,
+                dest_id=dest_id,
+                status=status.value,
+                max_retries=policy.max_retries,
+                caption=target_caption,
+                after_success=policy.after_success.value,
+                error_msg=limits.OVERSIZED_REASON if oversized and not has_preview else None,
+            )
+            self.settings_hub.remember_policy(task_id, policy)
+            await self.task_repository.clear_unmatched(path_str)
+
+        if oversized:
+            logger.info("手动投递已入库（超过 2GB） task=%s size=%s: %s", task_id, file_size, resolved_path)
+        else:
+            logger.info("手动投递已入库 task=%s: %s", task_id, resolved_path)
+
+        if oversized and not has_preview:
+            await self._offer_slice(task_id)
+        elif not has_preview:
+            if self.rescheduler:
+                self.rescheduler.request_reschedule()
+        else:
+            if self.preview_pool is None:
+                await self.task_repository.update_preview(task_id, None, False, "preview pool missing")
+                if oversized:
+                    await self._offer_slice(task_id)
+                elif self.rescheduler:
+                    self.rescheduler.request_reschedule()
+            else:
+                self.preview_pool.submit(
+                    PreviewJob(
+                        task_id=task_id,
+                        file_path=resolved_path,
+                        need_single=need_single,
+                        need_content=need_content,
+                    )
+                )
+
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "status": status.value,
+            "file_path": path_str,
+            "file_name": file_name,
+            "file_size": file_size,
+        }
 
     async def _ingest_claimed(self, file_path: Path, caption: str) -> int | None:
         settings = self.settings_hub.get()

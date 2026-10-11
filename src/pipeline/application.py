@@ -575,6 +575,7 @@ class UploaderApplication:
             chats_sync=self._sync_chats,
             chat_resolver=self._resolve_chat_title,
             topic_admin=TopicAdmin(self._user_client, self._settings_hub),
+            ingestor=self._ingestor,
         )
         self._session_login = api.state.session_login
         pool = self._session_pool

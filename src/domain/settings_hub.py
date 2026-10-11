@@ -56,7 +56,6 @@ def render_upload_toml(payload: dict) -> str:
         "# 由配置页写入。保存后热加载，不必重启。\n"
         f"chat_id = {int(payload['chat_id'])}\n"
         f"watch_enabled = {watch_enabled_str}\n"
-        f"observer_paths = [{_path_list(payload)}]\n"
         f"page_dir = {_toml_string(str(payload.get('page_dir') or 'page'))}\n"
         f"archive_dir = {_toml_string(str(payload.get('archive_dir') or 'uploaded'))}\n"
         f"preview = {_toml_string(str(payload.get('preview') or 'off'))}\n"
@@ -100,8 +99,11 @@ def _render_routes(payload: dict) -> str:
             dest_id = str(chat_id)
         if platform == "telegram" and chat_id == 0 and dest_id.lstrip("-").isdigit():
             chat_id = int(dest_id)
-        if not dest_id:
+        auto_blocked = bool(item.get("auto_blocked", False))
+        if not dest_id and not auto_blocked:
             continue
+        if not dest_id and auto_blocked:
+            dest_id = "blocked"
         name = str(item.get("name") or "")
         block = (
             "[[routes]]\n"
@@ -130,6 +132,8 @@ def _render_routes(payload: dict) -> str:
         enabled = item.get("enabled", True)
         if enabled is False:
             block += "enabled = false\n"
+        if auto_blocked:
+            block += "auto_blocked = true\n"
         chunks.append(block)
     if len(chunks) == 1:
         return ""
@@ -137,10 +141,16 @@ def _render_routes(payload: dict) -> str:
 
 
 def _render_observer_roots(payload: dict) -> str:
-    """渲染带独立启停状态的物理根目录列表。"""
+    """渲染带独立启停状态的物理根目录列表。若仅提供旧 observer_paths 则自动转为 roots 渲染。"""
     raw = payload.get("observer_roots")
     if not isinstance(raw, list) or not raw:
-        return ""
+        legacy = payload.get("observer_paths") or payload.get("observer_path") or []
+        if isinstance(legacy, str):
+            legacy = [legacy]
+        if isinstance(legacy, (list, tuple)) and legacy:
+            raw = [{"path": str(p), "enabled": True} for p in legacy if str(p).strip()]
+        else:
+            return ""
     chunks: list[str] = ["\n# 物理监听根目录（支持独立开启/暂停）。\n"]
     seen: set[str] = set()
     for item in raw:
@@ -343,9 +353,13 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
             dest_id = str(chat_id)
         if platform == "telegram" and chat_id == 0 and dest_id.lstrip("-").isdigit():
             chat_id = int(dest_id)
-        if not dest_id:
+        auto_blocked_raw = item.get("auto_blocked", False)
+        auto_blocked = _as_bool(auto_blocked_raw, False) if auto_blocked_raw is not None else False
+        if not dest_id and not auto_blocked:
             logger.warning("跳过没有目标的路由: %s", path_text)
             continue
+        if not dest_id and auto_blocked:
+            dest_id = "blocked"
         path = _resolve_observer_path(path_text)
         key = str(path)
         if key in seen:
@@ -389,6 +403,7 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 preview=route_preview,
                 topic_mode=topic_mode,
                 topic_id=topic_id,
+                auto_blocked=auto_blocked,
             )
         )
     return tuple(routes)
@@ -596,6 +611,7 @@ class SettingsHub:
                     "preview": None if route.preview is None else route.preview.value,
                     "topic_mode": route.topic_mode,
                     "topic_id": route.topic_id,
+                    "auto_blocked": route.auto_blocked,
                 }
                 for route in settings.routes
             ],
@@ -610,17 +626,20 @@ class SettingsHub:
         }
 
     def save_from_payload(self, payload: dict) -> dict:
-        """校验并写入 upload.toml，立刻替换内存配置。"""
-        # 兼容处理：确保 observer_paths 与 observer_roots 双向同步
-        if "observer_roots" in payload and isinstance(payload["observer_roots"], list):
-            if "observer_paths" not in payload or not payload["observer_paths"]:
-                payload["observer_paths"] = [
-                    str(r.get("path")) for r in payload["observer_roots"] if isinstance(r, dict) and r.get("path")
-                ]
-        elif "observer_paths" in payload and isinstance(payload["observer_paths"], list):
+        # 统一以 observer_roots 为唯一定义源
+        raw_roots = payload.get("observer_roots")
+        if isinstance(raw_roots, list):
             payload["observer_roots"] = [
-                {"path": str(p), "enabled": True} for p in payload["observer_paths"]
+                r for r in raw_roots if isinstance(r, dict) and str(r.get("path") or "").strip()
             ]
+        elif "observer_paths" in payload and isinstance(payload["observer_paths"], list):
+            # 向下兼容仅传旧 observer_paths 的情况
+            payload["observer_roots"] = [
+                {"path": str(p), "enabled": True} for p in payload["observer_paths"] if str(p or "").strip()
+            ]
+        else:
+            payload["observer_roots"] = []
+        payload["observer_paths"] = [str(r.get("path")) for r in payload["observer_roots"]]
         text = render_upload_toml(payload)
         temp_path = self.config_path.with_suffix(".toml.tmp")
         temp_path.write_text(text, encoding="utf-8")

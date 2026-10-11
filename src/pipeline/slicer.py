@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 
 from ..adapters.task_store import TaskRepository
+from ..domain.caption import resolve_preview
 from ..domain.settings_hub import SettingsHub
 from ..domain.slices import (
     MSG_CUTTING,
@@ -388,7 +389,7 @@ class SliceService:
         count = int(planned["part_count"])
         segment = Path(str(planned.get("segment_path") or ""))
         caption = part_caption(str(parent.get("caption") or ""), index, count)
-        need_single, need_content = self._preview_flags(segment)
+        need_single, need_content = self._preview_flags(parent, segment)
         status = "preparing" if need_single or need_content else "pending"
         child_id = await self.repository.insert_slice_child(
             parent,
@@ -423,12 +424,18 @@ class SliceService:
             segment.name,
         )
 
-    def _preview_flags(self, path: Path) -> tuple[bool, bool]:
-        settings = self.settings_hub.get()
-        mode = getattr(settings, "preview", None)
-        name = getattr(mode, "value", mode)
+    def _preview_flags(self, parent: dict, path: Path) -> tuple[bool, bool]:
         if not is_sliceable_video(path):
             return False, False
+        if str(parent.get("platform") or "telegram") != "telegram":
+            return False, False
+        settings = self.settings_hub.get()
+        source_path = Path(str(parent.get("file_path") or ""))
+        if hasattr(settings, "routes") and source_path.name:
+            mode = resolve_preview(source_path, settings)
+        else:
+            mode = getattr(settings, "preview", None)
+        name = getattr(mode, "value", mode)
         if name == "first_frame":
             return True, False
         if name == "grid":

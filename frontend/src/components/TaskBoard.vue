@@ -690,8 +690,8 @@ async function onRemoveOversizedAll(): Promise<void> {
   border: 0;
   background: transparent;
   border-radius: var(--radius-sm, 6px);
-  padding: 5px 9px;
-  font-size: 11.5px;
+  padding: 6px 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   cursor: pointer;
   display: flex;
@@ -736,9 +736,9 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .tab-badge {
-  padding: 1px 6px;
+  padding: 1.5px 7px;
   border-radius: var(--radius-full, 9999px);
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 700;
   font-family: ui-monospace, monospace;
 }
@@ -777,7 +777,7 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .summary-text {
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--text-secondary);
   font-family: ui-monospace, monospace;
 }
@@ -789,11 +789,11 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .action-btn {
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
   background: #ffffff;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -865,7 +865,7 @@ async function onRemoveOversizedAll(): Promise<void> {
   align-items: center;
   justify-content: space-between;
   padding-bottom: 4px;
-  font-size: 12px;
+  font-size: 13px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
 }
 
@@ -878,13 +878,13 @@ async function onRemoveOversizedAll(): Promise<void> {
 .section-title {
   font-weight: 700;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 14px;
 }
 
 .section-sub {
   font-weight: 400;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .section-sub.oversized {
@@ -902,7 +902,7 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .section-count-badge {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   font-weight: 500;
 }
@@ -927,11 +927,11 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .mini-action-btn {
-  padding: 2px 7px;
+  padding: 3px 9px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
   background: #ffffff;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.12s ease;
@@ -971,7 +971,7 @@ async function onRemoveOversizedAll(): Promise<void> {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   background: #fafbfa;
 }
@@ -1016,14 +1016,14 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .empty-title {
-  font-size: 13.5px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
   margin: 0 0 4px;
 }
 
 .empty-desc {
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--text-secondary);
   margin: 0;
 }
@@ -1095,7 +1095,7 @@ async function onRemoveOversizedAll(): Promise<void> {
 
 .rail-title {
   writing-mode: vertical-rl;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   letter-spacing: 0.14em;
 }
@@ -1154,7 +1154,7 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .well-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
 }
@@ -1221,7 +1221,7 @@ async function onRemoveOversizedAll(): Promise<void> {
   border-radius: var(--radius-full, 9999px);
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -1240,12 +1240,12 @@ async function onRemoveOversizedAll(): Promise<void> {
 }
 
 .retry-all-btn {
-  padding: 2px 8px;
+  padding: 3px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 6px);
   background: var(--surface);
   color: var(--text);
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -1345,7 +1345,7 @@ async function onRemoveOversizedAll(): Promise<void> {
 .empty {
   margin: 28px 0 8px;
   text-align: center;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
@@ -1444,7 +1444,7 @@ async function onRemoveOversizedAll(): Promise<void> {
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text-secondary);
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
@@ -1464,7 +1464,7 @@ async function onRemoveOversizedAll(): Promise<void> {
     border-radius: var(--radius-full, 9999px);
     background: var(--hover);
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
   }
 
@@ -1529,8 +1529,8 @@ async function onRemoveOversizedAll(): Promise<void> {
   }
 
   .retry-all-btn {
-    padding: 4px 8px;
-    font-size: 11px;
+    padding: 5px 10px;
+    font-size: 12px;
   }
 }
 </style>

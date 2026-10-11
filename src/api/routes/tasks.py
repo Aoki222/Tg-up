@@ -6,6 +6,7 @@ import asyncio
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from ...adapters.progress import ProgressHub
 from ...domain.slices import MSG_TOO_DENSE, minimum_slice_parts
@@ -14,7 +15,60 @@ from ..models import FailedIdsBody, OversizedIdsBody, SliceBody
 from ..present import _board_item, _sse
 
 
+class ManualDispatchBody(BaseModel):
+    file_paths: list[str] = Field(default_factory=list)
+    file_path: str | None = None
+    chat_id: int | None = None
+    topic_id: int | None = None
+    caption: str | None = None
+    after_success: str | None = None
+    need_preview: bool | None = None
+
+
 def register(app: FastAPI) -> None:
+    # 手动选择文件投递上传（不依赖自动监控，支持单文件或多文件批量）
+    @app.post("/api/tasks/dispatch", dependencies=[Depends(require_token)])
+    async def dispatch_manual_files(body: ManualDispatchBody) -> dict:
+        ingestor = app.state.ingestor
+        if ingestor is None:
+            raise HTTPException(status_code=503, detail="文件入库服务未就绪")
+
+        paths: list[str] = []
+        for p in body.file_paths:
+            if p and p not in paths:
+                paths.append(p)
+        if body.file_path and body.file_path not in paths:
+            paths.append(body.file_path)
+
+        if not paths:
+            raise HTTPException(status_code=400, detail="请提供至少一个文件路径 (file_paths)")
+
+        dispatched: list[dict] = []
+        skipped: list[dict] = []
+
+        for p in paths:
+            res = await ingestor.manual_dispatch(
+                file_path=p,
+                chat_id=body.chat_id,
+                topic_id=body.topic_id,
+                caption=body.caption,
+                after_success=body.after_success,
+                need_preview=body.need_preview,
+            )
+            if res.get("ok"):
+                dispatched.append(res)
+            else:
+                skipped.append(res)
+
+        return {
+            "ok": len(dispatched) > 0 or len(skipped) == 0,
+            "total": len(paths),
+            "dispatched_count": len(dispatched),
+            "skipped_count": len(skipped),
+            "dispatched": dispatched,
+            "skipped": skipped,
+        }
+
     # 没有命中路由、因此没有进入上传队列的文件。
     @app.get("/api/unmatched")
     async def list_unmatched() -> dict:

@@ -326,11 +326,11 @@ async function onDelete(name: string): Promise<void> {
 }
 
 .count-badge {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
   background: var(--hover);
-  padding: 1px 7px;
+  padding: 1.5px 8px;
   border-radius: var(--radius-full, 9999px);
 }
 
@@ -430,23 +430,23 @@ async function onDelete(name: string): Promise<void> {
 
 .kind {
   margin-left: 6px;
-  padding: 1px 6px;
+  padding: 1.5px 7px;
   border-radius: var(--radius-full, 9999px);
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .worker-name {
-  font-size: 14px;
+  font-size: 14.5px;
   color: var(--text);
   font-weight: 600;
 }
 
 .user {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 /* ── 微徽标 (Micro-Badge) ── */
@@ -454,9 +454,9 @@ async function onDelete(name: string): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 7px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm, 6px);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   background: #f4f7f5;
   color: var(--text-secondary);
@@ -533,12 +533,12 @@ async function onDelete(name: string): Promise<void> {
 }
 
 .m-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 
 .m-val {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -554,7 +554,7 @@ async function onDelete(name: string): Promise<void> {
   background: #fdf5f5;
   border-radius: var(--radius-sm, 6px);
   color: var(--bad);
-  font-size: 11.5px;
+  font-size: 12px;
   word-break: break-all;
 }
 

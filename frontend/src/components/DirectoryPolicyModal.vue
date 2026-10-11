@@ -627,7 +627,7 @@ function onClose(): void {
 
 .head-title {
   margin: 0;
-  font-size: 14.5px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text, #111827);
   display: flex;
@@ -641,7 +641,7 @@ function onClose(): void {
 
 .head-path {
   margin: 3px 0 0;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--text-secondary, #6b7280);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -653,13 +653,13 @@ function onClose(): void {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: var(--radius-sm, 6px);
   border: 0;
   background: transparent;
   color: var(--text-secondary, #9ca3af);
-  font-size: 13px;
+  font-size: 15px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -686,7 +686,7 @@ function onClose(): void {
 }
 
 .section-label {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 700;
   color: var(--text, #1f2937);
 }
@@ -698,7 +698,7 @@ function onClose(): void {
   border-radius: var(--radius-sm, 6px);
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
   background: #f9fafb;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text, #111827);
   outline: none;
   transition: all 0.15s ease;
@@ -711,7 +711,7 @@ function onClose(): void {
 
 .field-hint {
   margin: 2px 0 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary, #9ca3af);
   line-height: 1.4;
 }
@@ -724,7 +724,7 @@ function onClose(): void {
 }
 
 .topic-sub-label {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-secondary, #6b7280);
 }
@@ -739,12 +739,12 @@ function onClose(): void {
 }
 
 .seg-btn {
-  padding: 5px 8px;
+  padding: 6px 8px;
   border-radius: var(--radius-sm, 6px);
   border: 0;
   background: transparent;
   color: var(--text-secondary, #6b7280);
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -782,7 +782,7 @@ function onClose(): void {
   border: 1px solid rgba(59, 130, 246, 0.3);
   background: rgba(59, 130, 246, 0.04);
   color: #1d4ed8;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   outline: none;
 }
@@ -792,7 +792,7 @@ function onClose(): void {
   padding: 6px 10px;
   border-radius: var(--radius-sm, 6px);
   background: #f9fafb;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary, #9ca3af);
 }
 
@@ -808,7 +808,7 @@ function onClose(): void {
 }
 
 .caption-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary, #9ca3af);
 }
 
@@ -819,12 +819,12 @@ function onClose(): void {
 }
 
 .chip-btn {
-  padding: 3px 8px;
+  padding: 4px 9px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid rgba(0, 0, 0, 0.08);
   background: #f3f4f6;
   color: #374151;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -859,7 +859,7 @@ function onClose(): void {
 }
 
 .chip-check {
-  font-size: 10px;
+  font-size: 11.5px;
   margin-right: 3px;
   font-weight: bold;
 }
@@ -872,7 +872,7 @@ function onClose(): void {
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
   background: #f9fafb;
   font-family: ui-monospace, "SF Mono", monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   resize: vertical;
   outline: none;
@@ -892,14 +892,14 @@ function onClose(): void {
 }
 
 .preview-title {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--accent, #28995a);
   margin-bottom: 4px;
 }
 
 .preview-content {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text, #1f2937);
   line-height: 1.5;
   word-break: break-all;
@@ -942,7 +942,7 @@ function onClose(): void {
 }
 
 .foot-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary, #9ca3af);
 }
 

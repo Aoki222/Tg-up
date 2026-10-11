@@ -35,11 +35,10 @@ const allSections = [
   { id: "telegram", label: "Telegram 目标" },
   ...(ENABLE_GOOGLE_DRIVE ? [{ id: "drive", label: "Google Drive" }] : []),
   { id: "watch", label: "监听目录" },
-  { id: "routes", label: "目录文件树" },
   { id: "process", label: "处理与收尾" },
 ] as const;
 
-type PanelId = "routes" | "telegram" | "drive" | "watch" | "process";
+type PanelId = "telegram" | "drive" | "watch" | "process";
 
 const route = useRoute();
 const tomlDirty = ref(false);
@@ -55,7 +54,7 @@ const configPanelId = computed<PanelId>(() => {
     return section.value;
   }
   if (section.value === "drive" && ENABLE_GOOGLE_DRIVE) return "drive";
-  return "routes";
+  return "watch";
 });
 
 // ── 侧栏搜索过滤 ───────────────────────────────────────────────
@@ -67,7 +66,6 @@ const sectionKeywords: Record<string, string[]> = {
   drive: ["drive", "google", "云端硬盘", "folder"],
   watch: ["监听", "目录", "observer", "path", "格式", "扩展名", "extension", "超时", "stable", "watch"],
   process: ["处理", "收尾", "封面", "缩略图", "preview", "说明", "caption", "归档", "archive", "切片", "slice", "并发", "concurrency", "重试", "retry", "超时", "timeout", "process"],
-  routes: ["路由", "映射", "规则", "routes"],
 };
 
 const visibleSections = computed(() => {

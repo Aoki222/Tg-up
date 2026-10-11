@@ -158,6 +158,7 @@ export interface FolderRouteItem {
   /** null 跟随上一级。off 不用话题，auto 按文件夹名，fixed 使用 topic_id。 */
   topic_mode: "off" | "auto" | "fixed" | null;
   topic_id: number | null;
+  auto_blocked?: boolean;
 }
 
 export interface UnmatchedFile {
@@ -190,6 +191,7 @@ export interface ObserverRootItem {
 export interface FsRouteInfo {
   matched: boolean;
   is_explicit: boolean;
+  is_inherited?: boolean;
   inherited_from?: string;
   platform?: string;
   dest_id?: string;
@@ -220,14 +222,14 @@ export interface FsNode {
 export interface UploadConfig {
   /** 全局自动监控总开关（L1） */
   watch_enabled?: boolean;
-  /** 各物理根路径独立启停配置（L2） */
-  observer_roots?: ObserverRootItem[];
   /** Telegram 目标频道或群组 chat_id（通常以 -100 开头） */
   chat_id: number;
-  /** 监听目录路径数组（支持多目录并行监听） */
-  observer_paths: string[];
+  /** 各物理根路径独立启停配置（L2，主定义源） */
+  observer_roots: ObserverRootItem[];
+  /** 兼容旧版或计算派生的监听目录路径数组 */
+  observer_paths?: string[];
   /** 后端诊断返回的监听目录状态详情 */
-  observer_path_infos: ObserverPathInfo[];
+  observer_path_infos?: ObserverPathInfo[];
   /** 封面缓存临时目录 */
   page_dir: string;
   /** 归档目录路径（当 after_success 为 move_to_archive 时生效） */
@@ -323,4 +325,35 @@ export interface SystemVersionInfo {
   commit_url: string;
   checked_at?: number;
 }
+
+// ── 手动投递相关类型 ───────────────────────────────────────────
+
+export interface ManualDispatchPayload {
+  file_paths?: string[];
+  file_path?: string;
+  chat_id?: number | null;
+  topic_id?: number | null;
+  caption?: string | null;
+  after_success?: string | null;
+  need_preview?: boolean | null;
+}
+
+export interface ManualDispatchItemResult {
+  ok: boolean;
+  task_id?: number;
+  file_path?: string;
+  reason?: string;
+  target_chat_id?: number;
+  target_topic_id?: number | null;
+}
+
+export interface ManualDispatchResult {
+  ok: boolean;
+  total: number;
+  dispatched_count: number;
+  skipped_count: number;
+  dispatched: ManualDispatchItemResult[];
+  skipped: ManualDispatchItemResult[];
+}
+
 

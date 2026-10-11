@@ -38,6 +38,7 @@ class FolderRoute:
     # None 表示没写。off 不用话题，auto 按文件夹名，fixed 使用 topic_id。
     topic_mode: str | None = None
     topic_id: int | None = None
+    auto_blocked: bool = False
 
 
 @dataclass(frozen=True)

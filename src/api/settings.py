@@ -94,7 +94,7 @@ class SettingsPayload(BaseModel):
     chat_id: int
     watch_enabled: bool = True
     observer_roots: list[ObserverRootPayload] = Field(default_factory=list)
-    observer_paths: list[str] = Field(default_factory=lambda: ["download"])
+    observer_paths: list[str] = Field(default_factory=list)
     observer_path: str | None = None
     page_dir: str = "page"
     archive_dir: str = "uploaded"

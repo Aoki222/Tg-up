@@ -15,6 +15,8 @@ import type {
   BoardSnapshot,
   FolderRouteItem,
   FsNode,
+  ManualDispatchPayload,
+  ManualDispatchResult,
   ObserverPathInfo,
   ObserverRootItem,
   SessionLoginResult,
@@ -261,16 +263,16 @@ export async function saveSettings(payload: UploadConfig): Promise<UploadConfig>
 /**
  * 【L1 快捷接口】一键切换全局自动监控总开关
  */
-export async function toggleGlobalWatch(): Promise<{ watch_enabled: boolean }> {
-  const res = await apiClient.post<{ watch_enabled: boolean }>("/api/settings/watch/toggle");
+export async function toggleGlobalWatch(): Promise<{ watch_enabled: boolean; observer_roots?: ObserverRootItem[] }> {
+  const res = await apiClient.post<{ watch_enabled: boolean; observer_roots?: ObserverRootItem[] }>("/api/settings/watch/toggle");
   return res.data;
 }
 
 /**
  * 【L2 快捷接口】单个物理根路径独立启停开关
  */
-export async function toggleRootPath(path: string): Promise<{ path: string; observer_roots: ObserverRootItem[] }> {
-  const res = await apiClient.post<{ path: string; observer_roots: ObserverRootItem[] }>("/api/settings/roots/toggle", {
+export async function toggleRootPath(path: string): Promise<{ path: string; observer_roots: ObserverRootItem[]; watch_enabled?: boolean }> {
+  const res = await apiClient.post<{ path: string; observer_roots: ObserverRootItem[]; watch_enabled?: boolean }>("/api/settings/roots/toggle", {
     path,
   });
   return res.data;
@@ -545,4 +547,13 @@ export async function fetchSystemVersion(): Promise<SystemVersionInfo> {
   const res = await apiClient.get<SystemVersionInfo>("/api/system/version");
   return res.data;
 }
+
+/**
+ * 手动投递文件入库上传任务 (POST /api/tasks/dispatch)
+ */
+export async function dispatchManualTasks(payload: ManualDispatchPayload): Promise<ManualDispatchResult> {
+  const res = await apiClient.post<ManualDispatchResult>("/api/tasks/dispatch", payload);
+  return res.data;
+}
+
 

@@ -8,6 +8,7 @@ from src.database.init import SCHEMA
 from src.domain.limits import OVERSIZED_REASON
 from src.domain.slices import MSG_INTERRUPTED, MSG_WAIT, msg_need_parts, msg_part_failed, msg_released
 from src.domain.task import AfterSuccess, Task, TaskArtifacts, TaskDestination, TaskPolicy, TaskStatus
+from src.domain.upload_settings import FolderRoute, PreviewMode
 from src.pipeline.slice_media import SliceCutError
 from src.pipeline.slicer import SliceService
 
@@ -314,3 +315,55 @@ async def test_clear_removes_segments_and_leaves_source(tmp_path: Path, monkeypa
         assert await repo.list_slices(parent_id) == []
     finally:
         await close_pool()
+
+
+async def test_parts_follow_parent_route_preview_mode(tmp_path: Path, monkeypatch) -> None:
+    try:
+        repo = await _prepare(tmp_path)
+        route_folder = tmp_path / "custom_route"
+        route_folder.mkdir()
+        parent_id, _source = await _parent(repo, route_folder, name="oversized.mp4")
+
+        hub = _Hub()
+        hub.preview = PreviewMode.FIRST_FRAME  # 全局为 first_frame
+        route = FolderRoute(
+            path=route_folder,
+            chat_id=-100,
+            dest_id="-100",
+            enabled=True,
+            preview=PreviewMode.GRID,  # 路径配置为 grid
+        )
+        hub.routes = (route,)
+
+        service = _service(tmp_path, repo, hub, _After())
+        jobs: list[object] = []
+
+        class _Pool:
+            def submit(self, job: object) -> None:
+                jobs.append(job)
+
+        service.preview_pool = _Pool()
+
+        async def fake_cut(source_path: Path, directory: Path, parts: int):
+            p1 = directory / "oversized.part01-of-02.mp4"
+            p1.write_bytes(b"part1")
+            p2 = directory / "oversized.part02-of-02.mp4"
+            p2.write_bytes(b"part2")
+            return [(p1, 5), (p2, 5)]
+
+        monkeypatch.setattr("src.pipeline.slicer.cut_into_parts", fake_cut)
+        assert await service.request(parent_id, 2) == "ok"
+        await service._slice_parent(parent_id)
+
+        slices = await repo.list_slices(parent_id)
+        assert len(slices) == 2
+        child1 = await repo.get_task_by_id(int(slices[0]["child_task_id"]))
+        assert child1 is not None
+        assert child1["status"] == "preparing"
+        assert int(child1["content_page"]) == 1
+        assert int(child1["single_page"]) == 0
+        assert getattr(jobs[0], "need_content") is True
+        assert getattr(jobs[0], "need_single") is False
+    finally:
+        await close_pool()
+

@@ -489,7 +489,7 @@ function speedLabel(item: BoardTask): string {
 }
 
 .card-title {
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 700;
   color: #111827;
   line-height: 1.4;
@@ -497,30 +497,30 @@ function speedLabel(item: BoardTask): string {
 
 /* ── 各种胶囊标签 (Badges & Chips) ───────────────────────── */
 .worker-chip {
-  padding: 1.5px 6px;
+  padding: 2px 7px;
   border-radius: var(--radius-sm, 6px);
   background: #e5e7eb;
   color: #374151;
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, monospace;
   flex-shrink: 0;
 }
 
 .part-chip {
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: var(--radius-full, 9999px);
   background: rgba(40, 153, 90, 0.1);
   color: #28995a;
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 600;
   flex-shrink: 0;
 }
 
 .badge-chip {
-  padding: 2px 7px;
+  padding: 2.5px 8px;
   border-radius: var(--radius-sm, 6px);
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 700;
   line-height: 1.3;
   flex-shrink: 0;
@@ -556,33 +556,33 @@ function speedLabel(item: BoardTask): string {
 
 /* ── 顶部右侧文字 ─────────────────────────────────────────── */
 .speed-text {
-  font-size: 12px;
+  font-size: 13px;
   color: #28995a;
 }
 
 .card-size-oversized {
-  font-size: 12px;
+  font-size: 13px;
   color: #78350f;
 }
 
 .card-size-failed {
-  font-size: 12px;
+  font-size: 13px;
   color: #991b1b;
 }
 
 /* ── 路径与提示行 ─────────────────────────────────────────── */
 .route-line {
-  font-size: 11px;
+  font-size: 12.5px;
   color: #6b7280;
   line-height: 1.4;
 }
 
 .route-line code {
   background: rgba(0, 0, 0, 0.04);
-  padding: 1px 5px;
+  padding: 1.5px 6px;
   border-radius: var(--radius-sm, 6px);
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: #374151;
 }
 
@@ -605,7 +605,7 @@ function speedLabel(item: BoardTask): string {
 }
 
 .hint-oversized {
-  font-size: 10.5px;
+  font-size: 12px;
   color: #b45309;
 }
 
@@ -620,12 +620,12 @@ function speedLabel(item: BoardTask): string {
 
 .error-msg-box {
   margin-top: 4px;
-  padding: 6px 9px;
+  padding: 7px 10px;
   border-radius: var(--radius-sm, 6px);
   background: rgba(254, 226, 226, 0.6);
   color: #b91c1c;
-  font-size: 10.5px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.45;
   word-break: break-all;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -637,8 +637,8 @@ function speedLabel(item: BoardTask): string {
 .full-log-box {
   background: #111827;
   color: #4ade80;
-  font-size: 10px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
   padding: 10px;
   border-radius: var(--radius-md, 10px);
   max-height: 160px;
@@ -666,7 +666,7 @@ function speedLabel(item: BoardTask): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: 12.5px;
   color: #6b7280;
 }
 
@@ -711,17 +711,17 @@ function speedLabel(item: BoardTask): string {
 }
 
 .retry-counter {
-  font-size: 11px;
+  font-size: 12px;
   color: #b91c1c;
   margin-right: 4px;
 }
 
 /* ── 按钮样式体系 ─────────────────────────────────────────── */
 .btn-amber-solid {
-  padding: 5px 12px;
+  padding: 6px 13px;
   background: #f59e0b;
   color: #ffffff;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 700;
   border: 0;
   border-radius: var(--radius-sm, 6px);
@@ -735,11 +735,11 @@ function speedLabel(item: BoardTask): string {
 }
 
 .btn-amber-outline {
-  padding: 5px 12px;
+  padding: 6px 13px;
   background: #ffffff;
   border: 1px solid #fcd34d;
   color: #78350f;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 600;
   border-radius: var(--radius-sm, 6px);
   cursor: pointer;
@@ -751,10 +751,10 @@ function speedLabel(item: BoardTask): string {
 }
 
 .btn-red-solid {
-  padding: 5px 14px;
+  padding: 6px 14px;
   background: #dc2626;
   color: #ffffff;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 700;
   border: 0;
   border-radius: var(--radius-sm, 6px);
@@ -768,11 +768,11 @@ function speedLabel(item: BoardTask): string {
 }
 
 .btn-red-outline {
-  padding: 5px 10px;
+  padding: 6px 12px;
   background: #ffffff;
   border: 1px solid #fecaca;
   color: #dc2626;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   border-radius: var(--radius-sm, 6px);
   cursor: pointer;
@@ -784,11 +784,11 @@ function speedLabel(item: BoardTask): string {
 }
 
 .btn-gray-outline {
-  padding: 5px 10px;
+  padding: 6px 12px;
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.1);
   color: #374151;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   border-radius: var(--radius-sm, 6px);
   cursor: pointer;
@@ -801,8 +801,8 @@ function speedLabel(item: BoardTask): string {
 }
 
 .btn-compact-clear {
-  padding: 3px 8px;
-  font-size: 11px;
+  padding: 3px 9px;
+  font-size: 12px;
   border-radius: var(--radius-sm, 6px);
 }
 
@@ -861,23 +861,23 @@ button:disabled {
 }
 
 .compact-title {
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 700;
   color: #1f2937;
   line-height: 1.3;
 }
 
 .compact-sub {
-  font-size: 10.5px;
+  font-size: 12px;
   color: #9ca3af;
   margin-top: 1px;
 }
 
 .pending-warn-box {
-  font-size: 10.5px;
+  font-size: 12px;
   color: #b45309;
   background: #fffbeb;
-  padding: 4px 8px;
+  padding: 5px 10px;
   border-radius: var(--radius-sm, 6px);
   line-height: 1.3;
 }

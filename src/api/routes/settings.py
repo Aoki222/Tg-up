@@ -49,8 +49,15 @@ def register(app: FastAPI) -> None:
         current = hub.public_dict()
         new_state = not current.get("watch_enabled", True)
         current["watch_enabled"] = new_state
-        hub.save_from_payload(current)
-        return {"watch_enabled": new_state}
+        # 全局开关与所有根路径开关双向联动：全局关 -> 全关，全局开 -> 全开
+        roots = current.get("observer_roots", [])
+        for root in roots:
+            root["enabled"] = new_state
+        saved = hub.save_from_payload(current)
+        return {
+            "watch_enabled": new_state,
+            "observer_roots": saved.get("observer_roots", roots),
+        }
 
     # 快捷切换 L2：单个物理根路径启停
     @app.post("/api/settings/roots/toggle", dependencies=[Depends(require_token)])
@@ -70,8 +77,19 @@ def register(app: FastAPI) -> None:
                 break
         if not found:
             raise HTTPException(status_code=404, detail="未找到该物理根路径配置")
-        hub.save_from_payload(current)
-        return {"path": target_path, "observer_roots": roots}
+
+        # 向上联动推导全局状态：
+        # 若所有路径均已关闭，全局监控自动转为关闭
+        # 若存在任意开启的路径，全局监控自动激活为开启
+        active_count = sum(1 for r in roots if r.get("enabled", True))
+        current["watch_enabled"] = active_count > 0
+
+        saved = hub.save_from_payload(current)
+        return {
+            "path": target_path,
+            "observer_roots": saved.get("observer_roots", roots),
+            "watch_enabled": saved.get("watch_enabled", current["watch_enabled"]),
+        }
 
     # 快捷切换 L3：单个子目录路由启停
     @app.post("/api/settings/routes/toggle", dependencies=[Depends(require_token)])
@@ -82,26 +100,56 @@ def register(app: FastAPI) -> None:
         target_path = payload.path.strip()
         current = hub.public_dict()
         routes = current.get("routes", [])
-        found = False
         target_resolved = Path(target_path).resolve()
-        for route in routes:
+
+        existing_idx = None
+        for idx, route in enumerate(routes):
             if Path(route["path"]).resolve() == target_resolved:
-                route["enabled"] = not route.get("enabled", True)
-                found = True
+                existing_idx = idx
                 break
-        if not found:
-            # 若该子目录尚未配置专属规则，首次点击禁用时自动生成一条禁用的路由规则就地阻断
+
+        if existing_idx is not None:
+            target_route = routes[existing_idx]
+            current_enabled = target_route.get("enabled", True)
+            if not current_enabled:
+                # 当前处于禁用/阻断状态，执行恢复/解除阻断
+                if target_route.get("auto_blocked") or target_route.get("dest_id") == "blocked":
+                    # 仅为快捷阻断生成的临时规则，恢复时直接移除，回归继承上级
+                    routes.pop(existing_idx)
+                else:
+                    # 用户的自定义专属规则，仅重新启用
+                    target_route["enabled"] = True
+            else:
+                # 当前处于启用状态，执行就地阻断
+                target_route["enabled"] = False
+        else:
+            # 该子目录尚未配置专属规则，首次点击禁用时自动就地阻断
+            settings = hub.get()
+            inherited = inspect_path_route(target_resolved, settings)
+            platform = inherited.get("platform") or "telegram"
+            dest_id = inherited.get("dest_id") or ""
+            chat_id = inherited.get("chat_id") or 0
+            if not dest_id and settings.chat_id:
+                platform = "telegram"
+                dest_id = str(settings.chat_id)
+                chat_id = settings.chat_id
+            if not dest_id:
+                dest_id = "blocked"
+                chat_id = 0
+
             routes.append({
                 "name": target_resolved.name or str(target_resolved),
                 "path": str(target_resolved),
                 "enabled": False,
-                "platform": "telegram",
-                "dest_id": "",
-                "chat_id": 0,
+                "auto_blocked": True,
+                "platform": platform,
+                "dest_id": dest_id,
+                "chat_id": chat_id,
             })
-            current["routes"] = routes
-        hub.save_from_payload(current)
-        return {"path": target_path, "routes": routes}
+
+        current["routes"] = routes
+        saved = hub.save_from_payload(current)
+        return {"path": target_path, "routes": saved.get("routes", [])}
 
     # 浏览已映射路径下的子文件夹与文件（支持按需懒加载 + 路由与任务状态计算）。
     @app.get("/api/fs/nodes")
