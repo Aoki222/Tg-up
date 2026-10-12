@@ -31,6 +31,8 @@ export interface UploadProgress {
   speed_bps: number;
   /** 剩余秒数。未知为 -1 */
   eta_seconds: number;
+  part_index?: number | null;
+  part_count?: number | null;
 }
 
 /** 后端任务生命周期。看板：封面 / 等待 / 上传中 / 过大 / 失败 */
@@ -51,6 +53,8 @@ export interface BoardTask {
   folder_name: string | null;
   status: BoardStatus;
   assigned_worker: string | null;
+  platform: string;
+  dest_id: string;
   retry_count: number;
   max_retries: number;
   error: string | null;
@@ -149,15 +153,18 @@ export interface FolderRouteItem {
   chat_id: number;
   topic_enabled: boolean | null;
   enabled: boolean;
-  platform: string;
-  dest_id: string;
+  platform?: string;
+  dest_id?: string;
   /** null 跟随上一级。空字符串表示这个目录不要说明。 */
   caption_template: string | null;
   /** null 跟随上一级。 */
   preview: PreviewMode | null;
+  /** null 跟随全局。网格规格，如 "3x5", "4x3", "3x3" 等 */
+  grid_layout?: string | null;
   /** null 跟随上一级。off 不用话题，auto 按文件夹名，fixed 使用 topic_id。 */
   topic_mode: "off" | "auto" | "fixed" | null;
   topic_id: number | null;
+  auto_blocked?: boolean;
 }
 
 export interface UnmatchedFile {
@@ -179,9 +186,18 @@ export interface ObserverPathInfo {
   error: string;
 }
 
+/** 物理根路径配置与启用状态 */
+export interface ObserverRootItem {
+  path: string;
+  enabled: boolean;
+  ok: boolean;
+  error: string;
+}
+
 export interface FsRouteInfo {
   matched: boolean;
   is_explicit: boolean;
+  is_inherited?: boolean;
   inherited_from?: string;
   platform?: string;
   dest_id?: string;
@@ -189,6 +205,9 @@ export interface FsRouteInfo {
   chat_id?: number;
   topic_enabled?: boolean;
   name?: string;
+  enabled?: boolean;
+  preview?: string | null;
+  grid_layout?: string | null;
 }
 
 export interface FsNode {
@@ -209,18 +228,32 @@ export interface FsNode {
 
 /** upload.toml 对应的完整配置负载 */
 export interface UploadConfig {
+  /** 服务端配置版本。保存时原样带回，不一致则 409。 */
+  revision?: number;
+  /** oldest 入库顺序，natural 自然排序，created 创建时间，smallest 文件大小。 */
+  schedule_order?: "oldest" | "natural" | "created" | "smallest";
+  /** 全局自动监控总开关（L1） */
+  watch_enabled?: boolean;
   /** Telegram 目标频道或群组 chat_id（通常以 -100 开头） */
   chat_id: number;
-  /** 监听目录路径数组（支持多目录并行监听） */
-  observer_paths: string[];
+  /** 各物理根路径独立启停配置（L2，主定义源） */
+  observer_roots: ObserverRootItem[];
+  /** 兼容旧版或计算派生的监听目录路径数组 */
+  observer_paths?: string[];
   /** 后端诊断返回的监听目录状态详情 */
-  observer_path_infos: ObserverPathInfo[];
+  observer_path_infos?: ObserverPathInfo[];
   /** 封面缓存临时目录 */
   page_dir: string;
   /** 归档目录路径（当 after_success 为 move_to_archive 时生效） */
   archive_dir: string;
   /** 封面生成模式 */
   preview: PreviewMode;
+  /** 网格预览图规格，如 "3x5", "4x3", "3x3", "4x4", "2x4" */
+  grid_layout?: string;
+  /** 小图右下角是否显示时间戳 */
+  grid_timestamp?: boolean;
+  /** 顶部是否显示视频信息横幅 */
+  grid_metadata?: boolean;
   /** 路由都没写说明时使用。空字符串表示不写说明。 */
   caption_template: string;
   /** 是否自动在群组论坛（Forum）中按文件名/特征创建新 Topic */
@@ -310,4 +343,35 @@ export interface SystemVersionInfo {
   commit_url: string;
   checked_at?: number;
 }
+
+// ── 手动投递相关类型 ───────────────────────────────────────────
+
+export interface ManualDispatchPayload {
+  file_paths?: string[];
+  file_path?: string;
+  chat_id?: number | null;
+  topic_id?: number | null;
+  caption?: string | null;
+  after_success?: string | null;
+  need_preview?: boolean | null;
+}
+
+export interface ManualDispatchItemResult {
+  ok: boolean;
+  task_id?: number;
+  file_path?: string;
+  reason?: string;
+  target_chat_id?: number;
+  target_topic_id?: number | null;
+}
+
+export interface ManualDispatchResult {
+  ok: boolean;
+  total: number;
+  dispatched_count: number;
+  skipped_count: number;
+  dispatched: ManualDispatchItemResult[];
+  skipped: ManualDispatchItemResult[];
+}
+
 

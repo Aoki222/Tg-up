@@ -6,15 +6,20 @@
  * 1. 基于 Axios 统一封装网络客户端实例 `apiClient`，预置 15 秒请求超时；
  * 2. 请求拦截器：自动读取 localStorage 中的 API Token 并注入 `Authorization: Bearer <token>`；
  * 3. 响应拦截器：全局捕获 401 Unauthorized 状态码并弹出精准提示；自动解包 FastAPI 的 `detail` 错误文本；
- * 4. SSE：`EventSource` 不能带头，有 Token 时走 `/api/progress/stream?access_token=`。
+ * 4. SSE：`EventSource` 不能带头。有 Token 时先换短时票据，再打开 `/api/progress/stream?ticket=`。
  */
 
 import axios, { type AxiosError } from "axios";
 import { ElMessage } from "element-plus";
 import type {
+  BoardTask,
   BoardSnapshot,
+  FolderRouteItem,
   FsNode,
+  ManualDispatchPayload,
+  ManualDispatchResult,
   ObserverPathInfo,
+  ObserverRootItem,
   SessionLoginResult,
   SessionMeta,
   SessionMode,
@@ -135,11 +140,13 @@ export async function deleteWorker(name: string): Promise<void> {
 /**
  * 内部辅助函数：规范化配置中的监听目录结构，提取路径字符串数组
  */
-function normalizeSettings(data: UploadConfig): UploadConfig {
+export function normalizeSettings(data: UploadConfig): UploadConfig {
   const infos: ObserverPathInfo[] = data.observer_path_infos ?? [];
   const paths = infos.length ? infos.map((item) => item.path) : data.observer_paths;
   return {
     ...data,
+    watch_enabled: data.watch_enabled !== false,
+    observer_roots: data.observer_roots ?? [],
     observer_paths: paths,
     observer_path_infos: infos,
     caption_template: data.caption_template ?? "",
@@ -150,6 +157,7 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
       dest_id: item.dest_id || (item.chat_id ? String(item.chat_id) : ""),
       caption_template: item.caption_template ?? null,
       preview: item.preview ?? null,
+      grid_layout: item.grid_layout ?? null,
       topic_mode: item.topic_mode ?? null,
       topic_id: item.topic_id ?? null,
     })),
@@ -160,6 +168,16 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
     })),
     drive_folders: data.drive_folders ?? [],
     auto_slice: data.auto_slice === true,
+    grid_layout: data.grid_layout || "3x5",
+    grid_timestamp: data.grid_timestamp !== false,
+    grid_metadata: data.grid_metadata !== false,
+    revision: data.revision,
+    schedule_order:
+      data.schedule_order === "natural" ||
+      data.schedule_order === "created" ||
+      data.schedule_order === "smallest"
+        ? data.schedule_order
+        : "oldest",
   };
 }
 
@@ -252,6 +270,34 @@ export async function saveSettings(payload: UploadConfig): Promise<UploadConfig>
     observer_paths: payload.observer_paths,
   });
   return normalizeSettings(res.data);
+}
+
+/**
+ * 【L1 快捷接口】一键切换全局自动监控总开关
+ */
+export async function toggleGlobalWatch(): Promise<{ watch_enabled: boolean; observer_roots?: ObserverRootItem[] }> {
+  const res = await apiClient.post<{ watch_enabled: boolean; observer_roots?: ObserverRootItem[] }>("/api/settings/watch/toggle");
+  return res.data;
+}
+
+/**
+ * 【L2 快捷接口】单个物理根路径独立启停开关
+ */
+export async function toggleRootPath(path: string): Promise<{ path: string; observer_roots: ObserverRootItem[]; watch_enabled?: boolean }> {
+  const res = await apiClient.post<{ path: string; observer_roots: ObserverRootItem[]; watch_enabled?: boolean }>("/api/settings/roots/toggle", {
+    path,
+  });
+  return res.data;
+}
+
+/**
+ * 【L3 快捷接口】单个子目录路由独立启停开关
+ */
+export async function toggleRoutePath(path: string): Promise<{ path: string; routes: FolderRouteItem[] }> {
+  const res = await apiClient.post<{ path: string; routes: FolderRouteItem[] }>("/api/settings/routes/toggle", {
+    path,
+  });
+  return res.data;
 }
 
 /**
@@ -353,6 +399,21 @@ export async function submitSessionPassword(
 /**
  * 拉取看板任务快照（进行中全量 + 最近失败），上传中叠实时进度
  */
+export async function deleteRoute(path: string): Promise<void> {
+  await apiClient.patch("/api/settings/routes", { path, action: "delete" });
+}
+
+export async function fetchStatusPage(
+  status: "failed" | "oversized",
+  page: number,
+  pageSize = 50,
+): Promise<{ items: BoardTask[]; total: number; page: number; page_size: number }> {
+  const res = await apiClient.get(`/api/tasks/${status}`, {
+    params: { page, page_size: pageSize },
+  });
+  return res.data;
+}
+
 export async function fetchBoardTasks(): Promise<BoardSnapshot> {
   const res = await apiClient.get<BoardSnapshot>("/api/tasks");
   return res.data;
@@ -486,14 +547,15 @@ export async function fetchSuccessPage(
  * @param onError 网络闪断或长连接异常时的回调处理
  * @returns 原生 EventSource 实例（调用方负责在组件卸载时 close）
  */
-export function openProgressStream(
+export async function openProgressStream(
   onEvent: (progress: UploadProgress) => void,
   onError?: () => void,
-): EventSource {
-  const token = getApiToken();
-  const url = token
-    ? `/api/progress/stream?access_token=${encodeURIComponent(token)}`
-    : "/api/progress/stream";
+): Promise<EventSource> {
+  let url = "/api/progress/stream";
+  if (getApiToken()) {
+    const ticket = await apiClient.post<{ ticket: string }>("/api/progress/ticket");
+    url = `/api/progress/stream?ticket=${encodeURIComponent(ticket.data.ticket)}`;
+  }
   const source = new EventSource(url);
 
   source.addEventListener("progress", (event: Event) => {
@@ -513,4 +575,13 @@ export async function fetchSystemVersion(): Promise<SystemVersionInfo> {
   const res = await apiClient.get<SystemVersionInfo>("/api/system/version");
   return res.data;
 }
+
+/**
+ * 手动投递文件入库上传任务 (POST /api/tasks/dispatch)
+ */
+export async function dispatchManualTasks(payload: ManualDispatchPayload): Promise<ManualDispatchResult> {
+  const res = await apiClient.post<ManualDispatchResult>("/api/tasks/dispatch", payload);
+  return res.data;
+}
+
 

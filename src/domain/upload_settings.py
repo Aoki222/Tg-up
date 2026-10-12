@@ -35,9 +35,11 @@ class FolderRoute:
     # None 表示这项没写，继续往上继承。空字符串表示明确不要说明。
     caption_template: str | None = None
     preview: PreviewMode | None = None
+    grid_layout: str | None = None
     # None 表示没写。off 不用话题，auto 按文件夹名，fixed 使用 topic_id。
     topic_mode: str | None = None
     topic_id: int | None = None
+    auto_blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,14 @@ class DriveFolder:
 
     folder_id: str
     name: str = ""
+
+
+@dataclass(frozen=True)
+class ObserverRoot:
+    """物理监听根目录及其监控状态。"""
+
+    path: Path
+    enabled: bool = True
 
 
 class PreviewMode(StrEnum):
@@ -79,3 +89,16 @@ class UploadSettings:
     auto_slice: bool = False
     # 路由都没写说明时用这份。空字符串表示不写说明。
     caption_template: str = ""
+    # 全局自动监控总开关
+    watch_enabled: bool = True
+    # 带启停状态的物理根目录列表
+    observer_roots: tuple[ObserverRoot, ...] = ()
+    # oldest 入库顺序，natural 自然排序，created 创建时间，smallest 文件大小。
+    schedule_order: str = "oldest"
+    # 网格预览图规格，例如 "3x5", "4x3", "3x3", "4x4", "2x4"
+    grid_layout: str = "3x5"
+    # 小图右下角是否显示时间戳
+    grid_timestamp: bool = True
+    # 顶部是否显示视频信息横幅
+    grid_metadata: bool = True
+

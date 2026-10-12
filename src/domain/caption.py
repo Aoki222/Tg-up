@@ -27,6 +27,25 @@ def enabled_route_map(settings: UploadSettings) -> dict[Path, FolderRoute]:
     }
 
 
+def all_configured_route_map(settings: UploadSettings) -> dict[Path, FolderRoute]:
+    """所有配置且有投递目标的路由（包含已禁用的）。"""
+    return {
+        route.path.resolve(): route
+        for route in settings.routes
+        if _route_dest(route)
+    }
+
+
+def find_nearest_route(file_path: Path, settings: UploadSettings) -> FolderRoute | None:
+    """自底向上查找离文件最近的任意一条路由（不论 enabled 是 True 还是 False）。"""
+    route_map = all_configured_route_map(settings)
+    for parent in file_path.resolve().parents:
+        route = route_map.get(parent)
+        if route is not None:
+            return route
+    return None
+
+
 def find_route(file_path: Path, settings: UploadSettings) -> FolderRoute | None:
     """离文件最近的启用路由。决定群、话题，以及 {route}、{rel_path}。"""
     route_map = enabled_route_map(settings)
@@ -57,6 +76,18 @@ def resolve_preview(file_path: Path, settings: UploadSettings) -> PreviewMode:
             continue
         return route.preview
     return settings.preview
+
+
+def resolve_grid_layout(file_path: Path, settings: UploadSettings) -> str:
+    """最近一条写了网格规格的路由。都没写则用全局网格规格。"""
+    route_map = enabled_route_map(settings)
+    for parent in file_path.resolve().parents:
+        route = route_map.get(parent)
+        if route is None or not route.grid_layout:
+            continue
+        return route.grid_layout
+    return getattr(settings, "grid_layout", "3x5") or "3x5"
+
 
 
 def render_caption(

@@ -34,13 +34,16 @@ class _Repo:
     async def get_task_by_id(self, task_id: int):
         return None
 
-    async def mark_task_uploading(self, task_id: int) -> None:
+    async def mark_task_uploading(self, task_id: int, claim_token: str | None = None) -> None:
+        del task_id, claim_token
         return None
 
-    async def mark_task_succeeded(self, task_id: int, message_id: int) -> None:
+    async def mark_task_succeeded(self, task_id: int, message_id: int, claim_token: str | None = None) -> None:
+        del claim_token
         self.succeeded.append((task_id, message_id))
 
-    async def release_task(self, task_id: int, error_message: str) -> None:
+    async def release_task(self, task_id: int, error_message: str, claim_token: str | None = None) -> None:
+        del claim_token
         self.released.append((task_id, error_message))
 
 

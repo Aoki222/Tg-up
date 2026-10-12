@@ -6,15 +6,70 @@ import asyncio
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from ...adapters.progress import ProgressHub
 from ...domain.slices import MSG_TOO_DENSE, minimum_slice_parts
 from ..app_auth import require_token
 from ..models import FailedIdsBody, OversizedIdsBody, SliceBody
 from ..present import _board_item, _sse
+from ..responses import BoardSnapshotModel, StatusPageModel, publish
+
+
+class ManualDispatchBody(BaseModel):
+    file_paths: list[str] = Field(default_factory=list)
+    file_path: str | None = None
+    chat_id: int | None = None
+    topic_id: int | None = None
+    caption: str | None = None
+    after_success: str | None = None
+    need_preview: bool | None = None
 
 
 def register(app: FastAPI) -> None:
+    # 手动选择文件投递上传（不依赖自动监控，支持单文件或多文件批量）
+    @app.post("/api/tasks/dispatch", dependencies=[Depends(require_token)])
+    async def dispatch_manual_files(body: ManualDispatchBody) -> dict:
+        ingestor = app.state.ingestor
+        if ingestor is None:
+            raise HTTPException(status_code=503, detail="文件入库服务未就绪")
+
+        paths: list[str] = []
+        for p in body.file_paths:
+            if p and p not in paths:
+                paths.append(p)
+        if body.file_path and body.file_path not in paths:
+            paths.append(body.file_path)
+
+        if not paths:
+            raise HTTPException(status_code=400, detail="请提供至少一个文件路径 (file_paths)")
+
+        dispatched: list[dict] = []
+        skipped: list[dict] = []
+
+        for p in paths:
+            res = await ingestor.manual_dispatch(
+                file_path=p,
+                chat_id=body.chat_id,
+                topic_id=body.topic_id,
+                caption=body.caption,
+                after_success=body.after_success,
+                need_preview=body.need_preview,
+            )
+            if res.get("ok"):
+                dispatched.append(res)
+            else:
+                skipped.append(res)
+
+        return {
+            "ok": len(dispatched) > 0 or len(skipped) == 0,
+            "total": len(paths),
+            "dispatched_count": len(dispatched),
+            "skipped_count": len(skipped),
+            "dispatched": dispatched,
+            "skipped": skipped,
+        }
+
     # 没有命中路由、因此没有进入上传队列的文件。
     @app.get("/api/unmatched")
     async def list_unmatched() -> dict:
@@ -56,7 +111,42 @@ def register(app: FastAPI) -> None:
             )
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    # 看板快照：进行中的任务，外加最近失败。上传中的行叠上实时进度。
+    @app.post("/api/progress/ticket", dependencies=[Depends(require_token)])
+    async def issue_progress_ticket() -> dict:
+        tickets = app.state.stream_tickets
+        token, expires_in = tickets.issue()
+        return {"ticket": token, "expires_in": expires_in}
+
+    async def _status_page(status: str, page: int, page_size: int) -> dict:
+        repo = app.state.task_repository
+        if repo is None:
+            raise HTTPException(status_code=503, detail="任务仓库未就绪")
+        rows, total = await repo.list_status_page(status, page, page_size)
+        return publish(
+            StatusPageModel,
+            {
+                "items": [_board_item(row, None) for row in rows],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            },
+        )
+
+    @app.get("/api/tasks/failed")
+    async def list_failed_page(
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100),
+    ) -> dict:
+        return await _status_page("failed", page, page_size)
+
+    @app.get("/api/tasks/oversized")
+    async def list_oversized_page(
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100),
+    ) -> dict:
+        return await _status_page("oversized", page, page_size)
+
+    # 看板快照：进行中的任务。失败和过大走分页接口。上传中的行叠上实时进度。
     @app.get("/api/tasks")
     async def list_tasks() -> dict:
         """看板快照：SQLite 任务行叠上 ProgressHub 的实时字节/速度。"""
@@ -68,7 +158,7 @@ def register(app: FastAPI) -> None:
         counts = await repo.count_board_statuses()
         latest = {item.task_id: item for item in hub.snapshot()}
         items = [_board_item(row, latest.get(int(row["id"]))) for row in rows]
-        return {"items": items, "counts": counts}
+        return publish(BoardSnapshotModel, {"items": items, "counts": counts})
 
     def _wake_scheduler() -> None:
         wake = app.state.reschedule
@@ -378,7 +468,7 @@ def register(app: FastAPI) -> None:
         hub: ProgressHub = app.state.progress_hub
         return {"items": [item.to_dict() for item in hub.snapshot()]}
 
-    # SSE 进度流。EventSource 不能带头，令牌放查询参数 access_token。
+    # SSE 进度流。EventSource 不能带头，用 POST /api/progress/ticket 换短时票据。
     @app.get("/api/progress/stream")
     async def progress_stream(request: Request) -> StreamingResponse:
         """先推当前快照，再持续推送。空闲时发 keepalive，避免代理掐连接。"""

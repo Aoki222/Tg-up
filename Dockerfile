@@ -28,10 +28,10 @@ ARG BUILD_SHA="local_dev"
 
 ENV PYTHONUNBUFFERED=1 \
     API_HOST=0.0.0.0 \
-    API_PORT=8000 \
+    API_PORT=8421 \
     APP_VERSION=${BUILD_SHA} \
     PATH="/app/.venv/bin:$PATH"
 
-EXPOSE 8000
+EXPOSE 8421
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 

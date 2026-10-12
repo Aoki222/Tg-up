@@ -49,17 +49,17 @@ from ..adapters.task_store import TaskRepository
 from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
 from ..api.workers import snapshot_workers
-from ..config import API_HOST, API_PORT, PROJECT_DIR, SESSION_DIR
+from ..config import API_HOST, API_PORT, API_TOKEN, PROJECT_DIR, SESSION_DIR
 from ..database.connection import close_pool
 from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
 from ..domain.telegram_credentials import TelegramCredentials, load_telegram_credentials
-from ..domain.slices import user_dispatch_blocked
+from ..domain.slices import phase_blocks_user
 from ..domain.task import task_from_row
 from ..logger import get_logger
 from ..utils.sender_pool import SenderPool
 from ..utils.topic_creactor import TopicCreator
-from .discover import FolderWatcher, iter_existing_files_many
+from .discover import FolderWatcher, iter_existing_files, iter_existing_files_many
 from .ingest import FileIngestor, PreviewJob, PreviewPool
 from .schedule import UploadScheduler
 from .slicer import SliceService
@@ -98,6 +98,7 @@ class UploaderApplication:
         self._logged_unconfigured = False
         self._session_login = None
         self._channel_cache = TelegramChannelCache()
+        self._last_active_routes: set[Path] = set()
 
     async def run(self) -> None:
         """启动整条流水线，直到收到 SIGINT/SIGTERM。
@@ -107,6 +108,10 @@ class UploaderApplication:
         不把 TaskGroup 取消当作第一退出路径，避免把在途 send_file 直接掐掉。
         """
         logger.info("正在启动")
+        if not API_TOKEN and API_HOST.strip().lower() not in {"127.0.0.1", "localhost", "::1"}:
+            raise RuntimeError(
+                "API_TOKEN 为空时只能监听本机。请设置 API_TOKEN，或把 API_HOST 改为 127.0.0.1"
+            )
         self._install_stop_signals()
         await init_db()
         await self._channel_cache.load_from_db()
@@ -129,7 +134,7 @@ class UploaderApplication:
         self._after_upload = after_upload
         # 自动按文件夹建话题：谁先连上就用谁。管理员机器人也可以建。
         topic_creator = TopicCreator(session_pool.any_client, repository)
-        file_queue: asyncio.Queue[Path | None] = asyncio.Queue()
+        file_queue: asyncio.Queue[Path | None] = asyncio.Queue(maxsize=200)
         slicer = SliceService(repository, settings_hub, scheduler, after_upload, PROJECT_DIR)
         self._slicer = slicer
         await slicer.recover()
@@ -147,11 +152,19 @@ class UploaderApplication:
         )
         self._preview_pool = preview_pool
         watcher = FolderWatcher(file_queue.put)
-        usable = [path for path in settings.observer_paths if path.is_dir()]
+        if not settings.watch_enabled:
+            usable = []
+        elif settings.observer_roots:
+            usable = [root.path for root in settings.observer_roots if root.enabled and root.path.is_dir()]
+        else:
+            usable = [path for path in settings.observer_paths if path.is_dir()]
         watcher.apply_paths(usable)
         self._ingestor = ingestor
         self._watcher = watcher
         self._file_queue = file_queue
+        self._last_active_routes = {
+            route.path.resolve() for route in settings.routes if route.enabled and route.path.is_dir()
+        } if settings.watch_enabled else set()
 
         for existing in iter_existing_files_many(usable, settings.watch_extensions):
             await file_queue.put(existing)
@@ -275,19 +288,42 @@ class UploaderApplication:
             os._exit(1)
 
     async def _sync_watch_paths(self) -> None:
-        """配置里的监听目录和 watchdog 对齐；新加的目录补扫已有文件。"""
+        """配置里的监听目录和 watchdog 对齐；新加的目录补扫已有文件。同时处理单目录路由从禁用变为启用的局部补扫。"""
         if self._watcher is None or self._settings_hub is None or self._file_queue is None:
             return
         settings = self._settings_hub.get()
-        usable = [path for path in settings.observer_paths if path.is_dir()]
+        if not settings.watch_enabled:
+            usable = []
+        elif settings.observer_roots:
+            usable = [root.path for root in settings.observer_roots if root.enabled and root.path.is_dir()]
+        else:
+            usable = [path for path in settings.observer_paths if path.is_dir()]
         added = self._watcher.apply_paths(usable)
-        if not added:
-            return
-        queued = 0
-        for path in iter_existing_files_many(added, settings.watch_extensions):
-            await self._file_queue.put(path)
-            queued += 1
-        logger.info("监听目录已更新: %s  新目录扫入 %s 个文件", [str(p) for p in added], queued)
+        if added:
+            queued = 0
+            for path in iter_existing_files_many(added, settings.watch_extensions):
+                await self._file_queue.put(path)
+                queued += 1
+            logger.info("物理监听目录已更新: %s  扫入 %s 个文件", [str(p) for p in added], queued)
+
+        # 检查是否有单目录路由 (B 粒度) 从 disabled 变为了 enabled，进行局部增量补扫
+        if settings.watch_enabled:
+            current_active_routes = {
+                route.path.resolve()
+                for route in settings.routes
+                if route.enabled and route.path.is_dir()
+            }
+            reactivated = current_active_routes - self._last_active_routes
+            if reactivated:
+                route_queued = 0
+                for r_path in reactivated:
+                    for path in iter_existing_files(r_path, settings.watch_extensions):
+                        await self._file_queue.put(path)
+                        route_queued += 1
+                logger.info("路由重新启用: %s  局部扫入 %s 个文件", [str(p) for p in reactivated], route_queued)
+            self._last_active_routes = current_active_routes
+        else:
+            self._last_active_routes = set()
 
     async def _sync_sessions(
         self,
@@ -382,7 +418,7 @@ class UploaderApplication:
             return "not_found"
         if str(row.get("status")) != "oversized":
             return "not_oversized"
-        if user_dispatch_blocked(row.get("error_msg")) or await repository.has_slice_plan(task_id):
+        if phase_blocks_user(row.get("slice_phase"), row.get("error_msg")) or await repository.has_slice_plan(task_id):
             return "slicing"
         file_path = str(row.get("file_path") or "")
         if not file_path or not Path(file_path).exists():
@@ -399,9 +435,11 @@ class UploaderApplication:
             candidates,
             key=lambda worker: (int(counts.get(worker.worker_name, 0)), worker.worker_name),
         )
-        if not await repository.claim_oversized(task_id, chosen.worker_name):
+        token = await repository.claim_oversized(task_id, chosen.worker_name)
+        if not token:
             return "not_oversized"
         fresh = await repository.get_task_by_id(task_id) or row
+        fresh["claim_token"] = token
         try:
             await chosen.enqueue_task(task_from_row(fresh, settings_hub.policy_for_row(fresh)))
         except Exception:
@@ -543,6 +581,7 @@ class UploaderApplication:
             chats_sync=self._sync_chats,
             chat_resolver=self._resolve_chat_title,
             topic_admin=TopicAdmin(self._user_client, self._settings_hub),
+            ingestor=self._ingestor,
         )
         self._session_login = api.state.session_login
         pool = self._session_pool

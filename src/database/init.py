@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     part_index      INTEGER,
     part_count      INTEGER,
     slice_parts     INTEGER,
+    claim_token     TEXT,
+    slice_phase     TEXT,
+    source_born_at  REAL,                         -- 文件落盘时间；读不到时是哨兵，升序靠后
+    natural_key     TEXT,                         -- 路径自然序的补零键
     
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     assigned_at     DATETIME,
@@ -147,6 +151,8 @@ _UPLOAD_TASK_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_status_platform ON upload_tasks(status, platform)",
     "CREATE INDEX IF NOT EXISTS idx_upload_tasks_parent ON upload_tasks(parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_status_finished ON upload_tasks(status, finished_at)",
+    "CREATE INDEX IF NOT EXISTS idx_status_natural ON upload_tasks(status, natural_key)",
+    "CREATE INDEX IF NOT EXISTS idx_status_born ON upload_tasks(status, source_born_at)",
 )
 
 
@@ -180,13 +186,87 @@ async def init_db() -> None:
         await _ensure_column(db, "upload_tasks", "part_index", "INTEGER")
         await _ensure_column(db, "upload_tasks", "part_count", "INTEGER")
         await _ensure_column(db, "upload_tasks", "slice_parts", "INTEGER")
+        await _ensure_column(db, "upload_tasks", "claim_token", "TEXT")
+        await _ensure_column(db, "upload_tasks", "slice_phase", "TEXT")
+        await _ensure_column(db, "upload_tasks", "source_born_at", "REAL")
+        await _ensure_column(db, "upload_tasks", "natural_key", "TEXT")
         await _ensure_column(db, "telegram_channels", "forum", "INTEGER NOT NULL DEFAULT 0")
+        await _backfill_slice_phase(db)
+        await _backfill_schedule_keys(db)
         await _backfill_destination_columns(db)
         await _allow_oversized_status(db)
         await _ensure_upload_task_indexes(db)
         await _park_existing_oversized(db)
         await db.commit()
     logger.info("数据库初始化完成")
+
+
+async def _backfill_slice_phase(db) -> None:
+    """旧的过大行只在说明文字里记阶段。补到 slice_phase，之后认领不再解析中文。"""
+    from ..domain.slices import slice_phase
+
+    async with db.execute("PRAGMA table_info(upload_tasks)") as cursor:
+        names = {row[1] for row in await cursor.fetchall()}
+    if "slice_phase" not in names:
+        return
+    async with db.execute(
+        """SELECT id, error_msg FROM upload_tasks
+           WHERE status = 'oversized' AND (slice_phase IS NULL OR TRIM(slice_phase) = '')"""
+    ) as cursor:
+        rows = await cursor.fetchall()
+    for row in rows:
+        await db.execute(
+            "UPDATE upload_tasks SET slice_phase = ? WHERE id = ?",
+            (slice_phase(row[1]), int(row[0])),
+        )
+
+
+async def _backfill_schedule_keys(db) -> None:
+    """未完成的旧任务补上自然序键和落盘时间。已完成的行不碰磁盘。"""
+    from ..domain.schedule_key import (
+        UNKNOWN_SOURCE_BORN,
+        child_natural_key,
+        extract_source_born_at,
+        make_natural_key,
+    )
+
+    async with db.execute(
+        """SELECT id, file_path, parent_id, part_index
+           FROM upload_tasks
+           WHERE status NOT IN ('success', 'failed')
+             AND (natural_key IS NULL OR TRIM(natural_key) = '' OR source_born_at IS NULL)"""
+    ) as cursor:
+        rows = list(await cursor.fetchall())
+    if not rows:
+        return
+    parent_ids = sorted({int(row[2]) for row in rows if row[2] is not None})
+    parents: dict[int, tuple[str, float]] = {}
+    if parent_ids:
+        placeholders = ",".join("?" for _ in parent_ids)
+        async with db.execute(
+            f"""SELECT id, file_path, natural_key, source_born_at
+                FROM upload_tasks WHERE id IN ({placeholders})""",
+            parent_ids,
+        ) as cursor:
+            for parent_id, path, key, born in await cursor.fetchall():
+                parent_key = str(key or "").strip() or make_natural_key(str(path or ""))
+                parent_born = float(born) if born is not None else UNKNOWN_SOURCE_BORN
+                parents[int(parent_id)] = (parent_key, parent_born)
+    for row_id, path, parent_id, part_index in rows:
+        if parent_id is not None:
+            parent_key, parent_born = parents.get(
+                int(parent_id),
+                (make_natural_key(str(path or "")), UNKNOWN_SOURCE_BORN),
+            )
+            key = child_natural_key(parent_key, int(part_index or 0))
+            born = parent_born
+        else:
+            key = make_natural_key(str(path or ""))
+            born = extract_source_born_at(Path(str(path or "")))
+        await db.execute(
+            "UPDATE upload_tasks SET natural_key = ?, source_born_at = ? WHERE id = ?",
+            (key, born, int(row_id)),
+        )
 
 
 async def _ensure_column(db, table: str, column: str, ddl: str) -> None:

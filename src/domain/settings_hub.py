@@ -11,16 +11,31 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import tomllib
 from pathlib import Path
 
 from ..logger import get_logger
+from .schedule_key import canonical_schedule_order
 from .task import AfterSuccess, TaskPolicy
-from .upload_settings import ChatAlias, DriveFolder, FolderRoute, PreviewMode, UploadSettings
+from .upload_settings import ChatAlias, DriveFolder, FolderRoute, ObserverRoot, PreviewMode, UploadSettings
 
 logger = get_logger(__name__)
 
+
+class SettingsConflict(RuntimeError):
+    """客户端拿着旧 revision 保存，服务端已经有更新的配置。"""
+
 _DEFAULT_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v")
+
+
+def _topic_enabled_for_ui(route) -> bool | None:
+    """界面仍读 topic_enabled。文件里只留 topic_mode 时，由模式推导。"""
+    if route.topic_mode == "off":
+        return False
+    if route.topic_mode in {"auto", "fixed"}:
+        return True
+    return route.topic_enabled
 
 
 def _rel_path(project_dir: Path, path: Path) -> str:
@@ -51,27 +66,34 @@ def render_upload_toml(payload: dict) -> str:
             cleaned.append(text)
     ext_list = ", ".join(_toml_string(item) for item in cleaned)
     topic = "true" if payload.get("topic_creation_enabled", True) else "false"
+    watch_enabled_str = "true" if payload.get("watch_enabled", True) else "false"
     return (
         "# 由配置页写入。保存后热加载，不必重启。\n"
         f"chat_id = {int(payload['chat_id'])}\n"
-        f"observer_paths = [{_path_list(payload)}]\n"
+        f"watch_enabled = {watch_enabled_str}\n"
         f"page_dir = {_toml_string(str(payload.get('page_dir') or 'page'))}\n"
         f"archive_dir = {_toml_string(str(payload.get('archive_dir') or 'uploaded'))}\n"
         f"preview = {_toml_string(str(payload.get('preview') or 'off'))}\n"
+        f"grid_layout = {_toml_string(str(payload.get('grid_layout') or '3x5'))}\n"
+        f"grid_timestamp = {'true' if payload.get('grid_timestamp') is not False else 'false'}\n"
+        f"grid_metadata = {'true' if payload.get('grid_metadata') is not False else 'false'}\n"
         f"caption_template = {_toml_string(str(payload.get('caption_template') or '')[:2000])}\n"
         f"topic_creation_enabled = {topic}\n"
         f"after_success = {_toml_string(str(payload.get('after_success') or 'keep'))}\n"
         f"auto_slice = {'true' if payload.get('auto_slice') else 'false'}\n"
+        f"schedule_order = {_toml_string(canonical_schedule_order(payload.get('schedule_order')))}\n"
         "concurrency = 1\n"
         f"max_retries = {max(1, int(payload.get('max_retries', 3)))}\n"
         f"upload_timeout_seconds = {max(1, int(payload.get('upload_timeout_seconds', 1200)))}\n"
         f"assigned_timeout_seconds = {max(1, int(payload.get('assigned_timeout_seconds', 600)))}\n"
         f"stable_timeout_seconds = {max(1.0, float(payload.get('stable_timeout_seconds', 1800)))}\n"
         f"watch_extensions = [{ext_list}]\n"
+        f"{_render_observer_roots(payload)}"
         f"{_render_chats(payload)}"
         f"{_render_drive_folders(payload)}"
         f"{_render_routes(payload)}"
     )
+
 
 
 def _render_routes(payload: dict) -> str:
@@ -96,8 +118,11 @@ def _render_routes(payload: dict) -> str:
             dest_id = str(chat_id)
         if platform == "telegram" and chat_id == 0 and dest_id.lstrip("-").isdigit():
             chat_id = int(dest_id)
-        if not dest_id:
+        auto_blocked = bool(item.get("auto_blocked", False))
+        if not dest_id and not auto_blocked:
             continue
+        if not dest_id and auto_blocked:
+            dest_id = "blocked"
         name = str(item.get("name") or "")
         block = (
             "[[routes]]\n"
@@ -107,12 +132,12 @@ def _render_routes(payload: dict) -> str:
             f"dest_id = {_toml_string(dest_id)}\n"
             f"chat_id = {chat_id}\n"
         )
-        topic = item.get("topic_enabled", None)
-        if topic is True:
-            block += "topic_enabled = true\n"
-        elif topic is False:
-            block += "topic_enabled = false\n"
         topic_mode = item.get("topic_mode", None)
+        if topic_mode not in {"off", "auto", "fixed"}:
+            if item.get("topic_enabled") is True:
+                topic_mode = "auto"
+            elif item.get("topic_enabled") is False:
+                topic_mode = "off"
         if topic_mode in {"off", "auto", "fixed"}:
             block += f"topic_mode = {_toml_string(str(topic_mode))}\n"
         topic_id = item.get("topic_id", None)
@@ -123,9 +148,49 @@ def _render_routes(payload: dict) -> str:
         preview = item.get("preview", None)
         if preview:
             block += f"preview = {_toml_string(str(preview))}\n"
+        grid_layout = item.get("grid_layout", None)
+        if grid_layout:
+            block += f"grid_layout = {_toml_string(str(grid_layout))}\n"
         enabled = item.get("enabled", True)
         if enabled is False:
             block += "enabled = false\n"
+        if auto_blocked:
+            block += "auto_blocked = true\n"
+        chunks.append(block)
+    if len(chunks) == 1:
+        return ""
+    return "".join(chunks)
+
+
+def _render_observer_roots(payload: dict) -> str:
+    """渲染带独立启停状态的物理根目录列表。若仅提供旧 observer_paths 则自动转为 roots 渲染。"""
+    raw = payload.get("observer_roots")
+    if not isinstance(raw, list) or not raw:
+        legacy = payload.get("observer_paths") or payload.get("observer_path") or []
+        if isinstance(legacy, str):
+            legacy = [legacy]
+        if isinstance(legacy, (list, tuple)) and legacy:
+            raw = [{"path": str(p), "enabled": True} for p in legacy if str(p).strip()]
+        else:
+            return ""
+    chunks: list[str] = ["\n# 物理监听根目录（支持独立开启/暂停）。\n"]
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path_text = str(item.get("path") or "").strip()
+        if not path_text:
+            continue
+        resolved_str = str(_resolve_observer_path(path_text))
+        if resolved_str in seen:
+            continue
+        seen.add(resolved_str)
+        enabled = item.get("enabled", True)
+        block = (
+            "[[observer_roots]]\n"
+            f"path = {_toml_string(resolved_str)}\n"
+            f"enabled = {'true' if enabled is not False else 'false'}\n"
+        )
         chunks.append(block)
     if len(chunks) == 1:
         return ""
@@ -231,6 +296,31 @@ def _as_observer_paths(_project_dir: Path, data: dict) -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def _as_observer_roots(project_dir: Path, data: dict) -> tuple[ObserverRoot, ...]:
+    """从配置中提取带启停状态的 ObserverRoot 列表，兼容旧 observer_paths。"""
+    raw_roots = data.get("observer_roots")
+    if isinstance(raw_roots, list) and raw_roots:
+        roots: list[ObserverRoot] = []
+        seen: set[str] = set()
+        for item in raw_roots:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("path") or "").strip()
+            if not text:
+                continue
+            p = _resolve_observer_path(text)
+            key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            enabled = _as_bool(item.get("enabled"), True)
+            roots.append(ObserverRoot(path=p, enabled=enabled))
+        if roots:
+            return tuple(roots)
+    legacy_paths = _as_observer_paths(project_dir, data)
+    return tuple(ObserverRoot(path=p, enabled=True) for p in legacy_paths)
+
+
 def _as_path(project_dir: Path, value: str | None, default: str) -> Path:
     """将配置路径解析到项目目录下；绝对路径不追加项目目录。"""
     path = Path(value if value else default)
@@ -285,9 +375,13 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
             dest_id = str(chat_id)
         if platform == "telegram" and chat_id == 0 and dest_id.lstrip("-").isdigit():
             chat_id = int(dest_id)
-        if not dest_id:
+        auto_blocked_raw = item.get("auto_blocked", False)
+        auto_blocked = _as_bool(auto_blocked_raw, False) if auto_blocked_raw is not None else False
+        if not dest_id and not auto_blocked:
             logger.warning("跳过没有目标的路由: %s", path_text)
             continue
+        if not dest_id and auto_blocked:
+            dest_id = "blocked"
         path = _resolve_observer_path(path_text)
         key = str(path)
         if key in seen:
@@ -309,6 +403,14 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
             topic_id = int(topic_id_raw) if topic_id_raw not in (None, "") else None
         except (TypeError, ValueError):
             topic_id = None
+        if topic_mode is None and topic_enabled is True:
+            topic_mode = "auto"
+        elif topic_mode is None and topic_enabled is False:
+            topic_mode = "off"
+        if topic_mode == "off":
+            topic_enabled = False
+        elif topic_mode in {"auto", "fixed"}:
+            topic_enabled = True
         if topic_mode != "fixed":
             topic_id = None
         preview_raw = item.get("preview", None)
@@ -318,6 +420,7 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 route_preview = PreviewMode(str(preview_raw))
             except ValueError:
                 logger.warning("路由封面模式无效，改为跟随上级: %s", path)
+        grid_layout_raw = str(item.get("grid_layout") or "").strip() or None
         routes.append(
             FolderRoute(
                 path=path,
@@ -329,8 +432,10 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 dest_id=dest_id,
                 caption_template=caption_template,
                 preview=route_preview,
+                grid_layout=grid_layout_raw,
                 topic_mode=topic_mode,
                 topic_id=topic_id,
+                auto_blocked=auto_blocked,
             )
         )
     return tuple(routes)
@@ -428,10 +533,14 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
     preview = PreviewMode(str(data.get("preview", "off")))
     caption_template = str(data.get("caption_template") or "")[:2000]
     after_success = AfterSuccess(str(data.get("after_success", "keep")))
+    roots = _as_observer_roots(project_dir, data)
+    watch_enabled = _as_bool(data.get("watch_enabled"), True)
 
     return UploadSettings(
         chat_id=chat_id,
-        observer_paths=_as_observer_paths(project_dir, data),
+        observer_paths=tuple(r.path for r in roots),
+        observer_roots=roots,
+        watch_enabled=watch_enabled,
         page_dir=_as_path(project_dir, data.get("page_dir"), "page"),
         archive_dir=_as_path(project_dir, data.get("archive_dir"), "uploaded"),
         preview=preview,
@@ -448,6 +557,10 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         chats=_as_chats(data),
         drive_folders=_as_drive_folders(data),
         auto_slice=_as_bool(data.get("auto_slice"), False),
+        schedule_order=canonical_schedule_order(data.get("schedule_order")),
+        grid_layout=str(data.get("grid_layout") or "3x5"),
+        grid_timestamp=_as_bool(data.get("grid_timestamp"), True),
+        grid_metadata=_as_bool(data.get("grid_metadata"), True),
     )
 
 
@@ -485,7 +598,12 @@ class SettingsHub:
         self.config_path = config_path
         self.project_dir = project_dir
         self._settings = load_upload_settings(config_path, project_dir)
-        self._mtime = config_path.stat().st_mtime
+        stat = config_path.stat()
+        self._mtime = stat.st_mtime
+        # 必须转为毫秒时间戳（约 13 位数字），防止超过 JavaScript 的 Number.MAX_SAFE_INTEGER (2^53 - 1，约 16 位)
+        # 否则浏览器 JSON.parse 会丢失末尾几位精度，导致 PUT 保存时因 expected_revision 不一致而永远报 409 冲突
+        self._revision = int(stat.st_mtime_ns // 1_000_000)
+        self._lock = threading.Lock()
         self._policies: dict[int, TaskPolicy] = {}
 
     def get(self) -> UploadSettings:
@@ -493,15 +611,33 @@ class SettingsHub:
 
     def public_dict(self) -> dict:
         """给前端的可编辑字段。监听目录一律返回绝对路径及是否存在。"""
+        with self._lock:
+            return self._snapshot()
+
+    def _snapshot(self) -> dict:
         settings = self._settings
         observer_infos = [inspect_observer_path(path) for path in settings.observer_paths]
+        observer_roots_info = [
+            {
+                **inspect_observer_path(root.path),
+                "enabled": root.enabled,
+            }
+            for root in settings.observer_roots
+        ]
         return {
+            "revision": self._revision,
+            "schedule_order": settings.schedule_order,
             "chat_id": settings.chat_id,
+            "watch_enabled": settings.watch_enabled,
             "observer_paths": [item["path"] for item in observer_infos],
             "observer_path_infos": observer_infos,
+            "observer_roots": observer_roots_info,
             "page_dir": _rel_path(self.project_dir, settings.page_dir),
             "archive_dir": _rel_path(self.project_dir, settings.archive_dir),
             "preview": settings.preview.value,
+            "grid_layout": settings.grid_layout,
+            "grid_timestamp": settings.grid_timestamp,
+            "grid_metadata": settings.grid_metadata,
             "caption_template": settings.caption_template,
             "topic_creation_enabled": settings.topic_creation_enabled,
             "after_success": settings.after_success.value,
@@ -517,14 +653,16 @@ class SettingsHub:
                     "name": route.name,
                     "path": str(route.path),
                     "chat_id": route.chat_id,
-                    "topic_enabled": route.topic_enabled,
+                    "topic_enabled": _topic_enabled_for_ui(route),
                     "enabled": route.enabled,
                     "platform": route.platform,
                     "dest_id": route.dest_id or (str(route.chat_id) if route.chat_id else ""),
                     "caption_template": route.caption_template,
                     "preview": None if route.preview is None else route.preview.value,
+                    "grid_layout": route.grid_layout,
                     "topic_mode": route.topic_mode,
                     "topic_id": route.topic_id,
+                    "auto_blocked": route.auto_blocked,
                 }
                 for route in settings.routes
             ],
@@ -538,8 +676,35 @@ class SettingsHub:
             ],
         }
 
-    def save_from_payload(self, payload: dict) -> dict:
-        """校验并写入 upload.toml，立刻替换内存配置。"""
+    def save_from_payload(self, payload: dict, expected_revision: int | None = None) -> dict:
+        with self._lock:
+            if expected_revision is not None and int(expected_revision) != self._revision:
+                raise SettingsConflict("配置已在别处修改，请重新加载后再保存")
+            return self._write(payload)
+
+    def mutate(self, mutator) -> dict | None:
+        """在同一把锁里读出当前配置、改一份、再写回。返回 None 表示调用方取消了写入。"""
+        with self._lock:
+            current = self._snapshot()
+            if mutator(current) is False:
+                return None
+            return self._write(current)
+
+    def _write(self, payload: dict) -> dict:
+        # 统一以 observer_roots 为唯一定义源
+        raw_roots = payload.get("observer_roots")
+        if isinstance(raw_roots, list):
+            payload["observer_roots"] = [
+                r for r in raw_roots if isinstance(r, dict) and str(r.get("path") or "").strip()
+            ]
+        elif "observer_paths" in payload and isinstance(payload["observer_paths"], list):
+            # 向下兼容仅传旧 observer_paths 的情况
+            payload["observer_roots"] = [
+                {"path": str(p), "enabled": True} for p in payload["observer_paths"] if str(p or "").strip()
+            ]
+        else:
+            payload["observer_roots"] = []
+        payload["observer_paths"] = [str(r.get("path")) for r in payload["observer_roots"]]
         text = render_upload_toml(payload)
         temp_path = self.config_path.with_suffix(".toml.tmp")
         temp_path.write_text(text, encoding="utf-8")
@@ -554,8 +719,11 @@ class SettingsHub:
         except OSError:
             shutil.copy2(temp_path, self.config_path)
             temp_path.unlink(missing_ok=True)
+        stat = self.config_path.stat()
         self._settings = loaded
-        self._mtime = self.config_path.stat().st_mtime
+        self._mtime = stat.st_mtime
+        new_rev = int(stat.st_mtime_ns // 1_000_000)
+        self._revision = max(new_rev, self._revision + 1)
         logger.info(
             "已从 API 写入上传配置: chat_id=%s preview=%s after_success=%s concurrency=%s",
             loaded.chat_id,
@@ -563,7 +731,7 @@ class SettingsHub:
             loaded.after_success,
             loaded.concurrency,
         )
-        return self.public_dict()
+        return self._snapshot()
 
     def policy_for_new_task(self, need_preview: bool) -> TaskPolicy:
         settings = self._settings
@@ -612,6 +780,11 @@ class SettingsHub:
             return False
         self._settings = loaded
         self._mtime = mtime
+        try:
+            new_rev = int(self.config_path.stat().st_mtime_ns // 1_000_000)
+            self._revision = max(new_rev, self._revision + 1)
+        except OSError:
+            self._revision += 1
         logger.info(
             "已热更新上传配置: chat_id=%s preview=%s after_success=%s concurrency=%s",
             loaded.chat_id,

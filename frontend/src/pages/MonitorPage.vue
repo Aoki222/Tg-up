@@ -1,107 +1,223 @@
 <script setup lang="ts">
 /**
- * @file MonitorPage.vue
- * @description 监控控制台主页 (Monitor Dashboard)
- *
- * 核心架构：
- * 1. 【顶层系统遥测带 (Telemetry Ribbon)】：成功数、传输中任务数、在线 Worker 比率与待发队列积压；
- * 2. 【主工作区】：左侧 Worker 列 + 右侧四列任务看板；
- * 3. 【Session 授权弹窗宿主】：通过 Teleport 挂载全局毛玻璃模态窗，解耦业务交互。
+ * 工作台：顶栏固定，左侧监听目录，右侧多维任务调度看板。设置和传输历史记录均在本页模态弹层中。
+ * 左右绝对等高、各自独立局部滑动，无整页滚动。
  */
 
-import { computed, onDeactivated, ref, watch } from "vue";
+import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { ElMessageBox } from "element-plus";
 import WorkerPanel from "../components/WorkerPanel.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import SessionPanel from "../components/SessionPanel.vue";
-import { fetchSuccessPage } from "../api";
-import type { SuccessRecord } from "../api";
+import DirectoryPolicyModal from "../components/DirectoryPolicyModal.vue";
+import ManualDispatchModal from "../components/ManualDispatchModal.vue";
+import SettingsPage from "./SettingsPage.vue";
+import WorkHeader from "../components/WorkHeader.vue";
+import WatchDock from "../components/WatchDock.vue";
+import { fetchSystemVersion, fetchWorkers } from "../api";
 import { useTaskBoard } from "../composables/useTaskBoard";
+import { useSuccessHistory } from "../composables/useSuccessHistory";
+import { useTelegramIdentity } from "../composables/useTelegramIdentity";
 import { useUnmatchedPolling } from "../composables/useUnmatched";
-import { formatBytes } from "../format";
-import type { WorkerSnapshot } from "../types";
+import { formatBytes, formatSpeed } from "../format";
+import type { ManualDispatchResult, SystemVersionInfo, WorkerSnapshot } from "../types";
 
 defineOptions({ name: "MonitorPage" });
 
-// ── 响应式状态定义 ─────────────────────────────────────────────
-
-/** 控制添加 Session 模态弹窗的显示与隐藏 */
 const showSessionForm = ref(false);
-
-/** 移动端当前选中的主视图 tab ('board' | 'workers') */
-const mobileTab = ref<"board" | "workers">("board");
-
-/** 由子组件 WorkerPanel 派发的最新 Worker 快照数组 */
+const manualDispatchOpen = ref(false);
+const route = useRoute();
+const router = useRouter();
+const { configured, refresh: refreshIdentity } = useTelegramIdentity();
+const dockMedia = window.matchMedia("(max-width: 860px)");
+const dockOpen = ref(!dockMedia.matches);
+const settingsOpen = ref(false);
+const settingsDirty = ref(false);
+const workerModalOpen = ref(false);
+const policyModalOpen = ref(false);
+const policyPath = ref("");
+const settingsRef = ref<InstanceType<typeof SettingsPage> | null>(null);
+const watchDockRef = ref<InstanceType<typeof WatchDock> | null>(null);
+const tomlSaving = computed(() => settingsRef.value?.saving ?? false);
+const versionInfo = ref<SystemVersionInfo | null>(null);
 const workers = ref<WorkerSnapshot[]>([]);
+let workerTimer = 0;
 
-const { items: boardItems, inFlightCount, queueCount, successToday } = useTaskBoard();
+async function refreshWorkers(): Promise<void> {
+  try {
+    workers.value = await fetchWorkers();
+  } catch {
+    // 忽略异常
+  }
+}
 
-const SUCCESS_SCOPE_KEY = "uploader.success-scope";
+const {
+  items: boardItems,
+  successToday,
+  failedPage,
+  oversizedPage,
+  failedTotal,
+  oversizedTotal,
+  pageSize: boardPageSize,
+  setFailedPage,
+  setOversizedPage,
+} = useTaskBoard();
+
 const { files: unmatchedFiles } = useUnmatchedPolling();
 const unmatchedCount = computed(() => unmatchedFiles.value.length);
 
-const successScope = ref<"today" | "all">(loadSuccessScope());
-const successCount = computed(() => successToday.value);
-const successOpen = ref(false);
-const successPage = ref(1);
-const successPageSize = 50;
-const successTotalRows = ref(0);
-const successItems = ref<SuccessRecord[]>([]);
-const successLoading = ref(false);
-const successPages = computed(() =>
-  Math.max(1, Math.ceil(successTotalRows.value / successPageSize)),
-);
+const {
+  successScope,
+  successCount,
+  successAllTotal,
+  successOpen,
+  successPage,
+  successPages,
+  successTotalRows,
+  successLoading,
+  successSearchText,
+  filteredSuccessItems,
+  onSuccessScopeChange,
+  toggleSuccessScope,
+  openSuccess,
+  closeSuccess,
+  shiftSuccessPage,
+} = useSuccessHistory(successToday);
 
-function loadSuccessScope(): "today" | "all" {
-  return localStorage.getItem(SUCCESS_SCOPE_KEY) === "all" ? "all" : "today";
+function applyDock(): void {
+  dockOpen.value = !dockMedia.matches;
 }
+
+dockMedia.addEventListener("change", applyDock);
+
+onMounted(() => {
+  window.addEventListener("keydown", onKeydown);
+  void refreshIdentity();
+  void refreshWorkers();
+  workerTimer = window.setInterval(() => {
+    void refreshWorkers();
+  }, 2000);
+  void fetchSystemVersion().then((info) => {
+    versionInfo.value = info;
+  }).catch(() => undefined);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onKeydown);
+  dockMedia.removeEventListener("change", applyDock);
+  if (workerTimer) {
+    window.clearInterval(workerTimer);
+    workerTimer = 0;
+  }
+});
 
 onDeactivated(() => {
   showSessionForm.value = false;
   successOpen.value = false;
+  workerModalOpen.value = false;
+  policyModalOpen.value = false;
 });
 
-function onSuccessScopeChange(value: "today" | "all"): void {
-  successScope.value = value;
-  localStorage.setItem(SUCCESS_SCOPE_KEY, value);
-  if (successOpen.value) {
-    successPage.value = 1;
-    void loadSuccess();
+const liveSpeed = computed(() => {
+  const current = boardItems.value.find((item) => item.status === "uploading" || item.status === "assigned");
+  if (!current) return "—";
+  if (current.speed_bps > 0) return formatSpeed(current.speed_bps);
+  return "测算中";
+});
+
+const versionLabel = computed(() => {
+  const info = versionInfo.value;
+  if (!info) return "v2.4.1 最新";
+  const rev = shortRevision(info.current_version);
+  if (info.status === "update") return "有更新";
+  if (info.status === "dev") return "开发版";
+  if (info.status === "staging") return rev ? `测试版 ${rev}` : "测试版";
+  return rev ? `v${rev}` : (info.current_version || "最新版");
+});
+
+const versionTitle = computed(() => versionInfo.value?.commit_message || "点击查看系统版本状态");
+
+function onVersionClick(): void {
+  const info = versionInfo.value;
+  if (!info) {
+    ElMessageBox.alert("当前客户端运行正常，FastAPI 与 Telethon 引擎活跃运作中。", "版本检查", {
+      confirmButtonText: "确定",
+      type: "info",
+    });
+    return;
   }
+  const rev = shortRevision(info.current_version);
+  const statusMsg =
+    info.status === "update"
+      ? "发现有新版本可用！请关注 release 更新。"
+      : info.status === "staging"
+      ? "当前运行测试版分支 (Staging)"
+      : "当前安装版本运行健康，无可用更新。";
+  const commitMsg = info.commit_message ? `\n提交信息: ${info.commit_message}` : "";
+  ElMessageBox.alert(
+    `安装版本: ${info.current_version} (${rev ? `rev ${rev}` : info.status})\n${statusMsg}${commitMsg}`,
+    "版本检查与状态",
+    {
+      confirmButtonText: "确定",
+      type: info.status === "update" ? "warning" : "info",
+    },
+  );
 }
 
-async function loadSuccess(): Promise<void> {
-  successLoading.value = true;
-  try {
-    const data = await fetchSuccessPage(successScope.value, successPage.value, successPageSize);
-    successItems.value = data.items;
-    successTotalRows.value = data.total;
-    successPage.value = data.page;
-  } catch {
-    successItems.value = [];
-    successTotalRows.value = 0;
-  } finally {
-    successLoading.value = false;
+function shortRevision(value: string): string {
+  const text = value.trim();
+  if (!text || text === "dev" || text === "local_dev") return "";
+  return text.length > 7 ? text.slice(0, 7) : text;
+}
+
+async function reloadWatch(refreshTrees: boolean): Promise<void> {
+  await watchDockRef.value?.loadWatchPaths();
+  if (refreshTrees) watchDockRef.value?.bumpTrees();
+}
+
+async function handleSaveToml(): Promise<void> {
+  await settingsRef.value?.submitToml();
+  await reloadWatch(true);
+}
+
+async function onPolicySaved(): Promise<void> {
+  await reloadWatch(true);
+}
+
+async function onManualDispatched(_res: ManualDispatchResult): Promise<void> {
+  await reloadWatch(true);
+}
+
+function openSettings(tab = "telegram"): void {
+  if (String(route.query.settings || "") === tab) {
+    settingsOpen.value = true;
+    void nextTick(() => settingsRef.value?.setSection(tab));
+    return;
   }
+  void router.replace({ query: { ...route.query, settings: tab } });
 }
 
-function openSuccess(): void {
-  successOpen.value = true;
-  successPage.value = 1;
-  void loadSuccess();
+function closeSettings(): void {
+  if (!route.query.settings) {
+    settingsOpen.value = false;
+    void reloadWatch(false);
+    return;
+  }
+  const next = { ...route.query };
+  delete next.settings;
+  void router.replace({ query: next });
 }
 
-function closeSuccess(): void {
-  successOpen.value = false;
+function onSettingsSection(id: string): void {
+  if (String(route.query.settings || "") === id) return;
+  void router.replace({ query: { ...route.query, settings: id } });
 }
 
-async function shiftSuccessPage(step: number): Promise<void> {
-  const next = successPage.value + step;
-  if (next < 1 || next > successPages.value) return;
-  successPage.value = next;
-  await loadSuccess();
+function openPolicy(path: string): void {
+  policyPath.value = path;
+  policyModalOpen.value = true;
 }
-
-// ── 弹窗交互控制 ───────────────────────────────────────────────
 
 function openSessionForm(): void {
   showSessionForm.value = true;
@@ -111,736 +227,276 @@ function closeSessionForm(): void {
   showSessionForm.value = false;
 }
 
-// ── 子组件数据同步事件处理器 ───────────────────────────────────
-
-/** 接收 Worker 列表更新，用于顶部遥测卡片计算在线数与队列深度 */
 function onUpdateWorkers(list: WorkerSnapshot[]): void {
   workers.value = list;
 }
 
-// ── 遥测指标计算衍生量 (Computed Telemetry) ────────────────────
-
-/** 当前就绪且正接受任务的活跃 Worker 数量 */
 const activeWorkersCount = computed(() =>
-  workers.value.filter((w) => w.enabled && w.running && w.accepting).length,
+  workers.value.filter((worker) => worker.enabled && worker.running && worker.accepting).length,
 );
 
-/** 已挂载的 Worker 节点总数 */
 const totalWorkersCount = computed(() => workers.value.length);
 
-// 弹窗展开时锁定 body 滚动条，防止页面背景滚动穿透
-watch([showSessionForm, successOpen], ([sessionOpen, historyOpen]) => {
-  document.body.style.overflow = sessionOpen || historyOpen ? "hidden" : "";
-});
+function onKeydown(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+    event.preventDefault();
+    dockOpen.value = !dockOpen.value;
+  } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "h") {
+    event.preventDefault();
+    openSuccess();
+  } else if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+    event.preventDefault();
+    openSettings("telegram");
+  } else if (event.key === "Escape") {
+    if (policyModalOpen.value) policyModalOpen.value = false;
+    else if (workerModalOpen.value) workerModalOpen.value = false;
+    else if (successOpen.value) closeSuccess();
+    else if (settingsOpen.value) closeSettings();
+    else if (showSessionForm.value) closeSessionForm();
+  }
+}
 
-watch(successCount, () => {
-  if (successOpen.value && successPage.value === 1) void loadSuccess();
-});
+watch(
+  [showSessionForm, successOpen, settingsOpen, workerModalOpen, policyModalOpen],
+  ([sessionOpen, historyOpen, settings, workerOpen, policyOpen]) => {
+    document.body.style.overflow = sessionOpen || historyOpen || settings || workerOpen || policyOpen ? "hidden" : "";
+  },
+);
+
+watch(
+  () => String(route.query.settings || ""),
+  (requested) => {
+    if (!requested) {
+      const wasOpen = settingsOpen.value;
+      settingsOpen.value = false;
+      if (wasOpen) void reloadWatch(false);
+      return;
+    }
+    settingsOpen.value = true;
+    void nextTick(() => settingsRef.value?.setSection(requested));
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
-  <div class="monitor-page">
-  <div class="monitor-container">
-    <p v-if="unmatchedCount > 0" class="unmatched-banner">
-      {{ unmatchedCount }} 个文件未命中路由，未进入上传队列。到设置的「投递」里为路径指定群。
+  <div class="workbench">
+    <WorkHeader
+      :dock-open="dockOpen"
+      :version-label="versionLabel"
+      :version-info="versionInfo"
+      :version-title="versionTitle"
+      :live-speed="liveSpeed"
+      :active-workers="activeWorkersCount"
+      :total-workers="totalWorkersCount"
+      :success-scope="successScope"
+      :success-count="successCount"
+      :success-all-total="successAllTotal"
+      :settings-dirty="settingsDirty"
+      @toggle-dock="dockOpen = !dockOpen"
+      @open-version="onVersionClick"
+      @open-workers="workerModalOpen = true"
+      @open-success="openSuccess"
+      @toggle-scope="toggleSuccessScope()"
+      @open-settings="openSettings('telegram')"
+    />
+
+    <p v-if="configured === false" class="setup-banner">
+      请先配置 API_ID / API_HASH，保存后当前进程即可使用。
+      <button type="button" @click="openSettings('account')">去配置</button>
     </p>
-    <!-- ── 顶部一体化系统遥测带 (Integrated Telemetry Ribbon) ── -->
-    <section class="telemetry-ribbon">
-      <div class="telemetry-cell">
-        <div class="cell-icon success-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" stroke-linecap="round" stroke-linejoin="round"/>
-            <polyline points="22 4 12 14.01 9 11.01" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
-        <div class="cell-data">
-          <span class="cell-label">今日成功</span>
-          <button type="button" class="success-open" :aria-expanded="successOpen" @click="openSuccess">
-            <span class="cell-value" :class="{ 'highlight-task': successCount > 0 }">
-              {{ successCount }} <span class="cell-unit">条</span>
-            </span>
-            <span class="view-mark">查看</span>
-          </button>
-        </div>
-      </div>
+    <p v-if="unmatchedCount > 0" class="unmatched-banner">
+      {{ unmatchedCount }} 个文件未命中路由，未进入上传队列。在左侧目录的「策略」里指定群。
+    </p>
 
-      <div class="telemetry-divider"></div>
-
-      <!-- 正在传输任务数 -->
-      <div class="telemetry-cell">
-        <div class="cell-icon task-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
-        <div class="cell-data">
-          <span class="cell-label">正在传输</span>
-          <span class="cell-value" :class="{ 'highlight-task': inFlightCount > 0 }">
-            {{ inFlightCount }} <span class="cell-unit">任务</span>
-          </span>
-        </div>
-      </div>
-
-      <div class="telemetry-divider"></div>
-
-      <!-- 可用 Worker 比率 -->
-      <div class="telemetry-cell">
-        <div class="cell-icon worker-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17">
-            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
-            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-          </svg>
-        </div>
-        <div class="cell-data">
-          <span class="cell-label">可用节点</span>
-          <span class="cell-value">
-            {{ activeWorkersCount }} <span class="cell-unit">/ {{ totalWorkersCount }}</span>
-          </span>
-        </div>
-      </div>
-
-      <div class="telemetry-divider"></div>
-
-      <!-- 待发队列积压深度 -->
-      <div class="telemetry-cell">
-        <div class="cell-icon queue-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17">
-            <circle cx="12" cy="12" r="10"/>
-            <polyline points="12 6 12 12 16 14"/>
-          </svg>
-        </div>
-        <div class="cell-data">
-          <span class="cell-label">队列积压</span>
-          <span class="cell-value" :class="{ 'warn-queue': queueCount > 0 }">
-            {{ queueCount }} <span class="cell-unit">待处理</span>
-          </span>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── 移动端分段视图切换 (仅在窄屏呈现) ── -->
-    <div class="mobile-view-tabs" role="tablist" aria-label="工作区视图切换">
+    <div class="work-body">
       <button
+        v-if="dockOpen"
         type="button"
-        role="tab"
-        :aria-selected="mobileTab === 'board'"
-        class="mobile-view-btn"
-        :class="{ active: mobileTab === 'board' }"
-        @click="mobileTab = 'board'"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-          <rect x="3" y="3" width="7" height="7" rx="1.5"/>
-          <rect x="14" y="3" width="7" height="7" rx="1.5"/>
-          <rect x="3" y="14" width="7" height="7" rx="1.5"/>
-          <rect x="14" y="14" width="7" height="7" rx="1.5"/>
-        </svg>
-        <span>任务看板</span>
-        <span v-if="boardItems.length" class="view-badge">{{ boardItems.length }}</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        :aria-selected="mobileTab === 'workers'"
-        class="mobile-view-btn"
-        :class="{ active: mobileTab === 'workers' }"
-        @click="mobileTab = 'workers'"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
-          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-        </svg>
-        <span>Worker 节点</span>
-        <span v-if="totalWorkersCount" class="view-badge">{{ activeWorkersCount }}/{{ totalWorkersCount }}</span>
-      </button>
+        class="dock-scrim"
+        aria-label="关闭目录"
+        @click="dockOpen = false"
+      ></button>
+
+      <WatchDock
+        ref="watchDockRef"
+        :open="dockOpen"
+        @close="dockOpen = false"
+        @open-policy="openPolicy"
+        @open-manual="manualDispatchOpen = true"
+      />
+
+      <TaskBoard
+        class="board-pane"
+        :items="boardItems"
+        :failed-page="failedPage"
+        :oversized-page="oversizedPage"
+        :failed-total="failedTotal"
+        :oversized-total="oversizedTotal"
+        :page-size="boardPageSize"
+        @change-failed-page="setFailedPage"
+        @change-oversized-page="setOversizedPage"
+      />
     </div>
 
-    <!-- ── 主工作区：左侧 Worker 节点列表 + 右侧宽幅实时传输通道 ── -->
-    <main class="workspace-layout" :class="`show-${mobileTab}`">
-      <!-- 左栏：Worker 管理 -->
-      <aside class="worker-column">
-        <WorkerPanel @add="openSessionForm" @update-workers="onUpdateWorkers" />
-      </aside>
-
-      <section class="progress-column">
-        <TaskBoard :items="boardItems" />
-      </section>
-    </main>
-  </div>
-
-  <!-- Session 授权创建弹窗 -->
-  <Teleport to="body">
-    <div
-      v-if="showSessionForm"
-      class="session-overlay"
-      @click.self="closeSessionForm"
-    >
-      <div class="session-modal" @click.stop>
-        <SessionPanel @close="closeSessionForm" />
-      </div>
-    </div>
-  </Teleport>
-
-  <Teleport to="body">
-    <div v-if="successOpen" class="session-overlay" @click.self="closeSuccess">
-      <div class="session-modal success-modal" role="dialog" aria-label="上传成功" @click.stop>
-        <header class="success-head">
-          <h2>上传成功</h2>
-          <div class="success-switch">
+    <!-- ══════════════════════════════════════════════════════════
+         系统配置模态弹窗 (In-Place Modal)
+    ══════════════════════════════════════════════════════════ -->
+    <div v-show="settingsOpen" class="settings-layer" @click.self="closeSettings">
+      <div class="settings-modal" role="dialog" aria-label="系统配置" @click.stop>
+        <header class="settings-head">
+          <div class="settings-head-left">
+            <h2>系统配置 (Settings)</h2>
+            <span v-if="settingsDirty" class="unsaved-badge">有未保存更改</span>
+          </div>
+          <div class="settings-head-right">
             <button
               type="button"
-              :class="{ on: successScope === 'today' }"
-              @click="onSuccessScopeChange('today')"
+              class="save-toml-btn"
+              :disabled="!settingsDirty || tomlSaving"
+              title="保存全部改动至 upload.toml"
+              @click="handleSaveToml"
             >
-              今日
+              <span v-if="tomlSaving" class="btn-spinner"></span>
+              <span>保存到 upload.toml</span>
             </button>
-            <button
-              type="button"
-              :class="{ on: successScope === 'all' }"
-              @click="onSuccessScopeChange('all')"
-            >
-              累计
-            </button>
+            <button type="button" class="modal-close-btn" title="关闭设置 (Esc)" @click="closeSettings">✕</button>
           </div>
         </header>
-        <p v-if="successLoading" class="success-empty">正在读取</p>
-        <p v-else-if="successItems.length === 0" class="success-empty">没有成功记录</p>
-        <ul v-else class="success-list">
-          <li v-for="item in successItems" :key="item.id">
-            <span class="success-name" :title="item.file_name">{{ item.file_name }}</span>
-            <span v-if="item.part_label" class="success-part">{{ item.part_label }}</span>
-            <span class="success-meta">
-              <template v-if="item.file_size > 0">{{ formatBytes(item.file_size) }}</template>
-              <template v-if="item.folder_name"> · {{ item.folder_name }}</template>
-              <template v-if="item.finished_at"> · {{ item.finished_at }}</template>
-            </span>
-          </li>
-        </ul>
-        <footer class="success-pager">
-          <button type="button" :disabled="successPage <= 1 || successLoading" @click="shiftSuccessPage(-1)">
-            上一页
-          </button>
-          <span>第 {{ successPage }} / {{ successPages }} 页</span>
-          <button
-            type="button"
-            :disabled="successPage >= successPages || successLoading"
-            @click="shiftSuccessPage(1)"
-          >
-            下一页
-          </button>
-        </footer>
+        <SettingsPage
+          ref="settingsRef"
+          embedded
+          @update:dirty="settingsDirty = $event"
+          @section="onSettingsSection"
+        />
       </div>
     </div>
-  </Teleport>
+
+    <!-- 添加 Session 弹窗 -->
+    <Teleport to="body">
+      <div v-if="showSessionForm" class="session-overlay" @click.self="closeSessionForm">
+        <div class="session-modal" @click.stop>
+          <SessionPanel @close="closeSessionForm" />
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ══════════════════════════════════════════════════════════
+         传输历史记录模态弹窗 (History Stream Modal)
+    ══════════════════════════════════════════════════════════ -->
+    <Teleport to="body">
+      <div v-if="successOpen" class="session-overlay" @click.self="closeSuccess">
+        <div class="session-modal success-modal" role="dialog" aria-label="传输历史记录" @click.stop>
+          <header class="success-head">
+            <div class="success-head-left">
+              <span class="success-badge-dot"></span>
+              <div>
+                <h2>传输历史记录 (Transfer Stream)</h2>
+                <p class="success-sub">
+                  {{ successScope === 'today' ? '今日已送达' : '累计已送达' }} {{ successTotalRows }} 个文件 · 本地数据库驱动
+                </p>
+              </div>
+            </div>
+            <div class="success-head-right">
+              <div class="success-switch">
+                <button type="button" :class="{ on: successScope === 'today' }" @click="onSuccessScopeChange('today')">今日</button>
+                <button type="button" :class="{ on: successScope === 'all' }" @click="onSuccessScopeChange('all')">累计</button>
+              </div>
+              <button type="button" class="modal-close-btn" title="关闭 (Esc)" @click="closeSuccess">✕</button>
+            </div>
+          </header>
+
+          <div class="success-search-bar">
+            <input
+              v-model="successSearchText"
+              type="text"
+              placeholder="按文件名或目录过滤历史..."
+              class="success-search-input"
+            />
+          </div>
+
+          <div class="success-body">
+            <p v-if="successLoading" class="success-empty">正在读取历史流水...</p>
+            <p v-else-if="filteredSuccessItems.length === 0" class="success-empty">没有匹配的成功记录</p>
+            <table v-else class="success-table">
+              <thead>
+                <tr>
+                  <th>文件名</th>
+                  <th>源监控路径</th>
+                  <th>文件大小</th>
+                  <th>传输状态</th>
+                  <th>完成时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in filteredSuccessItems" :key="item.id">
+                  <td class="col-file" :title="item.file_name">
+                    <span class="file-name">{{ item.file_name }}</span>
+                    <span v-if="item.part_label" class="part-chip">{{ item.part_label }}</span>
+                  </td>
+                  <td class="col-folder font-mono" :title="item.folder_name || '根目录'">{{ item.folder_name || "—" }}</td>
+                  <td class="col-size font-mono">{{ item.file_size > 0 ? formatBytes(item.file_size) : "—" }}</td>
+                  <td class="col-status"><span class="status-pill ok">已送达</span></td>
+                  <td class="col-time font-mono">{{ item.finished_at || "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <footer class="success-pager">
+            <span class="pager-stat">显示第 {{ successPage }} / {{ successPages }} 页 · 共 {{ successTotalRows }} 条记录</span>
+            <div class="pager-actions">
+              <button type="button" :disabled="successPage <= 1 || successLoading" @click="shiftSuccessPage(-1)">上一页</button>
+              <span class="page-current font-mono">{{ successPage }}</span>
+              <button type="button" :disabled="successPage >= successPages || successLoading" @click="shiftSuccessPage(1)">下一页</button>
+            </div>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ══════════════════════════════════════════════════════════
+         Worker 节点调度管理模态弹窗 (由顶栏「Worker 在线」呼出)
+    ══════════════════════════════════════════════════════════ -->
+    <Teleport to="body">
+      <div v-if="workerModalOpen" class="settings-layer" @click.self="workerModalOpen = false">
+        <div class="worker-modal panel-card" role="dialog" aria-label="Worker 节点调度管理" @click.stop>
+          <header class="worker-modal-head">
+            <div class="worker-modal-head-left">
+              <span class="worker-badge-dot"></span>
+              <div>
+                <h2>Worker 节点调度管理</h2>
+                <p class="worker-sub">当前在线 {{ activeWorkersCount }} / {{ totalWorkersCount }} · 负责并发分块与个人号直传</p>
+              </div>
+            </div>
+            <div class="worker-modal-head-right">
+              <button type="button" class="add-session-btn" @click="openSessionForm">
+                + 添加 Session
+              </button>
+              <button type="button" class="modal-close-btn" title="关闭 (Esc)" @click="workerModalOpen = false">✕</button>
+            </div>
+          </header>
+          <div class="worker-modal-body">
+            <WorkerPanel @add="openSessionForm" @update-workers="onUpdateWorkers" />
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 路径交付策略模态弹窗 (Directory Policy Modal) -->
+    <DirectoryPolicyModal
+      v-model="policyModalOpen"
+      :path="policyPath"
+      @saved="onPolicySaved"
+    />
+
+    <!-- 手动投递任务模态弹窗 (Manual Dispatch Modal) -->
+    <ManualDispatchModal
+      v-model="manualDispatchOpen"
+      @dispatched="onManualDispatched"
+    />
   </div>
 </template>
 
-<style scoped>
-.monitor-page {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
+<style scoped src="./MonitorPage.css"></style>
 
-.monitor-container {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 8px 0 0;
-  flex: 1;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-.unmatched-banner {
-  margin: 0;
-  padding: 10px 14px;
-  border: 1px solid #f3d7a1;
-  border-radius: 12px;
-  background: #fdf5ea;
-  color: var(--warn);
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
-/* ── 一体式系统遥测带 (Integrated Telemetry Ribbon) ── */
-.telemetry-ribbon {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
-  padding: 12px 20px;
-}
-
-.telemetry-cell {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 4px 12px;
-}
-
-.telemetry-divider {
-  width: 1px;
-  height: 32px;
-  background: var(--border-light);
-  flex-shrink: 0;
-}
-
-.cell-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.success-icon {
-  background: #ebf6f0;
-  color: var(--ok);
-}
-
-.task-icon {
-  background: #f0f7f2;
-  color: #2b8b57;
-}
-
-.worker-icon {
-  background: #f4f6f4;
-  color: #4a614e;
-}
-
-.queue-icon {
-  background: #fcf6eb;
-  color: var(--warn);
-}
-
-.cell-data {
-  display: flex;
-  flex-direction: column;
-}
-
-.cell-label {
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  font-weight: 500;
-  margin-bottom: 2px;
-}
-
-.scope-select {
-  width: 108px;
-}
-
-.scope-select :deep(.el-select__wrapper) {
-  padding: 0 8px;
-  min-height: 22px;
-  box-shadow: none;
-  background: transparent;
-}
-
-.scope-select :deep(.el-select__selected-item) {
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.success-line {
-  display: flex;
-  align-items: center;
-}
-
-.success-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  color: inherit;
-}
-
-.view-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 7px;
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-.view-mark::before {
-  content: "";
-  width: 10px;
-  height: 8px;
-  border: 1.4px solid currentColor;
-  border-radius: 1px;
-  box-shadow: inset 0 -2px 0 currentColor;
-}
-
-.success-open:hover .view-mark {
-  color: var(--text);
-  border-color: rgba(0, 0, 0, 0.16);
-}
-
-.success-modal {
-  width: min(640px, 100%);
-  padding: 16px 16px 12px;
-  background: var(--surface);
-}
-
-.success-switch {
-  display: flex;
-  background: #f3f5f3;
-  border-radius: 999px;
-  padding: 3px;
-}
-
-.success-switch button {
-  border: 0;
-  background: transparent;
-  border-radius: 999px;
-  padding: 4px 12px;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.success-switch button.on {
-  background: var(--surface);
-  color: var(--text);
-  font-weight: 650;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-.success-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.success-head h2 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.success-close,
-.success-pager button {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: 8px;
-  padding: 2px 8px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.success-close:disabled,
-.success-pager button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.success-empty {
-  margin: 8px 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.success-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 280px;
-  overflow: auto;
-}
-
-.success-list li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  align-items: baseline;
-  padding: 8px 0;
-  border-top: 1px solid var(--border-light);
-  font-size: 13px;
-}
-
-.success-name {
-  font-weight: 550;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.success-part {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.success-meta {
-  margin-left: auto;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.success-pager {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.cell-value {
-  font-size: 16.5px;
-  font-weight: 700;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-}
-
-.cell-unit {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.highlight-task {
-  color: #24804e;
-}
-
-.warn-queue {
-  color: var(--warn);
-}
-
-/* ── 主工作布局 (两列异步视界) ── */
-.workspace-layout {
-  display: flex;
-  gap: 18px;
-  align-items: stretch;
-  flex: 1;
-  min-height: 0;
-}
-
-.worker-column {
-  width: 280px;
-  flex-shrink: 0;
-  height: 100%;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-
-.progress-column {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.progress-column > * {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  height: 100%;
-}
-
-/* ── 移动端分段视图切换器 ── */
-.mobile-view-tabs {
-  display: none;
-}
-
-.mobile-view-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border: none;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.mobile-view-btn.active {
-  background: var(--surface);
-  color: var(--text);
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
-
-.view-badge {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 9999px;
-  background: var(--hover);
-  color: var(--text-secondary);
-}
-
-.mobile-view-btn.active .view-badge {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-@media (max-width: 1100px) and (min-width: 769px) {
-  .telemetry-ribbon {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    padding: 16px;
-  }
-  .telemetry-divider {
-    display: none;
-  }
-  .workspace-layout {
-    flex-direction: column;
-  }
-  .worker-column {
-    width: 100%;
-    flex: 0 0 36vh;
-    max-height: 36vh;
-    height: auto;
-  }
-  .progress-column {
-    flex: 1;
-    min-height: 0;
-  }
-}
-
-@media (max-width: 768px) {
-  .monitor-page {
-    height: auto;
-    min-height: 0;
-    overflow: visible;
-  }
-
-  .monitor-container {
-    height: auto;
-    overflow: visible;
-    gap: 12px;
-    padding: 0;
-  }
-
-  .unmatched-banner {
-    padding: 8px 12px;
-    font-size: 12px;
-  }
-
-  .telemetry-ribbon {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-    padding: 8px 10px;
-    border-radius: 12px;
-  }
-
-  .telemetry-divider {
-    display: none;
-  }
-
-  .telemetry-cell {
-    padding: 3px 6px;
-    gap: 8px;
-  }
-
-  .cell-icon {
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-  }
-
-  .cell-icon svg {
-    width: 14px;
-    height: 14px;
-  }
-
-  .cell-label {
-    font-size: 10.5px;
-    margin-bottom: 0;
-  }
-
-  .cell-value {
-    font-size: 13.5px;
-  }
-
-  .cell-unit {
-    font-size: 10.5px;
-  }
-
-  .scope-select {
-    width: 86px;
-  }
-
-  .scope-select :deep(.el-select__wrapper) {
-    min-height: 18px;
-    padding: 0 4px;
-  }
-
-  .scope-select :deep(.el-select__selected-item) {
-    font-size: 10.5px;
-  }
-
-  .mobile-view-tabs {
-    display: flex;
-    background: #eef2ef;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 3px;
-    gap: 4px;
-    flex-shrink: 0;
-  }
-
-  .workspace-layout {
-    flex-direction: column;
-    height: auto;
-    flex: 1;
-    min-height: 0;
-  }
-
-  .workspace-layout.show-board .worker-column {
-    display: none;
-  }
-
-  .workspace-layout.show-workers .progress-column {
-    display: none;
-  }
-
-  .worker-column {
-    width: 100%;
-    height: auto;
-    max-height: none;
-    flex: 1;
-    overflow: visible;
-  }
-
-  .progress-column {
-    width: 100%;
-    height: auto;
-    flex: 1;
-    overflow: visible;
-  }
-}
-</style>

@@ -122,13 +122,13 @@ docker buildx imagetools create \
 正式生产环境使用项目自带的 `compose.yml`，镜像直接指向正式标签：
 ```yaml
 services:
-  uploader:
+  tg-up:
     image: ghcr.io/aoki222/tg-up:latest
     # 或者指定固定版本: ghcr.io/aoki222/tg-up:v1.0.0
-    container_name: uploader
+    container_name: tg-up
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8421:8421"
     ...
 ```
 生产环境更新命令与测试环境相同：

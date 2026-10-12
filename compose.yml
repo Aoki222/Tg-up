@@ -1,28 +1,29 @@
-# VPS / 本机：
-#   1. cp .env.example .env   填 API_ID / API_HASH
-#   2. docker compose up -d --build
-# 控制台：http://<服务器IP>:8000/
-# 视频放到 ./download ；session 放到 ./sessions
-# 上传配置在 ./data/upload.toml（目录挂载，控制台保存不会 EBUSY）
-# 本机编译要带上提交号，顶栏才会和 latest 镜像比较：
-#   BUILD_SHA=$(git rev-parse HEAD) docker compose build
+# ==============================================================================
+# 生产环境 / 本机运行 Docker Compose 配置
+# 镜像源：GitHub Container Registry (ghcr.io/aoki222/tg-up:latest)
+#
+# 快速开始：
+#   1. 复制 .env.example 为 .env 并配置参数：
+#      cp .env.example .env
+#   2. 拉取正式镜像：
+#      docker compose pull
+#   3. 启动/平滑更新容器：
+#      docker compose up -d --remove-orphans
+#   4. 查看控制台：http://<服务器IP>:8421/
+# ==============================================================================
 
 services:
-  uploader:
-    build:
-      context: .
-      args:
-        BUILD_SHA: ${BUILD_SHA:-local_dev}
-    image: uploader:local
-    container_name: uploader
+  tg-up:
+    image: ghcr.io/aoki222/tg-up:latest
+    container_name: tg-up
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8421:8421"
     env_file:
       - .env
     environment:
       API_HOST: "0.0.0.0"
-      API_PORT: "8000"
+      API_PORT: "8421"
       APP_CHANNEL: "latest"
     volumes:
       - ./download:/app/download
@@ -31,16 +32,15 @@ services:
       - ./page:/app/page
       - ./uploaded:/app/uploaded
       - ./logs:/app/logs
-      # 宿主机其它目录必须挂进来。控制台填【右边】容器路径，不要填宿主机路径。
-      # 例：宿主机 /home/scrapy/data/download → 控制台填 /data/scrapy-download
-      - /home/scrapy/data/download:/data/scrapy-download
+      # 宿主机外部下载目录挂载示例（如需要请取消注释）
+      # - /home/scrapy/data/download:/data/scrapy-download
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8421/api/health')",
         ]
       interval: 30s
       timeout: 5s

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * 五列观察看板：封面 / 等待 / 上传中 / 过大 / 失败。
- * 列可收起：收起的列进左侧 48px 轨，展开列均分剩余宽度。
+ * 单栏任务流：全部 / 正在上传 / 过大 / 失败 / 排队。
+ * 排队包含封面生成和等待上传。过大、失败才出现批量菜单。
  */
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   deleteAllFailedTasks,
@@ -23,25 +23,23 @@ import type { SkippedTask } from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
 
-const STORAGE_KEY = "uploader.kanban.collapsed";
+const props = withDefaults(
+  defineProps<{
+    items: BoardTask[];
+    failedPage?: number;
+    oversizedPage?: number;
+    failedTotal?: number;
+    oversizedTotal?: number;
+    pageSize?: number;
+  }>(),
+  { failedPage: 1, oversizedPage: 1, pageSize: 50 },
+);
 
-const columns = [
-  { key: "preparing", title: "封面", empty: "没有封面任务" },
-  { key: "pending", title: "等待", empty: "队列空闲" },
-  { key: "uploading", title: "上传中", empty: "没有在传" },
-  { key: "oversized", title: "过大", empty: "没有过大文件" },
-  { key: "failed", title: "失败", empty: "没有失败" },
-] as const;
+const emit = defineEmits<{
+  changeFailedPage: [page: number];
+  changeOversizedPage: [page: number];
+}>();
 
-type ColumnKey = (typeof columns)[number]["key"];
-
-const COLUMN_KEYS: ColumnKey[] = columns.map((column) => column.key);
-
-const props = defineProps<{ items: BoardTask[] }>();
-
-const isNarrow = ref(false);
-const activeMobileTab = ref<ColumnKey>("uploading");
-const collapsed = ref<Set<ColumnKey>>(loadCollapsed());
 const retryingId = ref<number | null>(null);
 const dispatchingId = ref<number | null>(null);
 const slicingId = ref<number | null>(null);
@@ -50,15 +48,10 @@ const clearing = ref(false);
 const oversizedActing = ref(false);
 const selectedIds = ref<Set<number>>(new Set());
 const oversizedIds = ref<Set<number>>(new Set());
-const batchOpen = ref<ColumnKey | null>(null);
+type BoardTab = "all" | "uploading" | "oversized" | "failed" | "queue";
+const boardTab = ref<BoardTab>("all");
 
-function toggleBatch(key: ColumnKey): void {
-  batchOpen.value = batchOpen.value === key ? null : key;
-}
-
-function closeBatch(): void {
-  batchOpen.value = null;
-}
+function closeBatch(): void {}
 
 const buckets = computed(() => {
   const preparing: BoardTask[] = [];
@@ -76,57 +69,99 @@ const buckets = computed(() => {
   return { preparing, pending, uploading, oversized, failed };
 });
 
-const rail = computed(() => columns.filter((column) => collapsed.value.has(column.key)));
-const open = computed(() => columns.filter((column) => !collapsed.value.has(column.key)));
-const visibleWells = computed(() => {
-  if (isNarrow.value) {
-    const active = columns.find((c) => c.key === activeMobileTab.value) ?? columns[2];
-    return [active];
+const queueItems = computed(() => [...buckets.value.preparing, ...buckets.value.pending]);
+const failedColumnTotal = computed(() => props.failedTotal ?? buckets.value.failed.length);
+const oversizedColumnTotal = computed(() => props.oversizedTotal ?? buckets.value.oversized.length);
+const activeTotal = computed(
+  () =>
+    buckets.value.uploading.length +
+    oversizedColumnTotal.value +
+    failedColumnTotal.value +
+    queueItems.value.length,
+);
+interface SectionMeta {
+  key: "uploading" | "oversized" | "failed" | "queue";
+  title: string;
+  sub: string;
+  dotClass: string;
+  items: BoardTask[];
+}
+
+const allSections = computed<SectionMeta[]>(() => [
+  {
+    key: "uploading",
+    title: "正在上传看板",
+    sub: "活跃中",
+    dotClass: "dot-uploading",
+    items: buckets.value.uploading,
+  },
+  {
+    key: "oversized",
+    title: "过大待处理看板",
+    sub: "超过 2GB 限制",
+    dotClass: "dot-oversized",
+    items: buckets.value.oversized,
+  },
+  {
+    key: "failed",
+    title: "失败与重试看板",
+    sub: "需人工介入或重试",
+    dotClass: "dot-failed",
+    items: buckets.value.failed,
+  },
+  {
+    key: "queue",
+    title: "排队就绪看板",
+    sub: "待 Worker 调度",
+    dotClass: "dot-queue",
+    items: queueItems.value,
+  },
+]);
+
+function sectionCountLabel(section: SectionMeta): string {
+  if (section.key === "uploading") return `${section.items.length} 个任务并发`;
+  if (section.key === "oversized") return `${oversizedColumnTotal.value} 个任务待裁决`;
+  if (section.key === "failed") return `${failedColumnTotal.value} 个任务中断`;
+  return `${section.items.length} 个任务就绪`;
+}
+
+function pagerFor(key: string): { page: number; pages: number; total: number } | null {
+  if (key !== "failed" && key !== "oversized") return null;
+  const total = key === "failed" ? failedColumnTotal.value : oversizedColumnTotal.value;
+  const size = props.pageSize || 50;
+  if (total <= size) return null;
+  const page = key === "failed" ? props.failedPage || 1 : props.oversizedPage || 1;
+  return { page, pages: Math.max(1, Math.ceil(total / size)), total };
+}
+
+function pageAtStart(key: string): boolean {
+  return (pagerFor(key)?.page ?? 1) <= 1;
+}
+
+function pageAtEnd(key: string): boolean {
+  const pager = pagerFor(key);
+  return pager == null || pager.page >= pager.pages;
+}
+
+function pageLabel(key: string): string {
+  const pager = pagerFor(key);
+  if (pager == null) return "";
+  return `${pager.page} / ${pager.pages} · 共 ${pager.total}`;
+}
+
+function goPage(key: string, delta: number): void {
+  if (key !== "failed" && key !== "oversized") return;
+  const page = (key === "failed" ? props.failedPage : props.oversizedPage) || 1;
+  if (key === "failed") emit("changeFailedPage", page + delta);
+  else emit("changeOversizedPage", page + delta);
+}
+
+const streamSections = computed(() => {
+  if (boardTab.value === "all") {
+    return allSections.value.filter((section) => section.items.length > 0);
   }
-  return open.value;
+  return allSections.value.filter((section) => section.key === boardTab.value);
 });
-const canCollapse = computed(() => open.value.length > 1);
-
-function loadCollapsed(): Set<ColumnKey> {
-  // 从浏览器恢复列折叠状态，并过滤掉旧版本或非法列名。
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw == null) return new Set<ColumnKey>(["preparing", "pending"]);
-    if (!raw) return new Set();
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    const keys = parsed.filter((key): key is ColumnKey => COLUMN_KEYS.includes(key as ColumnKey));
-    const next = new Set(keys);
-    if (next.size >= COLUMN_KEYS.length) {
-      next.delete("uploading");
-    }
-    return next;
-  } catch {
-    return new Set();
-  }
-}
-
-function persist(): void {
-  // 将当前列布局持久化到浏览器，供下次打开看板恢复。
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([...collapsed.value]));
-}
-
-function collapse(key: ColumnKey): void {
-  // 收起指定列，但始终保留至少一列展开，避免看板失去主要内容。
-  if (open.value.length <= 1 || collapsed.value.has(key)) return;
-  collapsed.value = new Set([...collapsed.value, key]);
-  persist();
-}
-
-function expand(key: ColumnKey): void {
-  // 从左侧轨道恢复一列，并同步保存布局。
-  if (!collapsed.value.has(key)) return;
-  const next = new Set(collapsed.value);
-  next.delete(key);
-  collapsed.value = next;
-  persist();
-}
-
 async function onRetry(id: number): Promise<void> {
   // 调用后端将单条 failed 任务重新置为 pending。
   if (retryingId.value !== null || retryingAll.value) return;
@@ -144,7 +179,7 @@ async function onRetry(id: number): Promise<void> {
 async function onRetryAll(): Promise<void> {
   // 批量重试失败任务，并把缺失文件数量反馈给用户。
   closeBatch();
-  if (retryingAll.value || retryingId.value !== null || buckets.value.failed.length === 0) return;
+  if (retryingAll.value || retryingId.value !== null || failedColumnTotal.value === 0) return;
   retryingAll.value = true;
   try {
     const result = await retryAllFailedTasks();
@@ -319,7 +354,7 @@ async function onRemoveSelected(): Promise<void> {
 async function onRemoveAll(): Promise<void> {
   // 二次确认后删除全部失败记录，并保留磁盘文件。
   closeBatch();
-  if (failedBusy.value || buckets.value.failed.length === 0) return;
+  if (failedBusy.value || failedColumnTotal.value === 0) return;
   try {
     await ElMessageBox.confirm("将从数据库删除全部失败记录，本地文件不会动。", "全部清除", {
       type: "warning",
@@ -388,7 +423,7 @@ async function onRemoveOversizedSelected(): Promise<void> {
 
 async function onRemoveOversizedAll(): Promise<void> {
   closeBatch();
-  if (failedBusy.value || buckets.value.oversized.length === 0) return;
+  if (failedBusy.value || oversizedColumnTotal.value === 0) return;
   try {
     await ElMessageBox.confirm("将从数据库删除全部过大记录，本地源文件不会动。", "全部清除", {
       type: "warning",
@@ -411,147 +446,670 @@ async function onRemoveOversizedAll(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  const media = window.matchMedia("(max-width: 768px)");
-  const apply = () => {
-    isNarrow.value = media.matches;
-  };
-  const onPointer = (event: Event) => {
-    const target = event.target;
-    if (target instanceof Element && target.closest(".batch-wrap")) return;
-    batchOpen.value = null;
-  };
-  apply();
-  media.addEventListener("change", apply);
-  document.addEventListener("pointerdown", onPointer);
-  onUnmounted(() => {
-    media.removeEventListener("change", apply);
-    document.removeEventListener("pointerdown", onPointer);
-  });
-});
+
 </script>
 
 <template>
-  <section class="board" :class="{ 'has-rail': !isNarrow && rail.length > 0, 'is-narrow': isNarrow }" aria-label="任务看板">
-    <!-- 移动端状态 Tab 切换胶囊条 (仅在窄屏呈现) -->
-    <nav v-if="isNarrow" class="mobile-board-tabs" aria-label="看板状态切换">
-      <button
-        v-for="column in columns"
-        :key="column.key"
-        type="button"
-        class="mobile-tab-pill"
-        :class="[column.key, { active: activeMobileTab === column.key }]"
-        @click="activeMobileTab = column.key"
-      >
-        <span class="tab-label">{{ column.title }}</span>
-        <span class="tab-count" :class="{ 'has-items': buckets[column.key].length > 0 }">
-          {{ buckets[column.key].length }}
-        </span>
-      </button>
-    </nav>
-
-    <Transition name="rail">
-      <aside v-if="!isNarrow && rail.length" class="rail" aria-label="已收起的列">
+  <section class="stream" aria-label="任务看板">
+    <!-- 看板选项卡分类控制器与动作条 -->
+    <div class="stream-tabs">
+      <div class="tabs-group">
         <button
-          v-for="column in rail"
-          :key="column.key"
           type="button"
-          class="rail-tab"
-          :class="column.key"
-          :aria-label="`展开${column.title}`"
-          @click="expand(column.key)"
+          class="tab-btn"
+          :class="{ on: boardTab === 'all' }"
+          @click="boardTab = 'all'"
         >
-          <span class="rail-title">{{ column.title }}</span>
-          <span class="well-count">{{ buckets[column.key].length }}</span>
+          <span>全部看板</span>
+          <span class="tab-badge badge-all">{{ activeTotal }}</span>
         </button>
-      </aside>
-    </Transition>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ on: boardTab === 'uploading' }"
+          @click="boardTab = 'uploading'"
+        >
+          <span class="status-dot dot-uploading"></span>
+          <span>正在上传</span>
+          <span class="tab-badge badge-uploading">{{ buckets.uploading.length }}</span>
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ on: boardTab === 'oversized' }"
+          @click="boardTab = 'oversized'"
+        >
+          <span class="status-dot dot-oversized"></span>
+          <span>过大待处理</span>
+          <span class="tab-badge badge-oversized">{{ oversizedColumnTotal }}</span>
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ on: boardTab === 'failed' }"
+          @click="boardTab = 'failed'"
+        >
+          <span class="status-dot dot-failed"></span>
+          <span>失败重试</span>
+          <span class="tab-badge badge-failed">{{ failedColumnTotal }}</span>
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ on: boardTab === 'queue' }"
+          @click="boardTab = 'queue'"
+        >
+          <span class="status-dot dot-queue"></span>
+          <span>排队就绪</span>
+          <span class="tab-badge badge-queue">{{ queueItems.length }}</span>
+        </button>
+      </div>
 
-    <TransitionGroup name="pane" tag="div" class="open-pane">
-      <div v-for="column in visibleWells" :key="column.key" class="well" :class="column.key">
-        <header class="well-head">
-          <span class="well-title">{{ column.title }}</span>
-          <div class="well-actions">
-            <div
-              v-if="column.key === 'oversized' || column.key === 'failed'"
-              class="batch-wrap"
-            >
-              <button
-                type="button"
-                class="retry-all-btn"
-                :disabled="failedBusy"
-                @click.stop="toggleBatch(column.key)"
-              >
-                批量
-              </button>
-              <div v-if="batchOpen === column.key" class="batch-menu" @click.stop>
-                <template v-if="column.key === 'oversized'">
-                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onSliceBatch([...oversizedIds])">切片选中</button>
-                  <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onSliceBatch([])">全部切片</button>
-                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onDispatchBatch([...oversizedIds])">交给个人号</button>
-                  <button type="button" :disabled="failedBusy || buckets.oversized.length === 0" @click="onDispatchBatch([])">全部交给个人号</button>
-                  <hr />
-                  <button type="button" :disabled="failedBusy || oversizedCount === 0" @click="onRemoveOversizedSelected">清除选中</button>
-                  <button type="button" class="danger" :disabled="failedBusy || buckets.oversized.length === 0" @click="onRemoveOversizedAll">全部清除</button>
-                </template>
-                <template v-else>
-                  <button type="button" :disabled="failedBusy || buckets.failed.length === 0" @click="onRetryAll">
-                    {{ retryingAll ? "重试中" : "全部重试" }}
-                  </button>
-                  <button type="button" :disabled="failedBusy || selectedCount === 0" @click="onRemoveSelected">清除选中</button>
-                  <button type="button" class="danger" :disabled="failedBusy || buckets.failed.length === 0" @click="onRemoveAll">全部清除</button>
-                </template>
-              </div>
-            </div>
-            <span class="well-count">{{ buckets[column.key].length }}</span>
-            <button
-              v-if="!isNarrow"
-              type="button"
-              class="collapse-btn"
-              :disabled="!canCollapse"
-              :aria-label="`收起${column.title}`"
-              @click="collapse(column.key)"
-            >
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
-                <path
-                  d="M10 3L5 8l5 5"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-          </div>
-        </header>
-        <div class="well-body">
-          <TransitionGroup name="kanban" tag="div" class="card-stack">
-            <TaskCard
-              v-for="task in buckets[column.key]"
-              :key="task.id"
-              :task="task"
-              :retrying="failedBusy"
-              :dispatching="dispatchingId === task.id"
-              :selectable="column.key === 'failed' || column.key === 'oversized'"
-              :selected="
-                column.key === 'oversized' ? oversizedIds.has(task.id) : selectedIds.has(task.id)
-              "
-              @retry="onRetry"
-              @remove="onRemove"
-              @toggle="column.key === 'oversized' ? toggleOversized($event) : toggleSelect($event)"
-              @dispatch="onDispatch"
-              @slice="onSlice"
-              @continue="onContinueSlice"
-            />
-          </TransitionGroup>
-          <p v-if="buckets[column.key].length === 0" class="empty">{{ column.empty }}</p>
+      <!-- 右侧动作区与状态统计 -->
+      <div class="tabs-actions">
+        <!-- 全部看板模式：显示任务总数概览 -->
+        <span v-if="boardTab === 'all'" class="summary-text font-mono">
+          全部 {{ activeTotal }} 个活动任务流转中
+        </span>
+
+        <!-- 正在上传或排队模式：显示简要状态 -->
+        <span v-else-if="boardTab === 'uploading'" class="summary-text font-mono">
+          {{ buckets.uploading.length }} 个任务并发中
+        </span>
+        <span v-else-if="boardTab === 'queue'" class="summary-text font-mono">
+          {{ queueItems.length }} 个任务等待 Worker
+        </span>
+
+        <!-- 过大看板模式：批量操作按钮群 -->
+        <div v-else-if="boardTab === 'oversized'" class="action-btn-group">
+          <button
+            v-if="oversizedCount > 0"
+            type="button"
+            class="action-btn accent"
+            :disabled="failedBusy"
+            @click="onSliceBatch([...oversizedIds])"
+          >
+            切片选中 ({{ oversizedCount }})
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :disabled="failedBusy || oversizedColumnTotal === 0"
+            @click="onSliceBatch([])"
+          >
+            全部切片
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :disabled="failedBusy || oversizedColumnTotal === 0"
+            @click="onDispatchBatch([])"
+          >
+            全部交给个人号
+          </button>
+          <button
+            v-if="oversizedCount > 0"
+            type="button"
+            class="action-btn danger-text"
+            :disabled="failedBusy"
+            @click="onRemoveOversizedSelected"
+          >
+            清除选中 ({{ oversizedCount }})
+          </button>
+          <button
+            type="button"
+            class="action-btn danger"
+            :disabled="failedBusy || oversizedColumnTotal === 0"
+            @click="onRemoveOversizedAll"
+          >
+            全部清除
+          </button>
+        </div>
+
+        <!-- 失败看板模式：重试与清除按钮群 -->
+        <div v-else-if="boardTab === 'failed'" class="action-btn-group">
+          <button
+            type="button"
+            class="action-btn danger-bg"
+            :disabled="failedBusy || failedColumnTotal === 0"
+            @click="onRetryAll"
+          >
+            {{ retryingAll ? "重试中" : "全部重试" }}
+          </button>
+          <button
+            v-if="selectedCount > 0"
+            type="button"
+            class="action-btn danger-text"
+            :disabled="failedBusy"
+            @click="onRemoveSelected"
+          >
+            清除选中 ({{ selectedCount }})
+          </button>
+          <button
+            type="button"
+            class="action-btn danger"
+            :disabled="failedBusy || failedColumnTotal === 0"
+            @click="onRemoveAll"
+          >
+            全部清除
+          </button>
         </div>
       </div>
-    </TransitionGroup>
+    </div>
+
+    <!-- 局部滑动任务卡片流 -->
+    <div class="stream-scroll">
+      <section
+        v-for="section in streamSections"
+        :key="section.key"
+        class="stream-section"
+      >
+        <!-- 分组标题条 (在全部看板模式下展示完整分类头，以及单项分组快捷按钮) -->
+        <div v-if="boardTab === 'all'" class="section-header">
+          <div class="section-header-left">
+            <span class="status-dot" :class="section.dotClass"></span>
+            <span class="section-title">{{ section.title }}</span>
+            <span class="section-sub" :class="section.key">· {{ section.sub }}</span>
+          </div>
+
+          <div class="section-header-right">
+            <span class="section-count-badge font-mono" :class="section.key">
+              {{ sectionCountLabel(section) }}
+            </span>
+
+            <!-- 在全部看板视图下，也直接支持过大和失败的直接快捷操作 -->
+            <template v-if="section.key === 'oversized' && section.items.length > 0">
+              <button
+                type="button"
+                class="mini-action-btn"
+                :disabled="failedBusy"
+                @click="onSliceBatch([])"
+              >
+                全部切片
+              </button>
+              <button
+                type="button"
+                class="mini-action-btn danger"
+                :disabled="failedBusy"
+                @click="onRemoveOversizedAll"
+              >
+                全部清除
+              </button>
+            </template>
+
+            <template v-else-if="section.key === 'failed' && section.items.length > 0">
+              <button
+                type="button"
+                class="mini-action-btn accent"
+                :disabled="failedBusy"
+                @click="onRetryAll"
+              >
+                {{ retryingAll ? "重试中" : "全部重试" }}
+              </button>
+              <button
+                type="button"
+                class="mini-action-btn danger"
+                :disabled="failedBusy"
+                @click="onRemoveAll"
+              >
+                全部清除
+              </button>
+            </template>
+          </div>
+        </div>
+
+        <!-- 任务卡片列表 -->
+        <div class="section-cards">
+          <TaskCard
+            v-for="task in section.items"
+            :key="task.id"
+            :task="task"
+            :retrying="failedBusy"
+            :dispatching="dispatchingId === task.id"
+            :selectable="boardTab === section.key && (section.key === 'failed' || section.key === 'oversized')"
+            :selected="section.key === 'oversized' ? oversizedIds.has(task.id) : selectedIds.has(task.id)"
+            @retry="onRetry"
+            @remove="onRemove"
+            @toggle="section.key === 'oversized' ? toggleOversized($event) : toggleSelect($event)"
+            @dispatch="onDispatch"
+            @slice="onSlice"
+            @continue="onContinueSlice"
+          />
+        </div>
+
+        <div v-if="pagerFor(section.key)" class="section-pager">
+          <button type="button" :disabled="pageAtStart(section.key)" @click="goPage(section.key, -1)">
+            上一页
+          </button>
+          <span class="font-mono">{{ pageLabel(section.key) }}</span>
+          <button type="button" :disabled="pageAtEnd(section.key)" @click="goPage(section.key, 1)">
+            下一页
+          </button>
+        </div>
+
+        <!-- 列表空状态 (当特定分类无任务时) -->
+        <div v-if="section.items.length === 0" class="empty-state-card">
+          <span class="empty-dot"></span>
+          <span>当前分类下暂无任务</span>
+        </div>
+      </section>
+
+      <!-- 全局没有任何任务时的优雅空状态 -->
+      <div v-if="streamSections.length === 0" class="empty-board-wrap">
+        <div class="empty-board-inner">
+          <div class="empty-icon-ring">
+            <svg class="empty-svg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <p class="empty-title">当前没有进行中的任务</p>
+          <p class="empty-desc">监听目录中若有新文件落盘，将自动加入调度序列</p>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
+.stream {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 14px);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.stream-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
+  flex-shrink: 0;
+}
+
+.tabs-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  background: #f1f3f1;
+  border-radius: var(--radius-md, 10px);
+}
+
+.tab-btn {
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm, 6px);
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.on {
+  background: #ffffff;
+  color: var(--text);
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full, 9999px);
+  flex-shrink: 0;
+}
+
+.dot-uploading {
+  background: var(--accent, #28995a);
+}
+
+.dot-oversized {
+  background: #f59e0b;
+}
+
+.dot-failed {
+  background: #ef4444;
+}
+
+.dot-queue {
+  background: #9ca3af;
+}
+
+.tab-badge {
+  padding: 1.5px 7px;
+  border-radius: var(--radius-full, 9999px);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+}
+
+.badge-all {
+  background: #1f2937;
+  color: #ffffff;
+}
+
+.badge-uploading {
+  background: rgba(40, 153, 90, 0.12);
+  color: #28995a;
+}
+
+.badge-oversized {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.badge-failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.badge-queue {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+
+.tabs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.summary-text {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, monospace;
+}
+
+.action-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-btn {
+  padding: 5px 12px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  background: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: var(--text);
+}
+
+.action-btn:hover:not(:disabled) {
+  background: #f9fafb;
+}
+
+.action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.action-btn.accent {
+  background: var(--accent, #28995a);
+  color: #ffffff;
+  border-color: var(--accent, #28995a);
+}
+
+.action-btn.accent:hover:not(:disabled) {
+  background: #22834d;
+}
+
+.action-btn.danger-bg {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+}
+
+.action-btn.danger-bg:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.action-btn.danger {
+  border-color: #fecaca;
+  color: #dc2626;
+  background: #ffffff;
+}
+
+.action-btn.danger:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.action-btn.danger-text {
+  color: #dc2626;
+  border-color: var(--border, rgba(0, 0, 0, 0.1));
+}
+
+.stream-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stream-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 4px;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.section-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section-title {
+  font-weight: 700;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.section-sub {
+  font-weight: 400;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.section-sub.oversized {
+  color: #92400e;
+}
+
+.section-sub.failed {
+  color: #b91c1c;
+}
+
+.section-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-count-badge {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.section-count-badge.uploading {
+  color: #28995a;
+  font-weight: 600;
+}
+
+.section-count-badge.oversized {
+  color: #92400e;
+  font-weight: 600;
+}
+
+.section-count-badge.failed {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.section-count-badge.queue {
+  color: #6b7280;
+}
+
+.mini-action-btn {
+  padding: 3px 9px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.mini-action-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.mini-action-btn.accent {
+  background: var(--accent, #28995a);
+  color: #ffffff;
+  border-color: var(--accent, #28995a);
+}
+
+.mini-action-btn.danger {
+  border-color: #fca5a5;
+  color: #dc2626;
+  background: #ffffff;
+}
+
+.mini-action-btn.danger:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.section-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 2px 0 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.section-pager button {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.section-pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.empty-state-card {
+  padding: 18px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px dashed var(--border, rgba(0, 0, 0, 0.1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: #fafbfa;
+}
+
+.empty-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full, 9999px);
+  background: #9ca3af;
+}
+
+.empty-board-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+}
+
+.empty-board-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.empty-icon-ring {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-full, 9999px);
+  background: #f3f5f3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.empty-svg {
+  width: 22px;
+  height: 22px;
+  color: var(--accent, #28995a);
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+
+.empty-desc {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
 .board {
   display: flex;
   gap: 12px;
@@ -580,7 +1138,7 @@ onMounted(() => {
   min-height: 96px;
   padding: 12px 6px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-md, 10px);
   background: var(--col-pending);
   color: var(--text);
   cursor: pointer;
@@ -619,7 +1177,7 @@ onMounted(() => {
 
 .rail-title {
   writing-mode: vertical-rl;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   letter-spacing: 0.14em;
 }
@@ -643,7 +1201,7 @@ onMounted(() => {
   height: 100%;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-md, 10px);
   background: var(--col-pending);
 }
 
@@ -678,7 +1236,7 @@ onMounted(() => {
 }
 
 .well-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
 }
@@ -696,7 +1254,7 @@ onMounted(() => {
   padding: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md, 10px);
   box-shadow: 0 12px 32px rgba(24, 36, 25, 0.12);
 }
 
@@ -706,7 +1264,7 @@ onMounted(() => {
   text-align: left;
   border: 0;
   background: transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 6px);
   padding: 7px 8px;
   font-size: 13px;
   color: var(--text);
@@ -742,10 +1300,10 @@ onMounted(() => {
 .well-count {
   min-width: 20px;
   padding: 1px 7px;
-  border-radius: 9999px;
+  border-radius: var(--radius-full, 9999px);
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -764,12 +1322,12 @@ onMounted(() => {
 }
 
 .retry-all-btn {
-  padding: 2px 8px;
+  padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 6px);
   background: var(--surface);
   color: var(--text);
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -816,7 +1374,7 @@ onMounted(() => {
   height: 24px;
   padding: 0;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 6px);
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
@@ -869,7 +1427,7 @@ onMounted(() => {
 .empty {
   margin: 28px 0 8px;
   text-align: center;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
@@ -959,16 +1517,16 @@ onMounted(() => {
   .mobile-tab-pill {
     flex: 1;
     min-width: fit-content;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     padding: 6px 12px;
-    border-radius: 9999px;
+    border-radius: var(--radius-full, 9999px);
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text-secondary);
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
@@ -985,10 +1543,10 @@ onMounted(() => {
 
   .tab-count {
     padding: 1px 6px;
-    border-radius: 9999px;
+    border-radius: var(--radius-full, 9999px);
     background: var(--hover);
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
   }
 
@@ -1034,7 +1592,7 @@ onMounted(() => {
     height: auto;
     min-height: 280px;
     padding: 12px 14px;
-    border-radius: 14px;
+    border-radius: var(--radius-md, 10px);
   }
 
   .well-body {
@@ -1053,8 +1611,8 @@ onMounted(() => {
   }
 
   .retry-all-btn {
-    padding: 4px 8px;
-    font-size: 11px;
+    padding: 5px 10px;
+    font-size: 12px;
   }
 }
 </style>

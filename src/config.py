@@ -50,7 +50,7 @@ API_HASH = (os.getenv("API_HASH") or "").strip()
 
 # 进度页 / SSE。Vue 开发时也可跨域打这个地址
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
-API_PORT = int(os.getenv("API_PORT", "8000"))
+API_PORT = int(os.getenv("API_PORT", "8421"))
 # 为空则不校验。多容器同机调用时设置，请求带 Authorization: Bearer <token>
 API_TOKEN = os.getenv("API_TOKEN") or None
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY") or None

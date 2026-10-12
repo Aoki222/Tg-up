@@ -3,7 +3,13 @@
 from datetime import datetime
 from pathlib import Path
 
-from src.domain.caption import build_ingest_caption, render_caption, resolve_caption_template, resolve_preview
+from src.domain.caption import (
+    build_ingest_caption,
+    render_caption,
+    resolve_caption_template,
+    resolve_grid_layout,
+    resolve_preview,
+)
 from src.domain.task import AfterSuccess
 from src.domain.upload_settings import FolderRoute, PreviewMode, UploadSettings
 from src.pipeline.ingest.policy import IngestPolicy
@@ -100,3 +106,32 @@ def test_caption_and_preview_walk_up_until_a_route_sets_them(tmp_path: Path) -> 
     assert decision.need_single is False
     assert decision.need_content is False
     assert decision.chat_id == -200
+
+
+def test_resolve_grid_layout_inherits_and_overrides(tmp_path: Path) -> None:
+    root = tmp_path / "download"
+    child = root / "shows"
+    child.mkdir(parents=True)
+    video = child / "ep1.mp4"
+    video.write_bytes(b"x")
+
+    settings = _settings(
+        tmp_path,
+        grid_layout="3x5",
+        routes=(
+            FolderRoute(
+                path=root,
+                chat_id=-100,
+                dest_id="-100",
+                grid_layout="4x3",
+            ),
+        ),
+    )
+    # 子目录继承 root 路由的 4x3
+    assert resolve_grid_layout(video, settings) == "4x3"
+
+    # 未命中任何路由的文件回退到全局 3x5
+    other_file = tmp_path / "other.mp4"
+    other_file.write_bytes(b"y")
+    assert resolve_grid_layout(other_file, settings) == "3x5"
+

@@ -30,6 +30,7 @@ class FolderRoutePayload(BaseModel):
     dest_id: str = ""
     caption_template: str | None = None
     preview: Literal["off", "first_frame", "grid"] | None = None
+    grid_layout: str | None = None
     topic_mode: Literal["off", "auto", "fixed"] | None = None
     topic_id: int | None = None
 
@@ -77,13 +78,33 @@ class DriveFolderPayload(BaseModel):
         return text
 
 
+class ObserverRootPayload(BaseModel):
+    path: str
+    enabled: bool = True
+
+    @field_validator("path")
+    @classmethod
+    def root_path_not_empty(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("根路径不能为空")
+        return text
+
+
 class SettingsPayload(BaseModel):
+    revision: int | None = None
+    schedule_order: Literal["oldest", "natural", "created", "smallest"] = "oldest"
     chat_id: int
-    observer_paths: list[str] = Field(default_factory=lambda: ["download"])
+    watch_enabled: bool = True
+    observer_roots: list[ObserverRootPayload] = Field(default_factory=list)
+    observer_paths: list[str] = Field(default_factory=list)
     observer_path: str | None = None
     page_dir: str = "page"
     archive_dir: str = "uploaded"
     preview: Literal["off", "first_frame", "grid"] = "off"
+    grid_layout: str = "3x5"
+    grid_timestamp: bool = True
+    grid_metadata: bool = True
     caption_template: str = ""
     topic_creation_enabled: bool = True
 

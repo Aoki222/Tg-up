@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...adapters.task_store import TaskRepository
+from ...domain.caption import resolve_grid_layout
 from ...domain.settings_hub import SettingsHub
 from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
@@ -105,9 +106,14 @@ class PreviewPool:
                 job.file_path, None
             )
         if job.need_content:
-            page_path = await GridPreview(page_dir=page_dir).build_content_page_async(
-                job.file_path, None
-            )
+            settings = self.settings_hub.get()
+            grid_layout = resolve_grid_layout(job.file_path, settings)
+            page_path = await GridPreview(
+                grid_layout=grid_layout,
+                show_timestamp=settings.grid_timestamp,
+                show_metadata=settings.grid_metadata,
+                page_dir=page_dir,
+            ).build_content_page_async(job.file_path, None)
         await self.task_repository.update_preview(
             job.task_id, str(page_path) if page_path else None, True
         )

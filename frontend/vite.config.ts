@@ -1,8 +1,12 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
 
 export default defineConfig({
   plugins: [vue()],
+  test: {
+    environment: "happy-dom",
+    include: ["tests/**/*.test.ts"],
+  },
   server: {
     host: "0.0.0.0",
     port: 5173,
@@ -10,7 +14,7 @@ export default defineConfig({
     allowedHosts: [".ts.net"],
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: "http://127.0.0.1:8421",
         timeout: 0,
       },
     },

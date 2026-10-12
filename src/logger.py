@@ -52,7 +52,7 @@ def _ensure_configured() -> None:
     _configured = True
 
 
-def get_logger(name: str = "uploader") -> logging.Logger:
+def get_logger(name: str = "tg_up") -> logging.Logger:
     """获取（已统一配置的）logger。"""
     _ensure_configured()
     return logging.getLogger(name)

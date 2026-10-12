@@ -1,0 +1,357 @@
+.work-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  min-height: 52px;
+  padding: 8px 18px;
+  background: var(--surface, #ffffff);
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+
+.header-lead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sidebar-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  background: #f9fafb;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.sidebar-toggle-btn:hover {
+  background: #f3f4f6;
+  color: var(--text);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+.toggle-icon {
+  width: 15px;
+  height: 15px;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toggle-icon.rotated {
+  transform: rotate(180deg);
+}
+
+.brand {
+  font-size: 16.5px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--text, #111827);
+  padding-right: 10px;
+  border-right: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
+}
+
+.version-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full, 9999px);
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
+  background: #f3f4f6;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", monospace;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.version-pill:hover {
+  background: #e5e7eb;
+  color: var(--text);
+}
+
+.version-dot {
+  width: 6.5px;
+  height: 6.5px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--accent, #28995a);
+}
+
+.version-pill.tag-update .version-dot {
+  background: #ef4444;
+}
+
+.version-pill.tag-staging .version-dot {
+  background: #f59e0b;
+}
+
+/* 区域 2：只读遥测浮岛（实时传输仪表盘） */
+.telemetry-island {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.telemetry-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  background: #f8fafc;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-sm, 8px);
+  user-select: none;
+}
+
+.telemetry-icon {
+  width: 14px;
+  height: 14px;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.telemetry-label {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.telemetry-val {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+/* 区域 3：控制中心交互岛 */
+.header-action-island {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ★★★ Worker 节点管理芯片按钮（微芯片图标 + 状态灯 + 独立管理操作胶囊） ★★★ */
+.worker-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 6px 0 10px;
+  background: #f0fdf4;
+  border: 1.2px solid #86efac;
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.worker-chip-btn:hover {
+  background: #dcfce7;
+  border-color: #4ade80;
+  box-shadow: 0 3px 8px rgba(34, 197, 94, 0.2);
+  transform: translateY(-1px);
+}
+
+.worker-chip-btn:active {
+  transform: scale(0.98);
+}
+
+.worker-chip-btn.has-offline {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.worker-chip-btn.has-offline:hover {
+  background: #fef3c7;
+  border-color: #f59e0b;
+}
+
+.worker-chip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #16a34a;
+}
+
+.worker-chip-btn.has-offline .worker-chip-icon {
+  color: #d97706;
+}
+
+.worker-chip-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full, 9999px);
+  background: #22c55e;
+  animation: pulse-glow 2s infinite;
+}
+
+.worker-chip-btn.has-offline .worker-chip-status-dot {
+  background: #f59e0b;
+  animation: pulse-glow-warn 2s infinite;
+}
+
+.worker-chip-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #166534;
+}
+
+.worker-chip-btn.has-offline .worker-chip-label {
+  color: #92400e;
+}
+
+.worker-chip-count {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #15803d;
+}
+
+.worker-chip-btn.has-offline .worker-chip-count {
+  color: #b45309;
+}
+
+.worker-chip-action-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #16a34a;
+  background: #ffffff;
+  border: 1px solid #bbf7d0;
+  padding: 2px 7px;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.worker-chip-btn.has-offline .worker-chip-action-pill {
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+/* 上传流水复合胶囊 */
+.scope-island-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  background: #ffffff;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: var(--radius-sm, 8px);
+  padding: 0 4px 0 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: all 0.15s ease;
+}
+
+.scope-island-pill:hover {
+  border-color: rgba(40, 153, 90, 0.4);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.scope-island-view-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0 6px 0 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.scope-icon {
+  width: 14px;
+  height: 14px;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.scope-island-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.scope-island-count {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.scope-island-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border, rgba(0, 0, 0, 0.1));
+  margin: 0 4px;
+}
+
+.scope-island-toggle-btn {
+  border: 0;
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.scope-island-toggle-btn:hover {
+  background: #f1f5f9;
+  color: var(--text);
+}
+
+/* 偏好设置按钮 */
+.settings-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  background: #ffffff;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: var(--radius-sm, 8px);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.settings-pill-btn:hover {
+  background: #f8fafc;
+  border-color: rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.settings-icon {
+  color: #64748b;
+}
+
+.dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--warn, #d97706);
+}
+
+@media (max-width: 860px) {
+  .work-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .header-stats {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    overflow-x: auto;
+  }
+}

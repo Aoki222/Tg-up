@@ -7,13 +7,12 @@ from fastapi import Header, HTTPException, Request
 from ..config import API_TOKEN
 
 
-def api_token_ok(authorization: str | None, access_token: str | None) -> bool:
-    """Bearer 头或 access_token 查询参数任一匹配即可。EventSource 不能带头，所以要查询参数。"""
+def api_token_ok(authorization: str | None, access_token: str | None = None) -> bool:
+    """只认 Authorization: Bearer。查询参数里的长期令牌不再放行。"""
+    del access_token
     if not API_TOKEN:
         return True
-    if authorization == f"Bearer {API_TOKEN}":
-        return True
-    return bool(access_token) and access_token == API_TOKEN
+    return authorization == f"Bearer {API_TOKEN}"
 
 
 async def require_token(
