@@ -8,15 +8,18 @@ FloodWait 中的 worker 通过 is_accepting() 跳过，避免限流连坐。
 """
 
 import asyncio
+from dataclasses import replace
 
 from ...adapters.task_store import TaskRepository
 from ...domain.settings_hub import SettingsHub
-from ...domain.task import task_from_row
+from ...domain.task import TaskStatus, task_from_row
 from ...logger import get_logger
 
 logger = get_logger(__name__)
 
 COALESCE_SECONDS = 0.05
+# 传输超时先由 Worker 自己结束。数据库回收再晚一分钟，避免和同一次超时抢着改行。
+LEASE_GRACE_SECONDS = 60
 
 
 def pick_least_loaded(loads: dict[str, int], concurrency: int, rr: int) -> tuple[str | None, int]:
@@ -115,16 +118,24 @@ class UploadScheduler:
         free_total = sum(max(0, settings.concurrency - load) for load in loads.values())
         if free_total <= 0:
             return
-        for row in await self.task_repository.fetch_pending_tasks(free_total):
+        order = getattr(settings, "schedule_order", "oldest")
+        for row in await self.task_repository.fetch_pending_tasks(free_total, order=order):
             chosen, self._rr = pick_least_loaded(loads, settings.concurrency, self._rr)
             if chosen is None:
                 return
             worker = self.worker_map.get(chosen)
             if worker is None or not worker.is_accepting():
                 continue
-            if await self.task_repository.claim_task(row["id"], chosen):
+            token = await self.task_repository.claim_task(row["id"], chosen)
+            if token:
                 policy = self.settings_hub.policy_for_row(row)
-                await worker.enqueue_task(task_from_row(row, policy))
+                task = replace(
+                    task_from_row(row, policy),
+                    claim_token=token,
+                    assigned_worker=chosen,
+                    status=TaskStatus.ASSIGNED,
+                )
+                await worker.enqueue_task(task)
                 loads[chosen] = loads.get(chosen, 0) + 1
 
     async def check_timeout_loop(self) -> None:
@@ -134,11 +145,15 @@ class UploadScheduler:
                 await asyncio.sleep(60)
                 settings = self.settings_hub.get()
                 recovered = await self.task_repository.recover_timed_out_tasks(
-                    uploading_timeout_seconds=settings.upload_timeout_seconds,
+                    uploading_timeout_seconds=settings.upload_timeout_seconds + LEASE_GRACE_SECONDS,
                     assigned_timeout_seconds=settings.assigned_timeout_seconds,
                 )
                 if recovered:
                     logger.warning("已回收超时任务: %s", recovered)
+                    for worker in list(self.worker_map.values()):
+                        cancel = getattr(worker, "cancel_inflight", None)
+                        if cancel is not None:
+                            cancel(recovered)
                 self.request_reschedule()
         except asyncio.CancelledError:
             pass

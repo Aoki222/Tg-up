@@ -31,6 +31,8 @@ export interface UploadProgress {
   speed_bps: number;
   /** 剩余秒数。未知为 -1 */
   eta_seconds: number;
+  part_index?: number | null;
+  part_count?: number | null;
 }
 
 /** 后端任务生命周期。看板：封面 / 等待 / 上传中 / 过大 / 失败 */
@@ -51,6 +53,8 @@ export interface BoardTask {
   folder_name: string | null;
   status: BoardStatus;
   assigned_worker: string | null;
+  platform: string;
+  dest_id: string;
   retry_count: number;
   max_retries: number;
   error: string | null;
@@ -149,8 +153,8 @@ export interface FolderRouteItem {
   chat_id: number;
   topic_enabled: boolean | null;
   enabled: boolean;
-  platform: string;
-  dest_id: string;
+  platform?: string;
+  dest_id?: string;
   /** null 跟随上一级。空字符串表示这个目录不要说明。 */
   caption_template: string | null;
   /** null 跟随上一级。 */
@@ -220,6 +224,10 @@ export interface FsNode {
 
 /** upload.toml 对应的完整配置负载 */
 export interface UploadConfig {
+  /** 服务端配置版本。保存时原样带回，不一致则 409。 */
+  revision?: number;
+  /** oldest 按发现顺序。smallest 为设置里打开的小文件优先。 */
+  schedule_order?: "smallest" | "oldest";
   /** 全局自动监控总开关（L1） */
   watch_enabled?: boolean;
   /** Telegram 目标频道或群组 chat_id（通常以 -100 开头） */

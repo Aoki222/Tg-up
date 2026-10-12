@@ -49,12 +49,12 @@ from ..adapters.task_store import TaskRepository
 from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
 from ..api.workers import snapshot_workers
-from ..config import API_HOST, API_PORT, PROJECT_DIR, SESSION_DIR
+from ..config import API_HOST, API_PORT, API_TOKEN, PROJECT_DIR, SESSION_DIR
 from ..database.connection import close_pool
 from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
 from ..domain.telegram_credentials import TelegramCredentials, load_telegram_credentials
-from ..domain.slices import user_dispatch_blocked
+from ..domain.slices import phase_blocks_user
 from ..domain.task import task_from_row
 from ..logger import get_logger
 from ..utils.sender_pool import SenderPool
@@ -108,6 +108,10 @@ class UploaderApplication:
         不把 TaskGroup 取消当作第一退出路径，避免把在途 send_file 直接掐掉。
         """
         logger.info("正在启动")
+        if not API_TOKEN and API_HOST.strip().lower() not in {"127.0.0.1", "localhost", "::1"}:
+            raise RuntimeError(
+                "API_TOKEN 为空时只能监听本机。请设置 API_TOKEN，或把 API_HOST 改为 127.0.0.1"
+            )
         self._install_stop_signals()
         await init_db()
         await self._channel_cache.load_from_db()
@@ -130,7 +134,7 @@ class UploaderApplication:
         self._after_upload = after_upload
         # 自动按文件夹建话题：谁先连上就用谁。管理员机器人也可以建。
         topic_creator = TopicCreator(session_pool.any_client, repository)
-        file_queue: asyncio.Queue[Path | None] = asyncio.Queue()
+        file_queue: asyncio.Queue[Path | None] = asyncio.Queue(maxsize=200)
         slicer = SliceService(repository, settings_hub, scheduler, after_upload, PROJECT_DIR)
         self._slicer = slicer
         await slicer.recover()
@@ -414,7 +418,7 @@ class UploaderApplication:
             return "not_found"
         if str(row.get("status")) != "oversized":
             return "not_oversized"
-        if user_dispatch_blocked(row.get("error_msg")) or await repository.has_slice_plan(task_id):
+        if phase_blocks_user(row.get("slice_phase"), row.get("error_msg")) or await repository.has_slice_plan(task_id):
             return "slicing"
         file_path = str(row.get("file_path") or "")
         if not file_path or not Path(file_path).exists():
@@ -431,9 +435,11 @@ class UploaderApplication:
             candidates,
             key=lambda worker: (int(counts.get(worker.worker_name, 0)), worker.worker_name),
         )
-        if not await repository.claim_oversized(task_id, chosen.worker_name):
+        token = await repository.claim_oversized(task_id, chosen.worker_name)
+        if not token:
             return "not_oversized"
         fresh = await repository.get_task_by_id(task_id) or row
+        fresh["claim_token"] = token
         try:
             await chosen.enqueue_task(task_from_row(fresh, settings_hub.policy_for_row(fresh)))
         except Exception:

@@ -10,7 +10,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -21,6 +20,7 @@ from ..domain.settings_hub import SettingsHub
 from ..domain.telegram_credentials import load_telegram_credentials
 from ..logger import get_logger
 from .app_auth import api_token_ok, require_token
+from .stream_ticket import StreamTickets
 from .models import ChatIdBody, FailedIdsBody, IdentityPayload, OversizedIdsBody, SliceBody
 from .present import _board_item, _part_number, _resolve_dest_name, _sse
 from .routes import (
@@ -99,36 +99,36 @@ def create_api(
     app.state.topic_admin = topic_admin
     app.state.ingestor = ingestor
     app.state.apply_credentials = None
+    app.state.stream_tickets = StreamTickets()
     initial = load_telegram_credentials(config.PROJECT_DIR)
     app.state.session_login = SessionLoginService(
         config.SESSION_DIR, initial.api_id, initial.api_hash, config.TELEGRAM_PROXY
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     @app.middleware("http")
     async def protect_api(request: Request, call_next):
-        """除探活和版本外，/api/* 在配置了 API_TOKEN 时都要令牌。OPTIONS 放行给 CORS。"""
+        """除探活和版本外，/api/* 在配置了 API_TOKEN 时都要令牌。
+
+        进度流可以用短时票据。长期令牌只放在 Authorization 头里。
+        """
         path = request.url.path
+        if request.method == "OPTIONS" or not path.startswith("/api/"):
+            return await call_next(request)
+        if path in ("/api/health", "/api/system/version"):
+            return await call_next(request)
+        if api_token_ok(request.headers.get("authorization")):
+            return await call_next(request)
+        tickets = getattr(request.app.state, "stream_tickets", None)
         if (
-            request.method != "OPTIONS"
-            and path.startswith("/api/")
-            and path not in ("/api/health", "/api/system/version")
-            and not api_token_ok(
-                request.headers.get("authorization"),
-                request.query_params.get("access_token"),
-            )
+            path == "/api/progress/stream"
+            and tickets is not None
+            and tickets.valid(request.query_params.get("ticket"))
         ):
-            return JSONResponse(
-                {"detail": "需要 Authorization: Bearer <API_TOKEN>"},
-                status_code=401,
-            )
-        return await call_next(request)
+            return await call_next(request)
+        return JSONResponse(
+            {"detail": "需要 Authorization: Bearer <API_TOKEN>"},
+            status_code=401,
+        )
 
     register_system(app)
     register_workers(app)
@@ -136,6 +136,15 @@ def create_api(
     register_chats(app)
     register_settings(app)
     register_tasks(app)
+
+    @app.api_route(
+        "/api/{rest:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+    )
+    async def unknown_api(rest: str) -> JSONResponse:
+        """未知 /api 返回 JSON。不能落到前端的 index.html。"""
+        del rest
+        return JSONResponse({"detail": "未找到接口"}, status_code=404)
 
     if DIST_DIR.is_dir():
         assets = DIST_DIR / "assets"
@@ -149,7 +158,9 @@ def create_api(
 
         # 前端路由都回到 index.html，由 Vue 再分发。
         @app.get("/{path:path}")
-        async def spa_fallback(path: str) -> FileResponse:
+        async def spa_fallback(path: str):
+            if path == "api" or path.startswith("api/"):
+                return JSONResponse({"detail": "未找到接口"}, status_code=404)
             return FileResponse(index_html)
 
     return app

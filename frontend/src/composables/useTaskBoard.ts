@@ -1,10 +1,11 @@
 /**
- * 看板数据：1 秒轮询 /api/tasks 决定列归属和计数。
+ * 看板数据：约 4 秒轮询进行中的任务，失败和过大另按页拉取。
  * 字节、百分比、速度只跟 SSE。轮询带回的更旧进度不覆盖界面。
+ * 切片换段看 part_index，不解析中文说明。
  */
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
-import { fetchBoardTasks, openProgressStream } from "../api";
-import { isAlbumProgress } from "../format";
+import { fetchBoardTasks, fetchStatusPage, openProgressStream } from "../api";
+import { mergeLiveBytes } from "../boardProgress";
 import type { BoardCounts, BoardTask, UploadProgress } from "../types";
 
 const EMPTY_COUNTS: BoardCounts = {
@@ -21,12 +22,18 @@ const EMPTY_COUNTS: BoardCounts = {
 export function useTaskBoard() {
   const items = ref<BoardTask[]>([]);
   const counts = ref<BoardCounts>({ ...EMPTY_COUNTS });
+  const failedPage = ref(1);
+  const oversizedPage = ref(1);
+  const failedTotal = ref(0);
+  const oversizedTotal = ref(0);
+  const pageSize = 50;
   const ghosts = new Map<number, { task: BoardTask; hideAt: number }>();
 
   let pollTimer = 0;
   let ghostTimer = 0;
   let source: EventSource | null = null;
   let boardFlight = false;
+  let refreshAgain = false;
   let live = false;
 
   const inFlightCount = computed(
@@ -63,6 +70,8 @@ export function useTaskBoard() {
       folder_name: null,
       status: failed ? "failed" : "uploading",
       assigned_worker: progress.worker_name,
+      platform: "telegram",
+      dest_id: "",
       retry_count: 0,
       max_retries: 3,
       error: failed ? progress.message : null,
@@ -78,29 +87,13 @@ export function useTaskBoard() {
       sliceable: false,
       slice_phase: "idle",
       slice_min_parts: null,
-      part_index: null,
-      part_count: null,
+      part_index: progress.part_index ?? null,
+      part_count: progress.part_count ?? null,
     };
-  }
-
-  function sliceLabel(text: string): string | null {
-    const matched = text.match(/第 \d+\/\d+ 段/);
-    return matched ? matched[0] : null;
   }
 
   function keepOversized(existing: BoardTask): boolean {
     return existing.status === "oversized";
-  }
-
-  function hasByteProgress(task: BoardTask): boolean {
-    return task.total > 32 && !isAlbumProgress(task.current, task.total) && task.current > 0;
-  }
-
-  function keepByteProgress(existing: BoardTask, current: number, total: number): boolean {
-    // 文件个数和更旧的字节数不能把已经显示的字节进度打回去。
-    if (!hasByteProgress(existing)) return false;
-    if (isAlbumProgress(current, total)) return true;
-    return current < existing.current;
   }
 
   function mergePolled(incoming: BoardTask): BoardTask {
@@ -177,53 +170,33 @@ export function useTaskBoard() {
       return;
     }
 
-    const nextStatus = keepOversized(existing)
-      ? existing.status
-      : progress.stage === "uploading"
-        ? "uploading"
-        : progress.stage === "flood_wait"
-          ? "pending"
-          : existing.status;
-
-    // 仍在上传中时，更旧的字节或相册回调不能把条打回去。
-    // 任务已经回到等待后再开始，新的 0 是另一次上传，要接受。
-    // 切片换到下一段时，字节从这段的开头重新计。
-    const previousPart = sliceLabel(existing.message);
-    const nextPart = sliceLabel(progress.message);
-    const partChanged = previousPart !== null && nextPart !== null && previousPart !== nextPart;
-    const restart =
-      progress.current <= 0 && existing.status !== "uploading" && existing.status !== "assigned";
-    if (keepByteProgress(existing, progress.current, progress.total) && !restart && !partChanged) {
-      upsert({
-        ...existing,
-        status: nextStatus,
-        assigned_worker: progress.worker_name || existing.assigned_worker,
-        message: progress.message || existing.message,
-      });
-      return;
-    }
-
-    upsert({
-      ...existing,
-      status: nextStatus,
-      percent: progress.percent,
-      current: progress.current,
-      total: progress.total,
-      speed_bps: progress.speed_bps ?? 0,
-      eta_seconds: progress.eta_seconds ?? -1,
-      stage: progress.stage,
-      message: progress.message,
-      assigned_worker: progress.worker_name || existing.assigned_worker,
-    });
+    upsert(mergeLiveBytes(existing, progress));
   }
 
   async function refresh(): Promise<void> {
-    // 上一轮还没回来就跳过本次，避免 1 秒定时器叠出并发请求。
-    if (boardFlight) return;
+    // 上一轮还没回来就记一笔，结束后用最新页码再拉一次。
+    if (boardFlight) {
+      refreshAgain = true;
+      return;
+    }
     boardFlight = true;
+    const failedAt = failedPage.value;
+    const oversizedAt = oversizedPage.value;
     try {
-      const data = await fetchBoardTasks();
-      const byId = new Map(data.items.map((item) => [item.id, mergePolled(item)]));
+      const [data, failed, oversized] = await Promise.all([
+        fetchBoardTasks(),
+        fetchStatusPage("failed", failedAt, pageSize),
+        fetchStatusPage("oversized", oversizedAt, pageSize),
+      ]);
+      const failedPages = Math.max(1, Math.ceil(failed.total / pageSize));
+      const oversizedPages = Math.max(1, Math.ceil(oversized.total / pageSize));
+      if (failedPage.value > failedPages) failedPage.value = failedPages;
+      if (oversizedPage.value > oversizedPages) oversizedPage.value = oversizedPages;
+      if (failedPage.value !== failedAt || oversizedPage.value !== oversizedAt) return;
+      failedTotal.value = failed.total;
+      oversizedTotal.value = oversized.total;
+      const combined = [...data.items, ...failed.items, ...oversized.items];
+      const byId = new Map(combined.map((item) => [item.id, mergePolled(item)]));
       const now = Date.now();
       for (const [id, ghost] of [...ghosts.entries()]) {
         if (now >= ghost.hideAt || byId.has(id)) {
@@ -238,6 +211,10 @@ export function useTaskBoard() {
       // 保留上一帧，避免轮询闪断清空看板
     } finally {
       boardFlight = false;
+      if (refreshAgain || failedPage.value !== failedAt || oversizedPage.value !== oversizedAt) {
+        refreshAgain = false;
+        void refresh();
+      }
     }
   }
 
@@ -263,10 +240,16 @@ export function useTaskBoard() {
     if (live) return;
     live = true;
     void refresh();
-    source = openProgressStream(applyProgress);
+    void openProgressStream(applyProgress).then((opened) => {
+      if (!live) {
+        opened.close();
+        return;
+      }
+      source = opened;
+    });
     pollTimer = window.setInterval(() => {
       void refresh();
-    }, 1000);
+    }, 4000);
     if (ghosts.size > 0) scheduleGhostSweep();
   }
 
@@ -286,5 +269,29 @@ export function useTaskBoard() {
   onDeactivated(stop);
   onUnmounted(stop);
 
-  return { items, counts, inFlightCount, queueCount, successToday, successTotal };
+  function setFailedPage(page: number): void {
+    failedPage.value = Math.max(1, page);
+    void refresh();
+  }
+
+  function setOversizedPage(page: number): void {
+    oversizedPage.value = Math.max(1, page);
+    void refresh();
+  }
+
+  return {
+    items,
+    counts,
+    inFlightCount,
+    queueCount,
+    successToday,
+    successTotal,
+    failedPage,
+    oversizedPage,
+    failedTotal,
+    oversizedTotal,
+    pageSize,
+    setFailedPage,
+    setOversizedPage,
+  };
 }

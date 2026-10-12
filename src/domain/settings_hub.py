@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import tomllib
 from pathlib import Path
 
@@ -20,7 +21,20 @@ from .upload_settings import ChatAlias, DriveFolder, FolderRoute, ObserverRoot, 
 
 logger = get_logger(__name__)
 
+
+class SettingsConflict(RuntimeError):
+    """客户端拿着旧 revision 保存，服务端已经有更新的配置。"""
+
 _DEFAULT_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v")
+
+
+def _topic_enabled_for_ui(route) -> bool | None:
+    """界面仍读 topic_enabled。文件里只留 topic_mode 时，由模式推导。"""
+    if route.topic_mode == "off":
+        return False
+    if route.topic_mode in {"auto", "fixed"}:
+        return True
+    return route.topic_enabled
 
 
 def _rel_path(project_dir: Path, path: Path) -> str:
@@ -63,6 +77,7 @@ def render_upload_toml(payload: dict) -> str:
         f"topic_creation_enabled = {topic}\n"
         f"after_success = {_toml_string(str(payload.get('after_success') or 'keep'))}\n"
         f"auto_slice = {'true' if payload.get('auto_slice') else 'false'}\n"
+        f"schedule_order = {_toml_string('smallest' if payload.get('schedule_order') == 'smallest' else 'oldest')}\n"
         "concurrency = 1\n"
         f"max_retries = {max(1, int(payload.get('max_retries', 3)))}\n"
         f"upload_timeout_seconds = {max(1, int(payload.get('upload_timeout_seconds', 1200)))}\n"
@@ -113,12 +128,12 @@ def _render_routes(payload: dict) -> str:
             f"dest_id = {_toml_string(dest_id)}\n"
             f"chat_id = {chat_id}\n"
         )
-        topic = item.get("topic_enabled", None)
-        if topic is True:
-            block += "topic_enabled = true\n"
-        elif topic is False:
-            block += "topic_enabled = false\n"
         topic_mode = item.get("topic_mode", None)
+        if topic_mode not in {"off", "auto", "fixed"}:
+            if item.get("topic_enabled") is True:
+                topic_mode = "auto"
+            elif item.get("topic_enabled") is False:
+                topic_mode = "off"
         if topic_mode in {"off", "auto", "fixed"}:
             block += f"topic_mode = {_toml_string(str(topic_mode))}\n"
         topic_id = item.get("topic_id", None)
@@ -381,6 +396,14 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
             topic_id = int(topic_id_raw) if topic_id_raw not in (None, "") else None
         except (TypeError, ValueError):
             topic_id = None
+        if topic_mode is None and topic_enabled is True:
+            topic_mode = "auto"
+        elif topic_mode is None and topic_enabled is False:
+            topic_mode = "off"
+        if topic_mode == "off":
+            topic_enabled = False
+        elif topic_mode in {"auto", "fixed"}:
+            topic_enabled = True
         if topic_mode != "fixed":
             topic_id = None
         preview_raw = item.get("preview", None)
@@ -525,6 +548,7 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         chats=_as_chats(data),
         drive_folders=_as_drive_folders(data),
         auto_slice=_as_bool(data.get("auto_slice"), False),
+        schedule_order="smallest" if str(data.get("schedule_order") or "") == "smallest" else "oldest",
     )
 
 
@@ -562,7 +586,10 @@ class SettingsHub:
         self.config_path = config_path
         self.project_dir = project_dir
         self._settings = load_upload_settings(config_path, project_dir)
-        self._mtime = config_path.stat().st_mtime
+        stat = config_path.stat()
+        self._mtime = stat.st_mtime
+        self._revision = int(stat.st_mtime_ns)
+        self._lock = threading.Lock()
         self._policies: dict[int, TaskPolicy] = {}
 
     def get(self) -> UploadSettings:
@@ -570,6 +597,10 @@ class SettingsHub:
 
     def public_dict(self) -> dict:
         """给前端的可编辑字段。监听目录一律返回绝对路径及是否存在。"""
+        with self._lock:
+            return self._snapshot()
+
+    def _snapshot(self) -> dict:
         settings = self._settings
         observer_infos = [inspect_observer_path(path) for path in settings.observer_paths]
         observer_roots_info = [
@@ -580,6 +611,8 @@ class SettingsHub:
             for root in settings.observer_roots
         ]
         return {
+            "revision": self._revision,
+            "schedule_order": settings.schedule_order,
             "chat_id": settings.chat_id,
             "watch_enabled": settings.watch_enabled,
             "observer_paths": [item["path"] for item in observer_infos],
@@ -603,7 +636,7 @@ class SettingsHub:
                     "name": route.name,
                     "path": str(route.path),
                     "chat_id": route.chat_id,
-                    "topic_enabled": route.topic_enabled,
+                    "topic_enabled": _topic_enabled_for_ui(route),
                     "enabled": route.enabled,
                     "platform": route.platform,
                     "dest_id": route.dest_id or (str(route.chat_id) if route.chat_id else ""),
@@ -625,7 +658,21 @@ class SettingsHub:
             ],
         }
 
-    def save_from_payload(self, payload: dict) -> dict:
+    def save_from_payload(self, payload: dict, expected_revision: int | None = None) -> dict:
+        with self._lock:
+            if expected_revision is not None and int(expected_revision) != self._revision:
+                raise SettingsConflict("配置已在别处修改，请重新加载后再保存")
+            return self._write(payload)
+
+    def mutate(self, mutator) -> dict | None:
+        """在同一把锁里读出当前配置、改一份、再写回。返回 None 表示调用方取消了写入。"""
+        with self._lock:
+            current = self._snapshot()
+            if mutator(current) is False:
+                return None
+            return self._write(current)
+
+    def _write(self, payload: dict) -> dict:
         # 统一以 observer_roots 为唯一定义源
         raw_roots = payload.get("observer_roots")
         if isinstance(raw_roots, list):
@@ -654,8 +701,10 @@ class SettingsHub:
         except OSError:
             shutil.copy2(temp_path, self.config_path)
             temp_path.unlink(missing_ok=True)
+        stat = self.config_path.stat()
         self._settings = loaded
-        self._mtime = self.config_path.stat().st_mtime
+        self._mtime = stat.st_mtime
+        self._revision = int(stat.st_mtime_ns)
         logger.info(
             "已从 API 写入上传配置: chat_id=%s preview=%s after_success=%s concurrency=%s",
             loaded.chat_id,
@@ -663,7 +712,7 @@ class SettingsHub:
             loaded.after_success,
             loaded.concurrency,
         )
-        return self.public_dict()
+        return self._snapshot()
 
     def policy_for_new_task(self, need_preview: bool) -> TaskPolicy:
         settings = self._settings
@@ -712,6 +761,10 @@ class SettingsHub:
             return False
         self._settings = loaded
         self._mtime = mtime
+        try:
+            self._revision = int(self.config_path.stat().st_mtime_ns)
+        except OSError:
+            self._revision += 1
         logger.info(
             "已热更新上传配置: chat_id=%s preview=%s after_success=%s concurrency=%s",
             loaded.chat_id,

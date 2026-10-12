@@ -13,7 +13,6 @@
 
 import { computed, ref, watch } from "vue";
 import { ElMessage, ElNotification } from "element-plus";
-import { useQueryClient } from "@tanstack/vue-query";
 import {
   dispatchManualTasks,
   fetchFsNodes,
@@ -37,7 +36,7 @@ const emit = defineEmits<{
   dispatched: [result: ManualDispatchResult];
 }>();
 
-const queryClient = useQueryClient();
+const treeEpoch = ref(0);
 
 // ── 响应式状态 ─────────────────────────────────────────────────
 const loading = ref(false);
@@ -140,10 +139,7 @@ async function loadFsTreeNode(node: any, resolve: (data: FsNode[]) => void): Pro
 
   const currentPath = (node.data as FsNode).path;
   try {
-    const items = await queryClient.fetchQuery({
-      queryKey: ["fs-nodes", currentPath],
-      queryFn: () => fetchFsNodes(currentPath),
-    });
+    const items = await fetchFsNodes(currentPath);
     resolve(items);
   } catch {
     resolve([]);
@@ -179,11 +175,7 @@ function clearAllSelected(): void {
 }
 
 async function refreshTree(): Promise<void> {
-  await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
-  if (treeRef.value?.store) {
-    treeRef.value.store.root.loaded = false;
-    treeRef.value.store.root.loadChildren();
-  }
+  treeEpoch.value += 1;
   clearAllSelected();
   ElMessage.success("目录结构已刷新");
 }
@@ -262,7 +254,7 @@ async function handleDispatch(): Promise<void> {
       });
     }
 
-    await queryClient.invalidateQueries({ queryKey: ["fs-nodes"] });
+    treeEpoch.value += 1;
     emit("dispatched", res);
     closeModal();
   } catch (err) {
@@ -334,6 +326,7 @@ async function handleDispatch(): Promise<void> {
 
           <div class="tree-container">
             <el-tree
+              :key="treeEpoch"
               ref="treeRef"
               lazy
               show-checkbox

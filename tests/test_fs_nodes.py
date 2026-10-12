@@ -150,3 +150,30 @@ async def test_fs_nodes_api_path_traversal_forbidden(tmp_path: Path, monkeypatch
     with pytest.raises(HTTPException) as exc2:
         await endpoint(path=(download / ".." / "secret").as_posix())
     assert exc2.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_fs_nodes_hides_symlink_that_leaves_the_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    download = tmp_path / "download"
+    download.mkdir()
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "hidden.txt").write_text("no", encoding="utf-8")
+    link = download / "escape"
+    try:
+        link.symlink_to(secret, target_is_directory=True)
+    except OSError:
+        pytest.skip("当前环境不能创建符号链接")
+
+    config = tmp_path / "upload.toml"
+    config.write_text(
+        f'chat_id = -100\nobserver_paths = ["{download.as_posix()}"]\npreview = "off"\n',
+        encoding="utf-8",
+    )
+    hub = SettingsHub(config, tmp_path)
+    app = create_api(progress_hub=ProgressHub(), settings_hub=hub)
+    endpoint = next(r.endpoint for r in app.routes if getattr(r, "path", None) == "/api/fs/nodes")
+    data = await endpoint(path=download.as_posix())
+    names = {item["name"] for item in data["items"]}
+    assert "escape" not in names

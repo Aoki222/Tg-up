@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     part_index      INTEGER,
     part_count      INTEGER,
     slice_parts     INTEGER,
+    claim_token     TEXT,
+    slice_phase     TEXT,
     
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     assigned_at     DATETIME,
@@ -180,13 +182,36 @@ async def init_db() -> None:
         await _ensure_column(db, "upload_tasks", "part_index", "INTEGER")
         await _ensure_column(db, "upload_tasks", "part_count", "INTEGER")
         await _ensure_column(db, "upload_tasks", "slice_parts", "INTEGER")
+        await _ensure_column(db, "upload_tasks", "claim_token", "TEXT")
+        await _ensure_column(db, "upload_tasks", "slice_phase", "TEXT")
         await _ensure_column(db, "telegram_channels", "forum", "INTEGER NOT NULL DEFAULT 0")
+        await _backfill_slice_phase(db)
         await _backfill_destination_columns(db)
         await _allow_oversized_status(db)
         await _ensure_upload_task_indexes(db)
         await _park_existing_oversized(db)
         await db.commit()
     logger.info("数据库初始化完成")
+
+
+async def _backfill_slice_phase(db) -> None:
+    """旧的过大行只在说明文字里记阶段。补到 slice_phase，之后认领不再解析中文。"""
+    from ..domain.slices import slice_phase
+
+    async with db.execute("PRAGMA table_info(upload_tasks)") as cursor:
+        names = {row[1] for row in await cursor.fetchall()}
+    if "slice_phase" not in names:
+        return
+    async with db.execute(
+        """SELECT id, error_msg FROM upload_tasks
+           WHERE status = 'oversized' AND (slice_phase IS NULL OR TRIM(slice_phase) = '')"""
+    ) as cursor:
+        rows = await cursor.fetchall()
+    for row in rows:
+        await db.execute(
+            "UPDATE upload_tasks SET slice_phase = ? WHERE id = ?",
+            (slice_phase(row[1]), int(row[0])),
+        )
 
 
 async def _ensure_column(db, table: str, column: str, ddl: str) -> None:

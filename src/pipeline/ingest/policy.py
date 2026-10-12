@@ -20,6 +20,28 @@ from .filters import check_transient_file
 _PREVIEWABLE_SUFFIXES = frozenset({".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".webm", ".flv", ".ts", ".mpeg", ".mpg"})
 
 
+def watch_roots(settings: UploadSettings) -> tuple[Path, ...]:
+    """手动投递和目录浏览允许到达的根。暂停的根也算，避免只能靠自动监听。"""
+    if settings.observer_roots:
+        return tuple(root.path for root in settings.observer_roots)
+    return settings.observer_paths
+
+
+def path_is_inside_roots(path: Path, roots: tuple[Path, ...] | list[Path]) -> bool:
+    """resolve 之后仍在某个根里面。指向根外的符号链接不算。"""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            if resolved.is_relative_to(root.resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 @dataclass(frozen=True)
 class IngestDecision:
     need_single: bool

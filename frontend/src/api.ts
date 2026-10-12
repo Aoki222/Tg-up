@@ -6,12 +6,13 @@
  * 1. 基于 Axios 统一封装网络客户端实例 `apiClient`，预置 15 秒请求超时；
  * 2. 请求拦截器：自动读取 localStorage 中的 API Token 并注入 `Authorization: Bearer <token>`；
  * 3. 响应拦截器：全局捕获 401 Unauthorized 状态码并弹出精准提示；自动解包 FastAPI 的 `detail` 错误文本；
- * 4. SSE：`EventSource` 不能带头，有 Token 时走 `/api/progress/stream?access_token=`。
+ * 4. SSE：`EventSource` 不能带头。有 Token 时先换短时票据，再打开 `/api/progress/stream?ticket=`。
  */
 
 import axios, { type AxiosError } from "axios";
 import { ElMessage } from "element-plus";
 import type {
+  BoardTask,
   BoardSnapshot,
   FolderRouteItem,
   FsNode,
@@ -139,7 +140,7 @@ export async function deleteWorker(name: string): Promise<void> {
 /**
  * 内部辅助函数：规范化配置中的监听目录结构，提取路径字符串数组
  */
-function normalizeSettings(data: UploadConfig): UploadConfig {
+export function normalizeSettings(data: UploadConfig): UploadConfig {
   const infos: ObserverPathInfo[] = data.observer_path_infos ?? [];
   const paths = infos.length ? infos.map((item) => item.path) : data.observer_paths;
   return {
@@ -166,6 +167,8 @@ function normalizeSettings(data: UploadConfig): UploadConfig {
     })),
     drive_folders: data.drive_folders ?? [],
     auto_slice: data.auto_slice === true,
+    revision: data.revision,
+    schedule_order: data.schedule_order === "smallest" ? "smallest" : "oldest",
   };
 }
 
@@ -387,6 +390,21 @@ export async function submitSessionPassword(
 /**
  * 拉取看板任务快照（进行中全量 + 最近失败），上传中叠实时进度
  */
+export async function deleteRoute(path: string): Promise<void> {
+  await apiClient.patch("/api/settings/routes", { path, action: "delete" });
+}
+
+export async function fetchStatusPage(
+  status: "failed" | "oversized",
+  page: number,
+  pageSize = 50,
+): Promise<{ items: BoardTask[]; total: number; page: number; page_size: number }> {
+  const res = await apiClient.get(`/api/tasks/${status}`, {
+    params: { page, page_size: pageSize },
+  });
+  return res.data;
+}
+
 export async function fetchBoardTasks(): Promise<BoardSnapshot> {
   const res = await apiClient.get<BoardSnapshot>("/api/tasks");
   return res.data;
@@ -520,14 +538,15 @@ export async function fetchSuccessPage(
  * @param onError 网络闪断或长连接异常时的回调处理
  * @returns 原生 EventSource 实例（调用方负责在组件卸载时 close）
  */
-export function openProgressStream(
+export async function openProgressStream(
   onEvent: (progress: UploadProgress) => void,
   onError?: () => void,
-): EventSource {
-  const token = getApiToken();
-  const url = token
-    ? `/api/progress/stream?access_token=${encodeURIComponent(token)}`
-    : "/api/progress/stream";
+): Promise<EventSource> {
+  let url = "/api/progress/stream";
+  if (getApiToken()) {
+    const ticket = await apiClient.post<{ ticket: string }>("/api/progress/ticket");
+    url = `/api/progress/stream?ticket=${encodeURIComponent(ticket.data.ticket)}`;
+  }
   const source = new EventSource(url);
 
   source.addEventListener("progress", (event: Event) => {

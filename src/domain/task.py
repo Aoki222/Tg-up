@@ -136,6 +136,7 @@ class Task:
     parent_id: int | None = None
     part_index: int | None = None
     part_count: int | None = None
+    claim_token: str | None = None
 
     def merge_row(self, row: dict) -> Task:
         """用数据库最新行刷新可变字段，保留入库时拍下的 policy。"""
@@ -160,6 +161,7 @@ class Task:
             parent_id=_optional_int(row.get("parent_id")),
             part_index=_optional_int(row.get("part_index")),
             part_count=_optional_int(row.get("part_count")),
+            claim_token=str(row["claim_token"]) if row.get("claim_token") else None,
         )
 
 
@@ -187,6 +189,7 @@ def task_from_row(row: dict, policy: TaskPolicy) -> Task:
         parent_id=_optional_int(row.get("parent_id")),
         part_index=_optional_int(row.get("part_index")),
         part_count=_optional_int(row.get("part_count")),
+        claim_token=str(row["claim_token"]) if row.get("claim_token") else None,
     )
 
 

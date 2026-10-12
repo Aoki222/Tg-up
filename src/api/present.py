@@ -53,7 +53,8 @@ def _board_item(row: dict, progress: UploadProgress | None) -> dict:
     if status == "oversized":
         sliceable = is_sliceable_video(str(row.get("file_name") or row.get("file_path") or ""))
         item["sliceable"] = sliceable
-        item["slice_phase"] = slice_phase(row.get("error_msg"))
+        stored_phase = str(row.get("slice_phase") or "").strip()
+        item["slice_phase"] = stored_phase or slice_phase(row.get("error_msg"))
         if sliceable:
             item["slice_min_parts"] = minimum_slice_parts(int(row.get("file_size") or 0))
     if progress is not None:

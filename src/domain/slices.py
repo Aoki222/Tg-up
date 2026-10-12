@@ -112,6 +112,15 @@ def msg_keyframes(count: int) -> str:
     return f"关键帧间隔太长，最多切成 {count} 段"
 
 
+ACTIVE_SLICE_PHASES = frozenset({"queued", "cutting", "released", "uploading", "failed"})
+
+
+def phase_blocks_user(phase: str | None, error: str | None = None) -> bool:
+    """切片已经开始或某一段失败时，不再整文件交给个人号。列优先，旧行才看说明。"""
+    current = (phase or "").strip() or slice_phase(error)
+    return current in ACTIVE_SLICE_PHASES
+
+
 def slice_phase(error: str | None) -> str:
     """由过大任务的 error_msg 推出卡片阶段。
 
@@ -135,7 +144,7 @@ def slice_phase(error: str | None) -> str:
 
 def user_dispatch_blocked(error: str | None) -> bool:
     """切片已经开始或某一段失败时，不再整文件交给个人号。"""
-    return slice_phase(error) in {"queued", "cutting", "released", "uploading", "failed"}
+    return phase_blocks_user(None, error)
 
 
 def exceeds_bot_limit(size: int) -> bool:

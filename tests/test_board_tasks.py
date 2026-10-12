@@ -62,8 +62,11 @@ async def test_list_board_tasks_excludes_success(tmp_path: Path) -> None:
         ids = {int(row["id"]) for row in rows}
         assert preparing in ids
         assert pending in ids
-        assert failed in ids
+        assert failed not in ids
         assert done not in ids
+        failed_rows, failed_total = await repo.list_status_page("failed", 1, 50)
+        assert failed_total == 1
+        assert int(failed_rows[0]["id"]) == failed
 
         counts = await repo.count_board_statuses()
         assert counts["preparing"] == 1
@@ -77,7 +80,7 @@ async def test_list_board_tasks_excludes_success(tmp_path: Path) -> None:
         await close_pool()
 
 
-async def test_failed_board_is_capped(tmp_path: Path) -> None:
+async def test_failed_page_keeps_the_full_count(tmp_path: Path) -> None:
     try:
         repo = await _prepare(tmp_path)
         for i in range(5):
@@ -91,8 +94,10 @@ async def test_failed_board_is_capped(tmp_path: Path) -> None:
                 max_retries=0,
             )
             await repo.mark_task_failed(task_id, 0, 0, "x")
-        rows = await repo.list_board_tasks(failed_limit=3)
-        assert len(rows) == 3
+        page, total = await repo.list_status_page("failed", 1, 2)
+        assert total == 5
+        assert len(page) == 2
+        assert await repo.list_board_tasks() == []
         assert await repo.count_board_statuses() == {
             "preparing": 0,
             "pending": 0,

@@ -23,7 +23,22 @@ import type { SkippedTask } from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
 
-const props = defineProps<{ items: BoardTask[] }>();
+const props = withDefaults(
+  defineProps<{
+    items: BoardTask[];
+    failedPage?: number;
+    oversizedPage?: number;
+    failedTotal?: number;
+    oversizedTotal?: number;
+    pageSize?: number;
+  }>(),
+  { failedPage: 1, oversizedPage: 1, pageSize: 50 },
+);
+
+const emit = defineEmits<{
+  changeFailedPage: [page: number];
+  changeOversizedPage: [page: number];
+}>();
 
 const retryingId = ref<number | null>(null);
 const dispatchingId = ref<number | null>(null);
@@ -55,11 +70,13 @@ const buckets = computed(() => {
 });
 
 const queueItems = computed(() => [...buckets.value.preparing, ...buckets.value.pending]);
+const failedColumnTotal = computed(() => props.failedTotal ?? buckets.value.failed.length);
+const oversizedColumnTotal = computed(() => props.oversizedTotal ?? buckets.value.oversized.length);
 const activeTotal = computed(
   () =>
     buckets.value.uploading.length +
-    buckets.value.oversized.length +
-    buckets.value.failed.length +
+    oversizedColumnTotal.value +
+    failedColumnTotal.value +
     queueItems.value.length,
 );
 interface SectionMeta {
@@ -103,9 +120,40 @@ const allSections = computed<SectionMeta[]>(() => [
 
 function sectionCountLabel(section: SectionMeta): string {
   if (section.key === "uploading") return `${section.items.length} 个任务并发`;
-  if (section.key === "oversized") return `${section.items.length} 个任务待裁决`;
-  if (section.key === "failed") return `${section.items.length} 个任务中断`;
+  if (section.key === "oversized") return `${oversizedColumnTotal.value} 个任务待裁决`;
+  if (section.key === "failed") return `${failedColumnTotal.value} 个任务中断`;
   return `${section.items.length} 个任务就绪`;
+}
+
+function pagerFor(key: string): { page: number; pages: number; total: number } | null {
+  if (key !== "failed" && key !== "oversized") return null;
+  const total = key === "failed" ? failedColumnTotal.value : oversizedColumnTotal.value;
+  const size = props.pageSize || 50;
+  if (total <= size) return null;
+  const page = key === "failed" ? props.failedPage || 1 : props.oversizedPage || 1;
+  return { page, pages: Math.max(1, Math.ceil(total / size)), total };
+}
+
+function pageAtStart(key: string): boolean {
+  return (pagerFor(key)?.page ?? 1) <= 1;
+}
+
+function pageAtEnd(key: string): boolean {
+  const pager = pagerFor(key);
+  return pager == null || pager.page >= pager.pages;
+}
+
+function pageLabel(key: string): string {
+  const pager = pagerFor(key);
+  if (pager == null) return "";
+  return `${pager.page} / ${pager.pages} · 共 ${pager.total}`;
+}
+
+function goPage(key: string, delta: number): void {
+  if (key !== "failed" && key !== "oversized") return;
+  const page = (key === "failed" ? props.failedPage : props.oversizedPage) || 1;
+  if (key === "failed") emit("changeFailedPage", page + delta);
+  else emit("changeOversizedPage", page + delta);
 }
 
 const streamSections = computed(() => {
@@ -131,7 +179,7 @@ async function onRetry(id: number): Promise<void> {
 async function onRetryAll(): Promise<void> {
   // 批量重试失败任务，并把缺失文件数量反馈给用户。
   closeBatch();
-  if (retryingAll.value || retryingId.value !== null || buckets.value.failed.length === 0) return;
+  if (retryingAll.value || retryingId.value !== null || failedColumnTotal.value === 0) return;
   retryingAll.value = true;
   try {
     const result = await retryAllFailedTasks();
@@ -306,7 +354,7 @@ async function onRemoveSelected(): Promise<void> {
 async function onRemoveAll(): Promise<void> {
   // 二次确认后删除全部失败记录，并保留磁盘文件。
   closeBatch();
-  if (failedBusy.value || buckets.value.failed.length === 0) return;
+  if (failedBusy.value || failedColumnTotal.value === 0) return;
   try {
     await ElMessageBox.confirm("将从数据库删除全部失败记录，本地文件不会动。", "全部清除", {
       type: "warning",
@@ -375,7 +423,7 @@ async function onRemoveOversizedSelected(): Promise<void> {
 
 async function onRemoveOversizedAll(): Promise<void> {
   closeBatch();
-  if (failedBusy.value || buckets.value.oversized.length === 0) return;
+  if (failedBusy.value || oversizedColumnTotal.value === 0) return;
   try {
     await ElMessageBox.confirm("将从数据库删除全部过大记录，本地源文件不会动。", "全部清除", {
       type: "warning",
@@ -433,7 +481,7 @@ async function onRemoveOversizedAll(): Promise<void> {
         >
           <span class="status-dot dot-oversized"></span>
           <span>过大待处理</span>
-          <span class="tab-badge badge-oversized">{{ buckets.oversized.length }}</span>
+          <span class="tab-badge badge-oversized">{{ oversizedColumnTotal }}</span>
         </button>
         <button
           type="button"
@@ -443,7 +491,7 @@ async function onRemoveOversizedAll(): Promise<void> {
         >
           <span class="status-dot dot-failed"></span>
           <span>失败重试</span>
-          <span class="tab-badge badge-failed">{{ buckets.failed.length }}</span>
+          <span class="tab-badge badge-failed">{{ failedColumnTotal }}</span>
         </button>
         <button
           type="button"
@@ -486,7 +534,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           <button
             type="button"
             class="action-btn"
-            :disabled="failedBusy || buckets.oversized.length === 0"
+            :disabled="failedBusy || oversizedColumnTotal === 0"
             @click="onSliceBatch([])"
           >
             全部切片
@@ -494,7 +542,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           <button
             type="button"
             class="action-btn"
-            :disabled="failedBusy || buckets.oversized.length === 0"
+            :disabled="failedBusy || oversizedColumnTotal === 0"
             @click="onDispatchBatch([])"
           >
             全部交给个人号
@@ -511,7 +559,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           <button
             type="button"
             class="action-btn danger"
-            :disabled="failedBusy || buckets.oversized.length === 0"
+            :disabled="failedBusy || oversizedColumnTotal === 0"
             @click="onRemoveOversizedAll"
           >
             全部清除
@@ -523,7 +571,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           <button
             type="button"
             class="action-btn danger-bg"
-            :disabled="failedBusy || buckets.failed.length === 0"
+            :disabled="failedBusy || failedColumnTotal === 0"
             @click="onRetryAll"
           >
             {{ retryingAll ? "重试中" : "全部重试" }}
@@ -540,7 +588,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           <button
             type="button"
             class="action-btn danger"
-            :disabled="failedBusy || buckets.failed.length === 0"
+            :disabled="failedBusy || failedColumnTotal === 0"
             @click="onRemoveAll"
           >
             全部清除
@@ -627,6 +675,16 @@ async function onRemoveOversizedAll(): Promise<void> {
             @slice="onSlice"
             @continue="onContinueSlice"
           />
+        </div>
+
+        <div v-if="pagerFor(section.key)" class="section-pager">
+          <button type="button" :disabled="pageAtStart(section.key)" @click="goPage(section.key, -1)">
+            上一页
+          </button>
+          <span class="font-mono">{{ pageLabel(section.key) }}</span>
+          <button type="button" :disabled="pageAtEnd(section.key)" @click="goPage(section.key, 1)">
+            下一页
+          </button>
         </div>
 
         <!-- 列表空状态 (当特定分类无任务时) -->
@@ -961,6 +1019,30 @@ async function onRemoveOversizedAll(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.section-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 2px 0 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.section-pager button {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.section-pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .empty-state-card {

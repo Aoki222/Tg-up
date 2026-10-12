@@ -21,6 +21,8 @@ class UploadProgress:
     message: str = ""
     speed_bps: float = 0.0
     eta_seconds: float = -1.0
+    part_index: int | None = None
+    part_count: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -42,6 +44,8 @@ def make_progress(
     message: str = "",
     speed_bps: float = 0.0,
     eta_seconds: float = -1.0,
+    part_index: int | None = None,
+    part_count: int | None = None,
 ) -> UploadProgress:
     percent = 0.0
     if total > 0:
@@ -59,4 +63,6 @@ def make_progress(
         message=message,
         speed_bps=speed_bps,
         eta_seconds=eta_seconds,
+        part_index=part_index,
+        part_count=part_count,
     )

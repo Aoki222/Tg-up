@@ -91,6 +91,8 @@ class ObserverRootPayload(BaseModel):
 
 
 class SettingsPayload(BaseModel):
+    revision: int | None = None
+    schedule_order: Literal["smallest", "oldest"] = "oldest"
     chat_id: int
     watch_enabled: bool = True
     observer_roots: list[ObserverRootPayload] = Field(default_factory=list)

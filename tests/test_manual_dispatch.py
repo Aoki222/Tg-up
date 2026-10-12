@@ -13,11 +13,55 @@ from tests.test_ingestor import FakeHub, FakeRepo, FakeRescheduler, _settings
 
 
 def _create_env(tmp_path: Path, **kwargs) -> tuple[FileIngestor, FakeRepo, FakeRescheduler, FakeHub]:
+    kwargs.setdefault("observer_paths", (tmp_path,))
     repo = FakeRepo()
     rescheduler = FakeRescheduler()
     hub = FakeHub(_settings(**kwargs))
     ingestor = FileIngestor(repo, rescheduler, hub, concurrency=8)
     return ingestor, repo, rescheduler, hub
+
+
+async def test_manual_dispatch_rejects_path_outside_roots(tmp_path: Path) -> None:
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    video = outside / "video.mp4"
+    video.write_bytes(b"data")
+    ingestor, repo, rescheduler, _ = _create_env(tmp_path, observer_paths=(watch,))
+    res = await ingestor.manual_dispatch(video, chat_id=-100)
+    assert res["ok"] is False
+    assert "监听目录" in res["reason"]
+    assert len(repo.tasks) == 0
+    assert rescheduler.calls == 0
+
+
+async def test_manual_dispatch_rejects_symlink_escape(tmp_path: Path) -> None:
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    secret = tmp_path / "secret.mp4"
+    secret.write_bytes(b"hidden")
+    link = watch / "link.mp4"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        pytest.skip("当前环境不能创建符号链接")
+    ingestor, repo, _, _ = _create_env(tmp_path, observer_paths=(watch,))
+    res = await ingestor.manual_dispatch(link, chat_id=-100)
+    assert res["ok"] is False
+    assert "监听目录" in res["reason"]
+    assert len(repo.tasks) == 0
+
+
+async def test_stop_puts_sentinel_into_full_queue(tmp_path: Path) -> None:
+    import asyncio
+
+    ingestor, _, _, _ = _create_env(tmp_path)
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+    await queue.put(tmp_path / "waiting.mp4")
+    ingestor._file_queue = queue
+    await ingestor.stop()
+    assert queue.get_nowait() is None
 
 
 async def test_manual_dispatch_file_not_found(tmp_path: Path) -> None:
@@ -137,15 +181,17 @@ async def test_manual_dispatch_oversized(tmp_path: Path) -> None:
 
     repo = FakeRepo()
     rescheduler = FakeRescheduler()
-    hub = FakeHub(_settings())
+    hub = FakeHub(_settings(observer_paths=(tmp_path,)))
     ingestor = FileIngestor(repo, rescheduler, hub, concurrency=8, on_oversized=on_oversized)
 
     file = tmp_path / "large.mp4"
     file.write_bytes(b"0" * 10)  # mock 大小
 
+    import stat as stat_mod
     import unittest.mock as mock
     with mock.patch("pathlib.Path.stat") as mock_stat:
         mock_stat_res = mock.MagicMock()
+        mock_stat_res.st_mode = stat_mod.S_IFREG
         mock_stat_res.st_size = 2500 * 1024 * 1024  # 2.5 GB
         mock_stat.return_value = mock_stat_res
 

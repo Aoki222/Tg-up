@@ -25,6 +25,7 @@ import {
 } from "../api";
 import type { DialogChat, ForumTopic } from "../api";
 import type { UploadConfig } from "../types";
+import { pausedObserverRoot } from "../watchPath";
 import { ENABLE_GOOGLE_DRIVE } from "../features";
 
 const { panel } = defineProps<{
@@ -59,6 +60,7 @@ const form = reactive<UploadConfig>({
   topic_creation_enabled: true,
   after_success: "keep",
   auto_slice: false,
+  schedule_order: "oldest",
   concurrency: 1,
   max_retries: 3,
   upload_timeout_seconds: 1200,
@@ -68,6 +70,13 @@ const form = reactive<UploadConfig>({
   routes: [],
   chats: [],
   drive_folders: [],
+});
+
+const preferSmallFiles = computed({
+  get: () => form.schedule_order === "smallest",
+  set: (enabled: boolean) => {
+    form.schedule_order = enabled ? "smallest" : "oldest";
+  },
 });
 
 // ── 脏检查机制 ─────────────────────────────────────────────────
@@ -342,26 +351,25 @@ async function submit(): Promise<void> {
 
 async function promptAddObserverPath(): Promise<void> {
   try {
-    const { value } = await ElMessageBox.prompt("请输入本地监听目录的绝对或相对路径", "添加监听路径", {
-      confirmButtonText: "添加",
-      cancelButtonText: "取消",
-      inputPlaceholder: "例如 D:\\Downloads\\Telegram 或 download",
-      inputValidator: (val) => {
-        if (!val || !val.trim()) return "路径不能为空";
-        if (form.observer_roots.some((p) => samePath(p.path, val.trim()))) return "该路径已在监听列表中";
-        return true;
+    const { value } = await ElMessageBox.prompt(
+      "请输入本地监听目录的绝对或相对路径。新路径默认暂停，打开开关并保存后才会扫描。",
+      "添加监听路径",
+      {
+        confirmButtonText: "添加",
+        cancelButtonText: "取消",
+        inputPlaceholder: "例如 D:\\Downloads\\Telegram 或 download",
+        inputValidator: (val) => {
+          if (!val || !val.trim()) return "路径不能为空";
+          if (form.observer_roots.some((p) => samePath(p.path, val.trim()))) return "该路径已在监听列表中";
+          return true;
+        },
       },
-    });
+    );
     if (value && value.trim()) {
       const trimmed = value.trim();
-      form.observer_roots.push({
-        path: trimmed,
-        enabled: true,
-        ok: true,
-        error: "",
-      });
+      form.observer_roots.push(pausedObserverRoot(trimmed));
       form.observer_paths = form.observer_roots.map((r) => r.path);
-      ElMessage.success("已添加监听路径，点击右上角保存即可生效");
+      ElMessage.success("已加入列表且默认暂停。打开这一行的开关并保存后才会扫描。");
     }
   } catch {
     // 用户取消输入
@@ -774,6 +782,16 @@ defineExpose({
                 max="20"
                 class="app-input mono"
               />
+            </div>
+          </div>
+
+          <div class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">小文件优先</div>
+              <div class="row-info-sub">默认按发现顺序上传。打开后，待传队列里体积更小的文件先传。</div>
+            </div>
+            <div class="row-ctrl-col">
+              <el-switch v-model="preferSmallFiles" />
             </div>
           </div>
 

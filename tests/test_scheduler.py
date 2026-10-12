@@ -48,7 +48,8 @@ class _Repo:
     async def count_active_by_workers(self) -> dict[str, int]:
         return self.counts
 
-    async def fetch_pending_tasks(self, limit: int) -> list[dict]:
+    async def fetch_pending_tasks(self, limit: int, order: str = "oldest") -> list[dict]:
+        del order
         self.fetch_limit = limit
         return []
 

@@ -35,10 +35,19 @@ class _Repo:
     async def get_task_by_id(self, task_id: int):
         return None
 
-    async def mark_task_uploading(self, task_id: int) -> None:
+    async def mark_task_uploading(self, task_id: int, claim_token: str | None = None) -> None:
+        del claim_token
         self.uploads += 1
 
-    async def mark_task_failed(self, task_id: int, retry_count: int, max_retries: int, error_message: str) -> None:
+    async def mark_task_failed(
+        self,
+        task_id: int,
+        retry_count: int,
+        max_retries: int,
+        error_message: str,
+        claim_token: str | None = None,
+    ) -> None:
+        del claim_token
         self.failed = (task_id, retry_count, max_retries, error_message)
 
 

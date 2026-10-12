@@ -78,6 +78,7 @@ class UploadWorker:
         self._watch_task: asyncio.Task | None = None
         # task_id -> (已传字节, 总字节)。断线时用它保持进度，不发 0/1。
         self._byte_progress: dict[int, tuple[float, float]] = {}
+        self._inflight: dict[int, asyncio.Task] = {}
 
     def is_accepting(self) -> bool:
         """调度器用：停机、FloodWait 或正在重连时不要再往这个账号塞任务。"""
@@ -108,7 +109,16 @@ class UploadWorker:
             # 只分发不等待：真正完成时 process_single_task 里 task_done，join() 才准
             child_task = asyncio.create_task(self.process_single_task(task))
             self.background_tasks.add(child_task)
+            self._inflight[task.id] = child_task
             child_task.add_done_callback(self.background_tasks.discard)
+            child_task.add_done_callback(lambda _done, task_id=task.id: self._inflight.pop(task_id, None))
+
+    def cancel_inflight(self, task_ids: list[int]) -> None:
+        """超时回收已经作废租约。取消还在发送的协程，避免它稍后把成功写回去。"""
+        for task_id in task_ids:
+            job = self._inflight.get(task_id)
+            if job is not None and not job.done():
+                job.cancel()
 
     async def abort_and_release(self, reason: str, in_flight_timeout: float = 0) -> None:
         """停接新活。队列里未开传的立刻 release；在途可短等，超时则取消后再 release。
@@ -179,7 +189,12 @@ class UploadWorker:
                 return
             settings = self.settings_hub.get()
             async with self.concurrency_gate:
-                await self.task_repository.mark_task_uploading(task.id)
+                started = await self.task_repository.mark_task_uploading(
+                    task.id, claim_token=task.claim_token
+                )
+                if started is False:
+                    logger.warning("[%s] 租约已失效，放弃上传: %s", self.worker_name, task.file_name)
+                    return
                 self._emit_progress(task, 0, max(task.file_size, 1), "uploading")
                 resume_failures = 0
                 result = await self.transport.send(
@@ -201,7 +216,16 @@ class UploadWorker:
                         ),
                     )
                 if isinstance(result, SendOk):
-                    await self.task_repository.mark_task_succeeded(task.id, result.message_id)
+                    owned = await self.task_repository.mark_task_succeeded(
+                        task.id, result.message_id, claim_token=task.claim_token
+                    )
+                    if owned is False:
+                        logger.warning(
+                            "[%s] 租约已失效，丢弃成功回执: %s",
+                            self.worker_name,
+                            task.file_name,
+                        )
+                        return
                     self._emit_progress(task, 1, 1, "success", "上传成功")
                     try:
                         await self.after_upload.handle(task)
@@ -213,7 +237,9 @@ class UploadWorker:
                 elif isinstance(result, SendRetryLater):
                     self.flood_wait_until = time.monotonic() + result.seconds
                     # 回 pending 且不 +retry_count；调度器会跳过 is_accepting()==False 的 worker
-                    await self.task_repository.release_task(task.id, f"FloodWait {result.seconds}s")
+                    await self.task_repository.release_task(
+                        task.id, f"FloodWait {result.seconds}s", claim_token=task.claim_token
+                    )
                     self._forget_progress(task.id)
                     if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                         self._emit_progress(
@@ -256,7 +282,9 @@ class UploadWorker:
                     await self._notify_slice_if_exhausted(task)
         except asyncio.CancelledError:
             if self._aborting:
-                await self.task_repository.release_task(task.id, self._abort_reason or "worker aborted")
+                await self.task_repository.release_task(
+                    task.id, self._abort_reason or "worker aborted", claim_token=task.claim_token
+                )
                 self._forget_progress(task.id)
             raise
         except Exception as error:
@@ -338,7 +366,9 @@ class UploadWorker:
             reason,
         )
         if failures >= RECONNECT_MAX_ATTEMPTS or not await self._wait_until_connected():
-            await self.task_repository.release_task(task.id, f"disconnected: {reason}")
+            await self.task_repository.release_task(
+                task.id, f"disconnected: {reason}", claim_token=task.claim_token
+            )
             self._forget_progress(task.id)
             if not limits.telegram_bot_blocked(task.file_size, task.destination.platform):
                 self._emit_progress(task, current, total, "flood_wait", "重连失败，已回队列")
@@ -375,6 +405,8 @@ class UploadWorker:
                     total=total,
                     stage=stage,
                     message=report_message,
+                    part_index=task.part_index,
+                    part_count=task.part_count,
                 )
             )
         except Exception:
@@ -462,6 +494,7 @@ class UploadWorker:
             next_retry,
             task.policy.max_retries,
             error_message,
+            claim_token=task.claim_token,
         )
 
     async def _notify_slice(self, task: Task, outcome: str) -> None:

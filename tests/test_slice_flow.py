@@ -113,8 +113,11 @@ async def test_parts_enter_the_board_and_source_waits(tmp_path: Path, monkeypatc
         slices = await repo.list_slices(parent_id)
         assert [row["status"] for row in slices] == ["queued", "queued"]
         board = await repo.list_board_tasks()
-        assert parent_id in [int(row["id"]) for row in board]
-        assert len(board) == 3
+        assert parent_id not in [int(row["id"]) for row in board]
+        assert len(board) == 2
+        oversized_rows, oversized_total = await repo.list_status_page("oversized", 1, 50)
+        assert oversized_total == 1
+        assert int(oversized_rows[0]["id"]) == parent_id
 
         first = await repo.get_task_by_id(int(slices[0]["child_task_id"]))
         second = await repo.get_task_by_id(int(slices[1]["child_task_id"]))
@@ -229,7 +232,7 @@ async def test_failed_part_can_continue_without_cutting_again(tmp_path: Path, mo
         await service.on_child(_child_task(child), "failed")
         parent = await repo.get_task_by_id(parent_id)
         assert parent is not None and parent["error_msg"] == msg_part_failed(1, 2)
-        assert await repo.claim_oversized(parent_id, "user_1") is False
+        assert await repo.claim_oversized(parent_id, "user_1") is None
         assert await service.continue_upload(parent_id) == "ok"
         retried = await repo.get_task_by_id(int(child["id"]))
         assert retried is not None and retried["status"] == "pending"

@@ -25,7 +25,7 @@ from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
 from ...utils.topic_creactor import TopicCreator, TopicSessionUnavailable
 from .filters import check_transient_file
-from .policy import IngestPolicy, _PREVIEWABLE_SUFFIXES, _chat_id_of, _route_dest
+from .policy import IngestPolicy, _PREVIEWABLE_SUFFIXES, _chat_id_of, _route_dest, path_is_inside_roots, watch_roots
 from .preview import PreviewJob, PreviewPool
 
 logger = get_logger(__name__)
@@ -170,6 +170,14 @@ class FileIngestor:
                 "file_path": path_str,
             }
 
+        settings = self.settings_hub.get()
+        if not path_is_inside_roots(resolved_path, watch_roots(settings)):
+            return {
+                "ok": False,
+                "reason": "文件不在监听目录内",
+                "file_path": path_str,
+            }
+
         try:
             file_size = resolved_path.stat().st_size
         except OSError:
@@ -196,7 +204,6 @@ class FileIngestor:
                 "file_path": path_str,
             }
 
-        settings = self.settings_hub.get()
         nearest_route = find_nearest_route(resolved_path, settings)
 
         # 决议目标群组
@@ -485,11 +492,23 @@ class FileIngestor:
         except Exception:
             logger.exception("自动切片失败 task=%s", task_id)
 
+    async def _wait_for_ingest_slot(self) -> None:
+        """同时入库的文件不超过 concurrency。满了就等有一个结束再取下一条。"""
+        while self._running:
+            running = {task for task in self._inflight if not task.done()}
+            self._inflight.intersection_update(running)
+            if len(self._inflight) < self.concurrency:
+                return
+            await asyncio.wait(self._inflight, return_when=asyncio.FIRST_COMPLETED)
+
     async def consume(self, file_queue: asyncio.Queue[Path | None]) -> None:
-        """并行消费发现队列。单条失败只记日志；None 或 stop() 后退出。"""
+        """并行消费发现队列。同时处理的文件有上限；None 或 stop() 后退出。"""
         self._file_queue = file_queue
         try:
             while self._running:
+                await self._wait_for_ingest_slot()
+                if not self._running:
+                    break
                 file_path = await file_queue.get()
                 if file_path is None:
                     file_queue.task_done()
@@ -515,6 +534,10 @@ class FileIngestor:
             raise
         except TopicSessionUnavailable:
             logger.warning("暂无已连接的 Telegram session，稍后重试: %s", file_path)
+            # 先让出并发名额，再把路径放回队列，避免队列满时和取任务互相等待。
+            current = asyncio.current_task()
+            if current is not None:
+                self._inflight.discard(current)
             await self._requeue_when_session_may_connect(file_path)
         except Exception:
             logger.exception("处理发现文件失败: %s", file_path)
@@ -541,11 +564,19 @@ class FileIngestor:
         self._running = False
         for task in list(self._inflight):
             task.cancel()
-        if self._file_queue is not None:
-            try:
-                self._file_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
+        queue = self._file_queue
+        if queue is not None:
+            # 队列满时丢掉一个待扫路径，也要把停止哨兵放进去，否则消费循环会卡在 get。
+            while True:
+                try:
+                    queue.put_nowait(None)
+                    break
+                except asyncio.QueueFull:
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    queue.task_done()
         pending = list(self._inflight)
         if pending:
             await asyncio.wait(pending, timeout=3)

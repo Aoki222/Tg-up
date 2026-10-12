@@ -61,7 +61,8 @@ class _Repo:
     async def park_oversized(self, task_id: int, error_message: str) -> None:
         self.parked = (task_id, error_message)
 
-    async def mark_task_uploading(self, task_id: int) -> None:
+    async def mark_task_uploading(self, task_id: int, claim_token: str | None = None) -> None:
+        del claim_token
         self.uploads += 1
 
 
@@ -164,7 +165,9 @@ async def test_release_failure_and_preview_keep_huge_files_out_of_pending(tmp_pa
         assert parked["status"] == "oversized"
 
         assert await repo.fetch_pending_tasks(10) == []
-        rows = await repo.list_board_tasks()
+        assert await repo.list_board_tasks() == []
+        rows, total = await repo.list_status_page("oversized", 1, 50)
+        assert total == 3
         assert {int(row["id"]) for row in rows} >= {huge, preparing, failed}
         assert (await repo.count_board_statuses())["oversized"] == 3
     finally:

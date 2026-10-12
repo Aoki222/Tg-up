@@ -92,4 +92,6 @@ class UploadSettings:
     watch_enabled: bool = True
     # 带启停状态的物理根目录列表
     observer_roots: tuple[ObserverRoot, ...] = ()
+    # oldest 按入库先后，也就是发现顺序。smallest 先传小文件。
+    schedule_order: str = "oldest"
 
