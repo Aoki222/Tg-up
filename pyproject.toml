@@ -13,6 +13,7 @@ dependencies = [
     "qrcode>=8.2",
     "telethon>=1.44.0",
     "uvicorn[standard]>=0.32.0",
+    "vcsi>=7.0.13",
     "watchdog>=6.0.0",
 ]
 

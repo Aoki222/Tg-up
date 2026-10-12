@@ -56,6 +56,9 @@ const form = reactive<UploadConfig>({
   page_dir: "page",
   archive_dir: "uploaded",
   preview: "first_frame",
+  grid_layout: "3x5",
+  grid_timestamp: true,
+  grid_metadata: true,
   caption_template: "",
   topic_creation_enabled: true,
   after_success: "keep",
@@ -72,11 +75,34 @@ const form = reactive<UploadConfig>({
   drive_folders: [],
 });
 
-const preferSmallFiles = computed({
-  get: () => form.schedule_order === "smallest",
-  set: (enabled: boolean) => {
-    form.schedule_order = enabled ? "smallest" : "oldest";
-  },
+const scheduleOrderHint = computed(() => {
+  if (form.schedule_order === "natural") return "按路径和文件名的自然顺序上传，EP2 排在 EP10 前面。";
+  if (form.schedule_order === "created") return "文件创建时间早的先传。时间相同则小文件先传。";
+  if (form.schedule_order === "smallest") return "小文件先传。体积相同则创建时间早的先传。";
+  return "按任务写入队列的先后上传。";
+});
+
+const globalGridParsed = computed(() => {
+  const layout = form.grid_layout;
+  if (!layout || !layout.trim()) {
+    return { valid: false, text: "未设置网格规格（默认为 3x5）" };
+  }
+  const clean = layout.toLowerCase().replace(/[*×,]/g, "x").trim();
+  const parts = clean.split("x");
+  if (parts.length === 2) {
+    const c = parseInt(parts[0].trim(), 10);
+    const r = parseInt(parts[1].trim(), 10);
+    if (!isNaN(c) && !isNaN(r) && c >= 1 && c <= 20 && r >= 1 && r <= 20) {
+      return {
+        valid: true,
+        text: `${c} 列 × ${r} 行（共 ${c * r} 帧预览）`,
+      };
+    }
+  }
+  return {
+    valid: false,
+    text: "格式需为 列x行（如 3x5，1~20 范围）",
+  };
 });
 
 // ── 脏检查机制 ─────────────────────────────────────────────────
@@ -99,6 +125,7 @@ function snapshotOf(config: UploadConfig): string {
         topic_enabled: item.topic_enabled,
         caption_template: item.caption_template ?? null,
         preview: item.preview ?? null,
+        grid_layout: item.grid_layout ?? null,
         topic_mode: item.topic_mode ?? null,
         topic_id: item.topic_id ?? null,
         enabled: item.enabled !== false,
@@ -642,9 +669,66 @@ defineExpose({
             <div class="row-ctrl-col w-56">
               <select v-model="form.preview" class="app-select">
                 <option value="first_frame">首帧截图 (first_frame)</option>
-                <option value="grid">九宫格剧情拼图 (grid)</option>
+                <option value="grid">自定义网格图 (grid)</option>
                 <option value="off">关闭缩略图 (off)</option>
               </select>
+            </div>
+          </div>
+
+          <!-- 当开启自定义网格图时联动展示 -->
+          <div v-if="form.preview === 'grid'" class="table-row-item vertical">
+            <div class="row-top-flex">
+              <div>
+                <div class="row-info-title">网格规格 (grid_layout)</div>
+                <div class="row-info-sub">
+                  设定剧情网格排布格式（列 × 行），自适应原视频真实比例（绝不拉伸、绝不裁切画面）
+                </div>
+              </div>
+              <div class="grid-status-tip-inline" :class="{ 'is-err': !globalGridParsed.valid }">
+                <span class="grid-status-dot"></span>
+                <span class="grid-status-text">{{ globalGridParsed.text }}</span>
+              </div>
+            </div>
+            <div class="grid-layout-input-row">
+              <input
+                v-model="form.grid_layout"
+                type="text"
+                class="app-input mono grid-spec-input"
+                placeholder="例如 3x5 或 4x3"
+              />
+              <div class="token-chips-group">
+                <span class="grid-presets-inline-title">快捷预设:</span>
+                <button
+                  v-for="p in ['3x5', '4x3', '3x3', '4x4', '2x4', '5x2']"
+                  :key="p"
+                  type="button"
+                  class="token-btn"
+                  :class="{ active: form.grid_layout?.toLowerCase().trim() === p }"
+                  @click="form.grid_layout = p"
+                >
+                  {{ p }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="form.preview === 'grid'" class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">小图时间戳 (grid_timestamp)</div>
+              <div class="row-info-sub">在每张截图右下角打印视频时间进度</div>
+            </div>
+            <div class="row-ctrl-col">
+              <el-switch v-model="form.grid_timestamp" />
+            </div>
+          </div>
+
+          <div v-if="form.preview === 'grid'" class="table-row-item">
+            <div class="row-info-col">
+              <div class="row-info-title">顶部信息横幅 (grid_metadata)</div>
+              <div class="row-info-sub">在大图顶部打印文件名、体积、时长、分辨率等元数据卡片</div>
+            </div>
+            <div class="row-ctrl-col">
+              <el-switch v-model="form.grid_metadata" />
             </div>
           </div>
 
@@ -787,11 +871,16 @@ defineExpose({
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">小文件优先</div>
-              <div class="row-info-sub">默认按发现顺序上传。打开后，待传队列里体积更小的文件先传。</div>
+              <div class="row-info-title">上传顺序 (schedule_order)</div>
+              <div class="row-info-sub">{{ scheduleOrderHint }}</div>
             </div>
-            <div class="row-ctrl-col">
-              <el-switch v-model="preferSmallFiles" />
+            <div class="row-ctrl-col w-36">
+              <select v-model="form.schedule_order" class="app-select">
+                <option value="oldest">入库顺序</option>
+                <option value="natural">自然排序</option>
+                <option value="created">创建时间</option>
+                <option value="smallest">文件大小</option>
+              </select>
             </div>
           </div>
 
@@ -1373,8 +1462,45 @@ defineExpose({
   justify-content: space-between;
 }
 
+.grid-status-tip-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #059669;
+  font-weight: 500;
+  background: rgba(16, 185, 129, 0.08);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm, 6px);
+}
+
+.grid-status-tip-inline.is-err {
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.grid-layout-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.grid-spec-input {
+  width: 160px;
+  flex-shrink: 0;
+}
+
+.grid-presets-inline-title {
+  font-size: 12px;
+  color: #6b7280;
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
 .token-chips-group {
   display: flex;
+  align-items: center;
   gap: 4px;
 }
 

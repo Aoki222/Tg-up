@@ -78,6 +78,18 @@ def resolve_preview(file_path: Path, settings: UploadSettings) -> PreviewMode:
     return settings.preview
 
 
+def resolve_grid_layout(file_path: Path, settings: UploadSettings) -> str:
+    """最近一条写了网格规格的路由。都没写则用全局网格规格。"""
+    route_map = enabled_route_map(settings)
+    for parent in file_path.resolve().parents:
+        route = route_map.get(parent)
+        if route is None or not route.grid_layout:
+            continue
+        return route.grid_layout
+    return getattr(settings, "grid_layout", "3x5") or "3x5"
+
+
+
 def render_caption(
     template: str,
     file_path: Path,

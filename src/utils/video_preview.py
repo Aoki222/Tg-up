@@ -118,24 +118,54 @@ class FirstFramePreview:
 
 
 class GridPreview:
-    """职责：抽 15 帧拼成固定 3 列 x 5 行小体积网格图，返回落盘路径。"""
+    """职责：生成高清自适应网格剧情预览图。基于 vcsi 原生自适应比例，绝不拉伸、绝不裁切画面。"""
 
     GRID_COLUMNS = 3
     GRID_ROWS = 5
     CELL_WIDTH = 320
     CELL_HEIGHT = 180
 
-    def __init__(self, ffmpeg_path: str = "ffmpeg", interval_seconds: int = 60,
-                 ffprobe_path: str = "ffprobe", jpeg_quality: int = 70, page_dir: Path | None = None):
+    def __init__(
+        self,
+        grid_layout: str = "3x5",
+        show_timestamp: bool = True,
+        show_metadata: bool = True,
+        ffmpeg_path: str = "ffmpeg",
+        interval_seconds: int = 60,
+        ffprobe_path: str = "ffprobe",
+        jpeg_quality: int = 80,
+        page_dir: Path | None = None,
+    ):
+        self.grid_layout = grid_layout or "3x5"
+        self.show_timestamp = show_timestamp
+        self.show_metadata = show_metadata
         self.ffmpeg_path = ffmpeg_path
         self.interval_seconds = interval_seconds
         self.ffprobe_path = ffprobe_path
         self.jpeg_quality = jpeg_quality
         self.page_dir = page_dir
 
+        # 解析行列数并规格化
+        cols, rows = self._parse_layout(self.grid_layout)
+        self.columns = cols
+        self.rows = rows
+        self.grid_layout = f"{cols}x{rows}"
+
+    @staticmethod
+    def _parse_layout(layout: str) -> tuple[int, int]:
+        try:
+            clean = layout.lower().replace("*", "x").replace("×", "x").replace(",", "x")
+            parts = clean.split("x")
+            c, r = int(parts[0].strip()), int(parts[1].strip())
+            if 1 <= c <= 20 and 1 <= r <= 20:
+                return c, r
+        except Exception:
+            pass
+        return 3, 5
+
     @property
     def frame_count(self) -> int:
-        return self.GRID_COLUMNS * self.GRID_ROWS
+        return self.columns * self.rows
 
     async def get_video_duration(self, video_path: Path) -> float | None:
         process = await asyncio.create_subprocess_exec(
@@ -208,30 +238,87 @@ class GridPreview:
         return frame_paths
 
     def merge_frames_to_grid(self, frame_paths: list[Path], output_path: Path) -> Path:
-        from PIL import ImageOps
-
         if not frame_paths:
             raise ValueError("帧列表为空，无法拼图")
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         selected_frames = list(frame_paths[: self.frame_count])
-        grid_image = Image.new("RGB", (self.GRID_COLUMNS * self.CELL_WIDTH, self.GRID_ROWS * self.CELL_HEIGHT), "black")
+
+        with Image.open(selected_frames[0]) as first_img:
+            src_w, src_h = first_img.size
+        cell_w = self.CELL_WIDTH
+        cell_h = max(10, int(src_h * cell_w / max(1, src_w)))
+
+        grid_image = Image.new("RGB", (self.columns * cell_w, self.rows * cell_h), "black")
         for index in range(self.frame_count):
-            row, column = divmod(index, self.GRID_COLUMNS)
-            left, top = column * self.CELL_WIDTH, row * self.CELL_HEIGHT
+            row, column = divmod(index, self.columns)
+            left, top = column * cell_w, row * cell_h
             if index < len(selected_frames):
                 with Image.open(selected_frames[index]) as source_image:
-                    grid_image.paste(
-                        ImageOps.fit(source_image.convert("RGB"), (self.CELL_WIDTH, self.CELL_HEIGHT)),
-                        (left, top),
-                    )
+                    resized = source_image.convert("RGB").resize((cell_w, cell_h), Image.Resampling.BICUBIC)
+                    grid_image.paste(resized, (left, top))
         grid_image.save(output_path, "JPEG", quality=self.jpeg_quality, optimize=True)
-        logger.info("拼图完成：3x5 -> %s", output_path)
+        logger.info("拼图完成：%dx%d -> %s", self.columns, self.rows, output_path)
+        return output_path
+
+    async def _build_via_vcsi(self, video_path: Path, output_path: Path) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        args = [
+            sys.executable,
+            "-m",
+            "vcsi.vcsi",
+            str(video_path),
+            "-g",
+            self.grid_layout,
+            "-w",
+            "1200",
+            "-q",
+            str(self.jpeg_quality),
+            "-o",
+            str(output_path),
+        ]
+        if self.show_timestamp:
+            args.append("-t")
+        if not self.show_metadata:
+            args.extend(["--metadata-position", "hidden"])
+
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **_subprocess_kwargs(),
+        )
+        try:
+            _stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            await _kill_process(process)
+            raise
+
+        if process.returncode != 0:
+            err = (stderr or b"").decode("utf-8", errors="replace")
+            if "does not contain any stream" in err:
+                raise NoVideoStreamError(f"媒体文件中无可用视频流: {err[-300:]}")
+            raise RuntimeError(f"vcsi 返回异常状态码 {process.returncode}: {err[-500:]}")
+
+        if not output_path.is_file():
+            raise RuntimeError(f"vcsi 未生成目标图片：{output_path}")
+
+        logger.info("vcsi 拼图完成：%s (%s) -> %s", video_path.name, self.grid_layout, output_path)
         return output_path
 
     async def build_content_page_async(self, video_path: Path, output_path: Path | None = None) -> Path:
         video_path = Path(video_path)
+        if not video_path.is_file():
+            raise FileNotFoundError(f"视频不存在：{video_path}")
         output_path = resolve_page_output(video_path, "_content.jpg", output_path, self.page_dir)
-        with tempfile.TemporaryDirectory(prefix="content_frames_") as temp_directory:
-            frame_paths = await self.extract_interval_frames(video_path, Path(temp_directory))
-            return await asyncio.to_thread(self.merge_frames_to_grid, frame_paths, output_path)
+
+        try:
+            return await self._build_via_vcsi(video_path, output_path)
+        except NoVideoStreamError:
+            raise
+        except Exception as err:
+            logger.warning("vcsi 生成失败，回退至内置抽帧: %s", err)
+            with tempfile.TemporaryDirectory(prefix="content_frames_") as temp_directory:
+                frame_paths = await self.extract_interval_frames(video_path, Path(temp_directory))
+                return await asyncio.to_thread(self.merge_frames_to_grid, frame_paths, output_path)
+

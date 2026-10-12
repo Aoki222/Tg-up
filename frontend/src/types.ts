@@ -159,6 +159,8 @@ export interface FolderRouteItem {
   caption_template: string | null;
   /** null 跟随上一级。 */
   preview: PreviewMode | null;
+  /** null 跟随全局。网格规格，如 "3x5", "4x3", "3x3" 等 */
+  grid_layout?: string | null;
   /** null 跟随上一级。off 不用话题，auto 按文件夹名，fixed 使用 topic_id。 */
   topic_mode: "off" | "auto" | "fixed" | null;
   topic_id: number | null;
@@ -204,6 +206,8 @@ export interface FsRouteInfo {
   topic_enabled?: boolean;
   name?: string;
   enabled?: boolean;
+  preview?: string | null;
+  grid_layout?: string | null;
 }
 
 export interface FsNode {
@@ -226,8 +230,8 @@ export interface FsNode {
 export interface UploadConfig {
   /** 服务端配置版本。保存时原样带回，不一致则 409。 */
   revision?: number;
-  /** oldest 按发现顺序。smallest 为设置里打开的小文件优先。 */
-  schedule_order?: "smallest" | "oldest";
+  /** oldest 入库顺序，natural 自然排序，created 创建时间，smallest 文件大小。 */
+  schedule_order?: "oldest" | "natural" | "created" | "smallest";
   /** 全局自动监控总开关（L1） */
   watch_enabled?: boolean;
   /** Telegram 目标频道或群组 chat_id（通常以 -100 开头） */
@@ -244,6 +248,12 @@ export interface UploadConfig {
   archive_dir: string;
   /** 封面生成模式 */
   preview: PreviewMode;
+  /** 网格预览图规格，如 "3x5", "4x3", "3x3", "4x4", "2x4" */
+  grid_layout?: string;
+  /** 小图右下角是否显示时间戳 */
+  grid_timestamp?: boolean;
+  /** 顶部是否显示视频信息横幅 */
+  grid_metadata?: boolean;
   /** 路由都没写说明时使用。空字符串表示不写说明。 */
   caption_template: string;
   /** 是否自动在群组论坛（Forum）中按文件名/特征创建新 Topic */

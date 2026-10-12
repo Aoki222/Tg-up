@@ -16,6 +16,7 @@ import tomllib
 from pathlib import Path
 
 from ..logger import get_logger
+from .schedule_key import canonical_schedule_order
 from .task import AfterSuccess, TaskPolicy
 from .upload_settings import ChatAlias, DriveFolder, FolderRoute, ObserverRoot, PreviewMode, UploadSettings
 
@@ -73,11 +74,14 @@ def render_upload_toml(payload: dict) -> str:
         f"page_dir = {_toml_string(str(payload.get('page_dir') or 'page'))}\n"
         f"archive_dir = {_toml_string(str(payload.get('archive_dir') or 'uploaded'))}\n"
         f"preview = {_toml_string(str(payload.get('preview') or 'off'))}\n"
+        f"grid_layout = {_toml_string(str(payload.get('grid_layout') or '3x5'))}\n"
+        f"grid_timestamp = {'true' if payload.get('grid_timestamp') is not False else 'false'}\n"
+        f"grid_metadata = {'true' if payload.get('grid_metadata') is not False else 'false'}\n"
         f"caption_template = {_toml_string(str(payload.get('caption_template') or '')[:2000])}\n"
         f"topic_creation_enabled = {topic}\n"
         f"after_success = {_toml_string(str(payload.get('after_success') or 'keep'))}\n"
         f"auto_slice = {'true' if payload.get('auto_slice') else 'false'}\n"
-        f"schedule_order = {_toml_string('smallest' if payload.get('schedule_order') == 'smallest' else 'oldest')}\n"
+        f"schedule_order = {_toml_string(canonical_schedule_order(payload.get('schedule_order')))}\n"
         "concurrency = 1\n"
         f"max_retries = {max(1, int(payload.get('max_retries', 3)))}\n"
         f"upload_timeout_seconds = {max(1, int(payload.get('upload_timeout_seconds', 1200)))}\n"
@@ -144,6 +148,9 @@ def _render_routes(payload: dict) -> str:
         preview = item.get("preview", None)
         if preview:
             block += f"preview = {_toml_string(str(preview))}\n"
+        grid_layout = item.get("grid_layout", None)
+        if grid_layout:
+            block += f"grid_layout = {_toml_string(str(grid_layout))}\n"
         enabled = item.get("enabled", True)
         if enabled is False:
             block += "enabled = false\n"
@@ -413,6 +420,7 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 route_preview = PreviewMode(str(preview_raw))
             except ValueError:
                 logger.warning("路由封面模式无效，改为跟随上级: %s", path)
+        grid_layout_raw = str(item.get("grid_layout") or "").strip() or None
         routes.append(
             FolderRoute(
                 path=path,
@@ -424,6 +432,7 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 dest_id=dest_id,
                 caption_template=caption_template,
                 preview=route_preview,
+                grid_layout=grid_layout_raw,
                 topic_mode=topic_mode,
                 topic_id=topic_id,
                 auto_blocked=auto_blocked,
@@ -548,7 +557,10 @@ def load_upload_settings(config_path: Path, project_dir: Path) -> UploadSettings
         chats=_as_chats(data),
         drive_folders=_as_drive_folders(data),
         auto_slice=_as_bool(data.get("auto_slice"), False),
-        schedule_order="smallest" if str(data.get("schedule_order") or "") == "smallest" else "oldest",
+        schedule_order=canonical_schedule_order(data.get("schedule_order")),
+        grid_layout=str(data.get("grid_layout") or "3x5"),
+        grid_timestamp=_as_bool(data.get("grid_timestamp"), True),
+        grid_metadata=_as_bool(data.get("grid_metadata"), True),
     )
 
 
@@ -588,7 +600,9 @@ class SettingsHub:
         self._settings = load_upload_settings(config_path, project_dir)
         stat = config_path.stat()
         self._mtime = stat.st_mtime
-        self._revision = int(stat.st_mtime_ns)
+        # 必须转为毫秒时间戳（约 13 位数字），防止超过 JavaScript 的 Number.MAX_SAFE_INTEGER (2^53 - 1，约 16 位)
+        # 否则浏览器 JSON.parse 会丢失末尾几位精度，导致 PUT 保存时因 expected_revision 不一致而永远报 409 冲突
+        self._revision = int(stat.st_mtime_ns // 1_000_000)
         self._lock = threading.Lock()
         self._policies: dict[int, TaskPolicy] = {}
 
@@ -621,6 +635,9 @@ class SettingsHub:
             "page_dir": _rel_path(self.project_dir, settings.page_dir),
             "archive_dir": _rel_path(self.project_dir, settings.archive_dir),
             "preview": settings.preview.value,
+            "grid_layout": settings.grid_layout,
+            "grid_timestamp": settings.grid_timestamp,
+            "grid_metadata": settings.grid_metadata,
             "caption_template": settings.caption_template,
             "topic_creation_enabled": settings.topic_creation_enabled,
             "after_success": settings.after_success.value,
@@ -642,6 +659,7 @@ class SettingsHub:
                     "dest_id": route.dest_id or (str(route.chat_id) if route.chat_id else ""),
                     "caption_template": route.caption_template,
                     "preview": None if route.preview is None else route.preview.value,
+                    "grid_layout": route.grid_layout,
                     "topic_mode": route.topic_mode,
                     "topic_id": route.topic_id,
                     "auto_blocked": route.auto_blocked,
@@ -704,7 +722,8 @@ class SettingsHub:
         stat = self.config_path.stat()
         self._settings = loaded
         self._mtime = stat.st_mtime
-        self._revision = int(stat.st_mtime_ns)
+        new_rev = int(stat.st_mtime_ns // 1_000_000)
+        self._revision = max(new_rev, self._revision + 1)
         logger.info(
             "已从 API 写入上传配置: chat_id=%s preview=%s after_success=%s concurrency=%s",
             loaded.chat_id,
@@ -762,7 +781,8 @@ class SettingsHub:
         self._settings = loaded
         self._mtime = mtime
         try:
-            self._revision = int(self.config_path.stat().st_mtime_ns)
+            new_rev = int(self.config_path.stat().st_mtime_ns // 1_000_000)
+            self._revision = max(new_rev, self._revision + 1)
         except OSError:
             self._revision += 1
         logger.info(

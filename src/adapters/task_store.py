@@ -14,6 +14,12 @@ from pathlib import Path
 
 from ..database.connection import get_db
 from ..domain import limits
+from ..domain.schedule_key import (
+    UNKNOWN_SOURCE_BORN,
+    child_natural_key,
+    extract_source_born_at,
+    make_natural_key,
+)
 from ..domain.slices import ACTIVE_SLICE_PHASES, MSG_CUTTING, MSG_WAIT, slice_phase
 from .db.topics import get_chat_topic, save_chat_topic
 
@@ -60,6 +66,8 @@ class TaskRepository:
         error_msg: str | None = None,
     ) -> int:
         """插入一条任务。封面需求和 after_success 入库时拍快照。"""
+        born = extract_source_born_at(Path(file_path))
+        natural_key = make_natural_key(file_path)
         async with get_db() as database:
             cursor = await database.execute(
                 """INSERT INTO upload_tasks
@@ -80,9 +88,11 @@ class TaskRepository:
                    platform,
                    dest_id,
                    dest_extra,
-                   error_msg
+                   error_msg,
+                   source_born_at,
+                   natural_key
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -100,6 +110,8 @@ class TaskRepository:
                     dest_id if dest_id else (str(chat_id) if platform == "telegram" else ""),
                     str(topic_id) if topic_id is not None else None,
                     error_msg,
+                    born,
+                    natural_key,
                 ),
             )
             await database.commit()
@@ -149,9 +161,14 @@ class TaskRepository:
     async def fetch_pending_tasks(self, limit: int, order: str = "oldest") -> list[dict]:
         """只捞 Telegram 的 pending。oversized 不在这里，避免自动分给 Bot。
 
-        oldest 按入库先后，也就是发现顺序。smallest 先传小文件。
+        oldest 入库顺序。natural 自然排序。created 创建时间，相同则小文件。
+        smallest 文件大小，相同则创建时间。语句从固定表里取，不拼接配置原文。
         """
-        ordering = "file_size ASC, id ASC" if order == "smallest" else "id ASC"
+        ordering = {
+            "natural": "natural_key ASC, id ASC",
+            "created": "source_born_at ASC, file_size ASC, id ASC",
+            "smallest": "file_size ASC, source_born_at ASC, id ASC",
+        }.get(order, "id ASC")
         async with get_db() as database:
             async with database.execute(
                 f"""SELECT * FROM upload_tasks
@@ -1001,6 +1018,12 @@ class TaskRepository:
         platform = str(parent.get("platform") or "telegram")
         chat_id = int(parent.get("chat_id") or 0)
         dest_id = parent.get("dest_id") or (str(chat_id) if platform == "telegram" else "")
+        parent_key = str(parent.get("natural_key") or "").strip() or make_natural_key(
+            str(parent.get("file_path") or "")
+        )
+        parent_born = parent.get("source_born_at")
+        born = float(parent_born) if parent_born is not None else UNKNOWN_SOURCE_BORN
+        natural_key = child_natural_key(parent_key, part_index)
         async with get_db() as database:
             cursor = await database.execute(
                 """INSERT INTO upload_tasks
@@ -1008,9 +1031,9 @@ class TaskRepository:
                    task_id, file_path, file_name, folder_name, file_size, chat_id,
                    caption, single_page, content_page, page_path, status, max_retries,
                    after_success, platform, dest_id, dest_extra, error_msg,
-                   parent_id, part_index, part_count
+                   parent_id, part_index, part_count, source_born_at, natural_key
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -1030,6 +1053,8 @@ class TaskRepository:
                     int(parent["id"]),
                     part_index,
                     part_count,
+                    born,
+                    natural_key,
                 ),
             )
             await database.commit()

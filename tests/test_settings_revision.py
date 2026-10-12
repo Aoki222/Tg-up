@@ -107,3 +107,16 @@ def test_mutate_skips_write_when_cancelled(tmp_path: Path) -> None:
 
     assert hub.mutate(cancel) is None
     assert hub.public_dict()["revision"] == before
+
+
+def test_revision_safe_for_javascript_numbers(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    current = hub.public_dict()
+    rev = current["revision"]
+    # 模拟浏览器 JSON.parse (IEEE 754 64-bit float) 的精度转换
+    js_rev = int(float(rev))
+    assert js_rev == rev, "revision 必须在 JS Number.MAX_SAFE_INTEGER (2^53 - 1) 范围内，否则浏览器会截断精度导致保存冲突"
+    current["caption_template"] = "updated_by_browser"
+    saved = hub.save_from_payload(current, expected_revision=js_rev)
+    assert saved["caption_template"] == "updated_by_browser"
+

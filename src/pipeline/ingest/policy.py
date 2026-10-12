@@ -113,6 +113,8 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
             "topic_enabled": topic_on,
             "name": route.name,
             "enabled": route.enabled,
+            "preview": None if route.preview is None else route.preview.value,
+            "grid_layout": route.grid_layout,
         }
 
     # 2. 自底向上回溯父级目录（继承规则）
@@ -134,6 +136,8 @@ def inspect_path_route(target_path: Path, settings: UploadSettings) -> dict:
             "topic_enabled": topic_on,
             "name": parent_route.name,
             "enabled": parent_route.enabled,
+            "preview": None if parent_route.preview is None else parent_route.preview.value,
+            "grid_layout": parent_route.grid_layout,
         }
 
     return {"matched": False, "is_explicit": False, "is_inherited": False}

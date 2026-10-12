@@ -82,6 +82,7 @@ class RoutePublicModel(_Loose):
     dest_id: str
     caption_template: str | None = None
     preview: str | None = None
+    grid_layout: str | None = None
     topic_mode: str | None = None
     topic_id: int | None = None
     auto_blocked: bool
@@ -100,7 +101,7 @@ class DriveFolderPublicModel(_Loose):
 
 class SettingsPublicModel(_Loose):
     revision: int
-    schedule_order: Literal["smallest", "oldest"]
+    schedule_order: Literal["oldest", "natural", "created", "smallest"]
     chat_id: int
     watch_enabled: bool
     observer_paths: list[str]
@@ -109,6 +110,9 @@ class SettingsPublicModel(_Loose):
     page_dir: str
     archive_dir: str
     preview: str
+    grid_layout: str = "3x5"
+    grid_timestamp: bool = True
+    grid_metadata: bool = True
     caption_template: str
     topic_creation_enabled: bool
     after_success: str

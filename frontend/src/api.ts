@@ -157,6 +157,7 @@ export function normalizeSettings(data: UploadConfig): UploadConfig {
       dest_id: item.dest_id || (item.chat_id ? String(item.chat_id) : ""),
       caption_template: item.caption_template ?? null,
       preview: item.preview ?? null,
+      grid_layout: item.grid_layout ?? null,
       topic_mode: item.topic_mode ?? null,
       topic_id: item.topic_id ?? null,
     })),
@@ -167,8 +168,16 @@ export function normalizeSettings(data: UploadConfig): UploadConfig {
     })),
     drive_folders: data.drive_folders ?? [],
     auto_slice: data.auto_slice === true,
+    grid_layout: data.grid_layout || "3x5",
+    grid_timestamp: data.grid_timestamp !== false,
+    grid_metadata: data.grid_metadata !== false,
     revision: data.revision,
-    schedule_order: data.schedule_order === "smallest" ? "smallest" : "oldest",
+    schedule_order:
+      data.schedule_order === "natural" ||
+      data.schedule_order === "created" ||
+      data.schedule_order === "smallest"
+        ? data.schedule_order
+        : "oldest",
   };
 }
 

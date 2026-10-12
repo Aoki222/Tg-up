@@ -51,6 +51,8 @@ test("normalizeSettings keeps revision and only smallest or oldest", () => {
     "oldest",
   );
   expect(normalizeSettings(config({ schedule_order: "smallest" })).schedule_order).toBe("smallest");
+  expect(normalizeSettings(config({ schedule_order: "natural" })).schedule_order).toBe("natural");
+  expect(normalizeSettings(config({ schedule_order: "created" })).schedule_order).toBe("created");
 });
 
 test("a new watch path is added paused", () => {

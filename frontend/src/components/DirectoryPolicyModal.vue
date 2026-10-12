@@ -45,6 +45,7 @@ const destKey = ref("");
 const topicMode = ref<"inherit" | "fixed" | "auto" | "off">("inherit");
 const topicId = ref<number | null>(null);
 const preview = ref<"inherit" | "first_frame" | "grid" | "off">("inherit");
+const gridLayout = ref("");
 const caption = ref("");
 
 const chats = ref<ChatAliasItem[]>([]);
@@ -107,12 +108,14 @@ async function loadPolicyData(): Promise<void> {
       topicMode.value = existing.topic_mode ?? "inherit";
       topicId.value = existing.topic_id ?? null;
       preview.value = (existing.preview as any) ?? "inherit";
+      gridLayout.value = existing.grid_layout ?? "";
       caption.value = existing.caption_template ?? "";
     } else {
       destKey.value = "";
       topicMode.value = "inherit";
       topicId.value = null;
       preview.value = "inherit";
+      gridLayout.value = "";
       caption.value = "";
     }
 
@@ -152,6 +155,33 @@ watch(
 function onDestChange(): void {
   void loadTopicsForActiveChat();
 }
+
+// ── 自定义网格图规格解析反馈 ──────────────────────────────────────────
+
+const parsedGridInfo = computed(() => {
+  const val = gridLayout.value.trim();
+  if (!val) {
+    return { valid: true, text: "未指定专属规格，将自动跟随全局网格设置", empty: true };
+  }
+  const clean = val.toLowerCase().replace(/[*×,]/g, "x");
+  const parts = clean.split("x");
+  if (parts.length === 2) {
+    const c = parseInt(parts[0].trim(), 10);
+    const r = parseInt(parts[1].trim(), 10);
+    if (!isNaN(c) && !isNaN(r) && c >= 1 && c <= 20 && r >= 1 && r <= 20) {
+      return {
+        valid: true,
+        text: `解析成功：${c} 列 × ${r} 行（共 ${c * r} 帧预览画面）`,
+        empty: false,
+      };
+    }
+  }
+  return {
+    valid: false,
+    text: "格式需为 列x行（如 3x5、4x3，1~20 范围）",
+    empty: false,
+  };
+});
 
 // ── 快捷标签切换 (Toggle 模式：已有时移除，未有时插入) ───────────────
 
@@ -271,6 +301,10 @@ async function onSave(): Promise<void> {
         topic_enabled: null,
         caption_template: caption.value.trim() ? caption.value.trim().slice(0, 2000) : null,
         preview: preview.value === "inherit" ? null : (preview.value as PreviewMode),
+        grid_layout:
+          preview.value === "grid" && gridLayout.value.trim()
+            ? gridLayout.value.trim()
+            : null,
         topic_mode:
           topicMode.value === "inherit" ? null : (topicMode.value as "off" | "auto" | "fixed"),
         topic_id: topicMode.value === "fixed" ? topicId.value : null,
@@ -465,7 +499,7 @@ function onClose(): void {
                 :class="{ 'on-accent': preview === 'grid' }"
                 @click="preview = 'grid'"
               >
-                9宫格剧情图
+                自定义网格图
               </button>
               <button
                 type="button"
@@ -475,6 +509,55 @@ function onClose(): void {
               >
                 关闭封面
               </button>
+            </div>
+
+            <!-- 当选择自定义网格图时展开规格配置 -->
+            <div v-if="preview === 'grid'" class="grid-sub-setting">
+              <div class="grid-sub-row">
+                <span class="grid-sub-label">网格规格</span>
+                <input
+                  v-model="gridLayout"
+                  type="text"
+                  placeholder="留空跟随全局，或输入如 3x5、4x3"
+                  class="target-select grid-input font-mono"
+                />
+                <button
+                  v-if="gridLayout"
+                  type="button"
+                  class="btn-clear-grid"
+                  title="清空后跟随全局配置"
+                  @click="gridLayout = ''"
+                >
+                  跟随全局
+                </button>
+              </div>
+
+              <!-- 快捷预设按钮 -->
+              <div class="grid-presets-row">
+                <span class="grid-presets-label">常用预设:</span>
+                <div class="grid-presets-chips">
+                  <button
+                    v-for="p in ['3x5', '4x3', '3x3', '4x4', '2x4', '5x2']"
+                    :key="p"
+                    type="button"
+                    class="grid-preset-chip"
+                    :class="{ active: gridLayout.toLowerCase().trim() === p }"
+                    @click="gridLayout = p"
+                  >
+                    {{ p }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- 实时解析反馈 -->
+              <div class="grid-status-tip" :class="{ 'is-err': !parsedGridInfo.valid }">
+                <span class="grid-status-dot"></span>
+                <span class="grid-status-text">{{ parsedGridInfo.text }}</span>
+              </div>
+
+              <p class="field-hint">
+                格式：[列数]x[行数]（例如 <code>3x5</code> 为 3 列 5 行，共 15 帧）。自适应原视频真实比例（16:9 / 9:16），绝不拉伸、绝不裁切画面。
+              </p>
             </div>
           </div>
 
@@ -768,6 +851,113 @@ function onClose(): void {
   color: var(--accent, #28995a);
   font-weight: 700;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.grid-sub-setting {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: #f9fafb;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+}
+
+.grid-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.grid-sub-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #374151);
+  white-space: nowrap;
+}
+
+.grid-input {
+  flex: 1;
+}
+
+.btn-clear-grid {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #4b5563;
+  background: #f3f4f6;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.btn-clear-grid:hover {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.grid-presets-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.grid-presets-label {
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.grid-presets-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.grid-preset-chip {
+  padding: 3px 8px;
+  border-radius: var(--radius-sm, 6px);
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.grid-preset-chip:hover {
+  background: #f3f4f6;
+  border-color: rgba(40, 153, 90, 0.3);
+}
+
+.grid-preset-chip.active {
+  background: rgba(40, 153, 90, 0.12);
+  border-color: var(--accent, #28995a);
+  color: var(--accent, #28995a);
+  font-weight: 700;
+}
+
+.grid-status-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #059669;
+}
+
+.grid-status-tip.is-err {
+  color: #dc2626;
+}
+
+.grid-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
 }
 
 .topic-select-wrap {
