@@ -24,7 +24,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Edit `.env` and set `API_ID` and `API_HASH` from [my.telegram.org](https://my.telegram.org). Set `API_TOKEN` when write actions in the console should require a password.
+Edit `.env` and set `API_ID` and `API_HASH` from [my.telegram.org](https://my.telegram.org). `API_TOKEN` is the password for the API. When it is set, every `/api` request except the health and version checks must carry it. The page itself still opens; enter the same value in Settings and the browser remembers it. Docker listens on every network interface, so the token is required or the service will not start. Leave it empty only when the console listens on localhost.
 
 Open `http://<host>:8421`. On the first visit, add a watch folder, turn it on, and choose a destination chat. Put a session file in the `sessions/` directory next to `compose.yml`, or sign in from the page.
 

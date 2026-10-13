@@ -24,7 +24,7 @@ docker compose pull
 docker compose up -d
 ```
 
-编辑 `.env`，至少填入从 [my.telegram.org](https://my.telegram.org) 取得的 `API_ID` 和 `API_HASH`。需要给控制台的写操作加口令时，再填 `API_TOKEN`。
+编辑 `.env`，至少填入从 [my.telegram.org](https://my.telegram.org) 取得的 `API_ID` 和 `API_HASH`。`API_TOKEN` 是访问接口的口令。填上以后，除探活和版本号外，所有 `/api` 请求都要带它。网页仍可直接打开，在设置里填入同一串，浏览器会记住。Docker 默认对所有网卡开放 8421，这时必须填写，否则服务不会启动。留空只适用于只监听本机。
 
 打开 `http://<主机>:8421`。第一次使用时，加上一个监听目录并打开它，再为它指定目标群。把 Session 放到旁边的 `sessions/` 目录，或在网页里登录。
 
