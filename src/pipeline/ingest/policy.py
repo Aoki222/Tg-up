@@ -57,6 +57,7 @@ class IngestDecision:
     is_transient: bool = False
     transient_reason: str = ""
     is_disabled: bool = False
+    settle_delay_seconds: int = 0
 
 
 def match_folder_route(file_path: Path, settings: UploadSettings) -> tuple[str, str, int, bool, bool] | None:
@@ -219,4 +220,19 @@ class IngestPolicy:
             dest_id=dest_id,
             topic_mode=topic_mode,
             fixed_topic_id=fixed_topic_id,
+            settle_delay_seconds=_settle_delay_seconds(file_path, settings),
         )
+
+
+def _settle_delay_seconds(file_path: Path, settings: UploadSettings) -> int:
+    """最近一条启用路由上的落稳等待。0 表示不额外等。禁用路由不往父级借。"""
+    route = find_nearest_route(file_path, settings)
+    if route is None or not route.enabled:
+        return 0
+    try:
+        value = int(route.settle_delay_seconds or 0)
+    except (TypeError, ValueError):
+        return 0
+    if value < 0:
+        return 0
+    return min(value, 86400)

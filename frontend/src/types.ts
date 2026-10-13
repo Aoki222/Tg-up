@@ -165,6 +165,8 @@ export interface FolderRouteItem {
   topic_mode: "off" | "auto" | "fixed" | null;
   topic_id: number | null;
   auto_blocked?: boolean;
+  /** 0 表示不额外等待。直播目录可设 180，大小连续安静这么多秒再入库。 */
+  settle_delay_seconds?: number;
 }
 
 export interface UnmatchedFile {

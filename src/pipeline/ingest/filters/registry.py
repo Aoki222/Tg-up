@@ -8,6 +8,10 @@ from .generic import GENERIC_SUFFIX_MAP
 from .youtube import YouTubeFilter
 
 
+# 末尾已是正式后缀、中间仍带着这些标记的，也是还没写完的文件，例如 file.tmp.ts。
+_INNER_TRANSIENT_SUFFIXES = frozenset({".tmp", ".part", ".temp"})
+
+
 class FilterRegistry:
     def __init__(self) -> None:
         # 1. 静态后缀哈希表 (O(1))
@@ -50,6 +54,18 @@ class FilterRegistry:
                 res = flt.check(file_path)
                 if res is not None and res.is_transient:
                     return res
+
+        # Step 4: 中间后缀。file.tmp.ts 的最终后缀是 .ts，上面的表看不住。
+        # 放在平台过滤器之后，让 .temp.mp4 仍由 YouTube 过滤器解释。
+        for part in file_path.suffixes:
+            nested = part.lower()
+            if nested in _INNER_TRANSIENT_SUFFIXES:
+                source, reason = self._suffix_map[nested]
+                return FilterResult(
+                    is_transient=True,
+                    source_platform=source,
+                    reason=reason,
+                )
 
         # 完全正常的文件，直接放行
         return FilterResult(is_transient=False)

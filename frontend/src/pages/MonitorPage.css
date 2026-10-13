@@ -34,10 +34,69 @@
   cursor: pointer;
 }
 
+.auth-banner {
+  background: #fef2f2;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: #b91c1c;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.auth-banner button {
+  margin-left: 8px;
+  color: #b91c1c;
+  background: #ffffff;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm, 6px);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.auth-banner button:hover {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+}
+
 .unmatched-banner {
   border: 1px solid #f3d7a1;
   background: #fdf5ea;
   color: var(--warn);
+}
+
+/* ══════════════════════════════════════════════════════════
+   目录栏拖拽分割条
+══════════════════════════════════════════════════════════ */
+.dock-resizer {
+  width: 10px;
+  margin: 0 -5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  z-index: 10;
+  flex-shrink: 0;
+  user-select: none;
+  transition: opacity 0.15s ease;
+}
+
+.dock-resizer-line {
+  width: 2px;
+  height: 38px;
+  border-radius: 9999px;
+  background: var(--border, rgba(0, 0, 0, 0.12));
+  transition: all 0.15s ease;
+}
+
+.dock-resizer:hover .dock-resizer-line,
+.dock-resizer.is-dragging .dock-resizer-line {
+  background: var(--accent, #28995a);
+  height: 68px;
+  width: 3px;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -563,6 +622,10 @@
 }
 
 @media (max-width: 860px) {
+  .dock-resizer {
+    display: none;
+  }
+
   .dock-scrim {
     display: block;
     position: absolute;

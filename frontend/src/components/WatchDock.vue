@@ -3,7 +3,11 @@ import { formatBytes } from "../format";
 import type { FsNode } from "../types";
 import { useWatchDock } from "../composables/useWatchDock";
 
-defineProps<{ open: boolean }>();
+defineProps<{
+  open: boolean;
+  width?: number;
+  isResizing?: boolean;
+}>();
 
 const emit = defineEmits<{
   close: [];
@@ -42,7 +46,11 @@ defineExpose({ loadWatchPaths, bumpTrees });
 </script>
 
 <template>
-  <aside class="dock" :class="{ shut: !open }">
+  <aside
+    class="dock"
+    :class="{ shut: !open, 'is-resizing': isResizing }"
+    :style="open && width ? { width: `${width}px` } : undefined"
+  >
     <div class="dock-head">
       <div class="dock-head-left">
         <h2>监控目录</h2>

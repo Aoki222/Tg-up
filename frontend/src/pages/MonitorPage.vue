@@ -15,7 +15,7 @@ import ManualDispatchModal from "../components/ManualDispatchModal.vue";
 import SettingsPage from "./SettingsPage.vue";
 import WorkHeader from "../components/WorkHeader.vue";
 import WatchDock from "../components/WatchDock.vue";
-import { fetchSystemVersion, fetchWorkers } from "../api";
+import { authRequired, fetchSystemVersion, fetchWorkers } from "../api";
 import { useTaskBoard } from "../composables/useTaskBoard";
 import { useSuccessHistory } from "../composables/useSuccessHistory";
 import { useTelegramIdentity } from "../composables/useTelegramIdentity";
@@ -32,6 +32,64 @@ const router = useRouter();
 const { configured, refresh: refreshIdentity } = useTelegramIdentity();
 const dockMedia = window.matchMedia("(max-width: 860px)");
 const dockOpen = ref(!dockMedia.matches);
+
+// ── 目录树自由拖拽拉伸 ──────────────────────────────────────────
+const DOCK_WIDTH_KEY = "uploader_dock_width";
+const DEFAULT_DOCK_WIDTH = 340;
+const MIN_DOCK_WIDTH = 260;
+const MAX_DOCK_WIDTH = 700;
+
+function getStoredDockWidth(): number {
+  try {
+    const saved = localStorage.getItem(DOCK_WIDTH_KEY);
+    if (saved) {
+      const val = parseInt(saved, 10);
+      if (!isNaN(val) && val >= MIN_DOCK_WIDTH && val <= MAX_DOCK_WIDTH) {
+        return val;
+      }
+    }
+  } catch {
+    // 忽略异常
+  }
+  return DEFAULT_DOCK_WIDTH;
+}
+
+const dockWidth = ref(getStoredDockWidth());
+const isResizing = ref(false);
+
+function onResizeStart(e: MouseEvent): void {
+  e.preventDefault();
+  isResizing.value = true;
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "col-resize";
+
+  const startX = e.clientX;
+  const startWidth = dockWidth.value;
+
+  function onMouseMove(moveEvent: MouseEvent): void {
+    const deltaX = moveEvent.clientX - startX;
+    const maxAllowed = Math.min(MAX_DOCK_WIDTH, Math.floor(window.innerWidth * 0.65));
+    const newWidth = Math.min(Math.max(startWidth + deltaX, MIN_DOCK_WIDTH), maxAllowed);
+    dockWidth.value = newWidth;
+  }
+
+  function onMouseUp(): void {
+    isResizing.value = false;
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    window.removeEventListener("mousemove", onMouseMove);
+    window.removeEventListener("mouseup", onMouseUp);
+    try {
+      localStorage.setItem(DOCK_WIDTH_KEY, String(dockWidth.value));
+    } catch {
+      // 忽略存储失败
+    }
+  }
+
+  window.addEventListener("mousemove", onMouseMove);
+  window.addEventListener("mouseup", onMouseUp);
+}
+
 const settingsOpen = ref(false);
 const settingsDirty = ref(false);
 const workerModalOpen = ref(false);
@@ -45,6 +103,7 @@ const workers = ref<WorkerSnapshot[]>([]);
 let workerTimer = 0;
 
 async function refreshWorkers(): Promise<void> {
+  if (authRequired.value) return;
   try {
     workers.value = await fetchWorkers();
   } catch {
@@ -120,9 +179,12 @@ onDeactivated(() => {
 });
 
 const liveSpeed = computed(() => {
-  const current = boardItems.value.find((item) => item.status === "uploading" || item.status === "assigned");
-  if (!current) return "—";
-  if (current.speed_bps > 0) return formatSpeed(current.speed_bps);
+  const activeTasks = boardItems.value.filter(
+    (item) => (item.status === "uploading" || item.status === "assigned") && item.stage !== "success",
+  );
+  if (activeTasks.length === 0) return "—";
+  const totalSpeed = activeTasks.reduce((sum, item) => sum + (item.speed_bps || 0), 0);
+  if (totalSpeed > 0) return formatSpeed(totalSpeed);
   return "测算中";
 });
 
@@ -301,7 +363,11 @@ watch(
       @open-settings="openSettings('telegram')"
     />
 
-    <p v-if="configured === false" class="setup-banner">
+    <p v-if="authRequired" class="setup-banner auth-banner">
+      <span>⚠️ API 鉴权失败：后端已开启 API_TOKEN 访问控制，但前端未配置或 Token 无效。</span>
+      <button type="button" @click="openSettings('account')">前往设置配置 Token</button>
+    </p>
+    <p v-else-if="configured === false" class="setup-banner">
       请先配置 API_ID / API_HASH，保存后当前进程即可使用。
       <button type="button" @click="openSettings('account')">去配置</button>
     </p>
@@ -321,10 +387,22 @@ watch(
       <WatchDock
         ref="watchDockRef"
         :open="dockOpen"
+        :width="dockWidth"
+        :is-resizing="isResizing"
         @close="dockOpen = false"
         @open-policy="openPolicy"
         @open-manual="manualDispatchOpen = true"
       />
+
+      <div
+        v-if="dockOpen"
+        class="dock-resizer"
+        :class="{ 'is-dragging': isResizing }"
+        title="按住鼠标拖拽调整目录栏宽度"
+        @mousedown="onResizeStart"
+      >
+        <div class="dock-resizer-line"></div>
+      </div>
 
       <TaskBoard
         class="board-pane"

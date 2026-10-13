@@ -45,7 +45,11 @@ async def test_walk_waits_when_the_queue_is_full(tmp_path: Path) -> None:
     assert {path.name for path in received} == {f"{index}.mp4" for index in range(30)}
 
 
-async def test_consume_keeps_inflight_within_concurrency(tmp_path: Path) -> None:
+async def test_consume_keeps_inflight_within_concurrency(tmp_path: Path, monkeypatch) -> None:
+    async def instant(file_path: Path, **_kwargs) -> int | None:
+        return file_path.stat().st_size if file_path.is_file() else None
+
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", instant)
     root = tmp_path / "in"
     _old_videos(root, 12)
     repo = FakeRepo()

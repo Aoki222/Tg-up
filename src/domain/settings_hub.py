@@ -156,6 +156,9 @@ def _render_routes(payload: dict) -> str:
             block += "enabled = false\n"
         if auto_blocked:
             block += "auto_blocked = true\n"
+        settle_delay = _as_settle_delay(item.get("settle_delay_seconds", 0))
+        if settle_delay > 0:
+            block += f"settle_delay_seconds = {settle_delay}\n"
         chunks.append(block)
     if len(chunks) == 1:
         return ""
@@ -351,6 +354,19 @@ def _as_watch_extensions(data: dict) -> frozenset[str]:
     return frozenset(normalized)
 
 
+def _as_settle_delay(raw: object) -> int:
+    """落稳等待秒数。非法、负数当 0。上限一天，避免把入库队列拖住一整天以上。"""
+    if isinstance(raw, bool) or raw in (None, ""):
+        return 0
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    if value < 0:
+        return 0
+    return min(value, 86400)
+
+
 def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
     """把原始 routes 转成不可变领域对象，校验目标、布尔值并保留最后一条路径配置。"""
     raw = data.get("routes") or []
@@ -436,6 +452,7 @@ def _as_routes(data: dict) -> tuple[FolderRoute, ...]:
                 topic_mode=topic_mode,
                 topic_id=topic_id,
                 auto_blocked=auto_blocked,
+                settle_delay_seconds=_as_settle_delay(item.get("settle_delay_seconds", 0)),
             )
         )
     return tuple(routes)
@@ -663,6 +680,7 @@ class SettingsHub:
                     "topic_mode": route.topic_mode,
                     "topic_id": route.topic_id,
                     "auto_blocked": route.auto_blocked,
+                    "settle_delay_seconds": int(route.settle_delay_seconds or 0),
                 }
                 for route in settings.routes
             ],

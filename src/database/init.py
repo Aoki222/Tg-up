@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS upload_tasks (
     slice_phase     TEXT,
     source_born_at  REAL,                         -- 文件落盘时间；读不到时是哨兵，升序靠后
     natural_key     TEXT,                         -- 路径自然序的补零键
+    source_mtime    REAL,                         -- 入库时的 mtime；旧行是 NULL，只按大小认同一文件
     
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     assigned_at     DATETIME,
@@ -190,6 +191,7 @@ async def init_db() -> None:
         await _ensure_column(db, "upload_tasks", "slice_phase", "TEXT")
         await _ensure_column(db, "upload_tasks", "source_born_at", "REAL")
         await _ensure_column(db, "upload_tasks", "natural_key", "TEXT")
+        await _ensure_column(db, "upload_tasks", "source_mtime", "REAL")
         await _ensure_column(db, "telegram_channels", "forum", "INTEGER NOT NULL DEFAULT 0")
         await _backfill_slice_phase(db)
         await _backfill_schedule_keys(db)

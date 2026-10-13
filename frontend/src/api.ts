@@ -10,7 +10,7 @@
  */
 
 import axios, { type AxiosError } from "axios";
-import { ElMessage } from "element-plus";
+import { ref } from "vue";
 import type {
   BoardTask,
   BoardSnapshot,
@@ -34,6 +34,9 @@ import type {
 
 const TOKEN_KEY = "uploader_api_token";
 
+/** 全局响应式状态：标记当前是否因 API_TOKEN 未配置或无效而导致 401 鉴权失败 */
+export const authRequired = ref(false);
+
 /**
  * 从浏览器 localStorage 中获取当前配置的 API 鉴权令牌
  * @returns 存储的 token 字符串，未配置时返回空串
@@ -52,6 +55,7 @@ export function setApiToken(token: string): void {
   } else {
     localStorage.removeItem(TOKEN_KEY);
   }
+  authRequired.value = false;
 }
 
 // ── Axios 客户端实例与全局拦截器 ─────────────────────────────────
@@ -79,15 +83,20 @@ apiClient.interceptors.request.use((config) => {
 /**
  * 【响应拦截器】
  * 集中接管服务端异常响应：
- * 1. 遇到 401 鉴权失效时给出全局醒目 Toast 提示，引导用户前往「设置」页补充配置；
+ * 1. 遇到 401 鉴权失效时标记 authRequired 状态，由页面常驻横幅接管，避免 Toast 刷屏；
  * 2. 自动抽取后端 FastAPI 异常模型中的 `detail` 字段，解包为标准 Error 对象便于上层 catch。
  */
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (authRequired.value) {
+      authRequired.value = false;
+    }
+    return response;
+  },
   (error: AxiosError<{ detail?: string }>) => {
     // 捕获鉴权异常 (401)
     if (error.response?.status === 401) {
-      ElMessage.error("鉴权失败：API Token 无效或未提供，请在「设置」页配置");
+      authRequired.value = true;
     }
 
     // 统一提取服务端明确给出的 detail 错误提示
@@ -137,6 +146,12 @@ export async function deleteWorker(name: string): Promise<void> {
 
 // ── 上传配置 (upload.toml) 相关 API ────────────────────────────
 
+function settleDelaySeconds(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(86400, Math.floor(parsed));
+}
+
 /**
  * 内部辅助函数：规范化配置中的监听目录结构，提取路径字符串数组
  */
@@ -160,6 +175,7 @@ export function normalizeSettings(data: UploadConfig): UploadConfig {
       grid_layout: item.grid_layout ?? null,
       topic_mode: item.topic_mode ?? null,
       topic_id: item.topic_id ?? null,
+      settle_delay_seconds: settleDelaySeconds(item.settle_delay_seconds),
     })),
     chats: (data.chats ?? []).map((item) => ({
       chat_id: item.chat_id,

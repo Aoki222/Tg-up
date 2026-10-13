@@ -47,6 +47,7 @@ const topicId = ref<number | null>(null);
 const preview = ref<"inherit" | "first_frame" | "grid" | "off">("inherit");
 const gridLayout = ref("");
 const caption = ref("");
+const settleDelay = ref(0);
 
 const chats = ref<ChatAliasItem[]>([]);
 const driveFolders = ref<DriveFolderItem[]>([]);
@@ -110,6 +111,7 @@ async function loadPolicyData(): Promise<void> {
       preview.value = (existing.preview as any) ?? "inherit";
       gridLayout.value = existing.grid_layout ?? "";
       caption.value = existing.caption_template ?? "";
+      settleDelay.value = clampSettle(existing.settle_delay_seconds);
     } else {
       destKey.value = "";
       topicMode.value = "inherit";
@@ -117,6 +119,7 @@ async function loadPolicyData(): Promise<void> {
       preview.value = "inherit";
       gridLayout.value = "";
       caption.value = "";
+      settleDelay.value = 0;
     }
 
     await loadTopicsForActiveChat();
@@ -308,6 +311,7 @@ async function onSave(): Promise<void> {
         topic_mode:
           topicMode.value === "inherit" ? null : (topicMode.value as "off" | "auto" | "fixed"),
         topic_id: topicMode.value === "fixed" ? topicId.value : null,
+        settle_delay_seconds: clampSettle(settleDelay.value),
       };
       updatedRoutes.push(newRoute);
     }
@@ -326,6 +330,12 @@ async function onSave(): Promise<void> {
   } finally {
     saving.value = false;
   }
+}
+
+function clampSettle(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(86400, Math.floor(parsed));
 }
 
 function onClose(): void {
@@ -563,10 +573,29 @@ function onClose(): void {
 
           <div class="divider"></div>
 
-          <!-- 3. 消息 Caption 说明模板 -->
+          <!-- 3. 落稳等待 -->
+          <div class="form-section">
+            <label class="section-label" for="settle-delay">3. 落稳等待（秒）</label>
+            <input
+              id="settle-delay"
+              v-model.number="settleDelay"
+              type="number"
+              min="0"
+              max="86400"
+              step="1"
+              class="target-select settle-input"
+            />
+            <p class="field-hint">
+              0 表示不额外等待。正在录制的目录可以填 180：文件大小连续安静这么多秒后才入库。需要先选定这个目录自己的投递目标，秒数才会写进策略。子目录单独设了策略时，用子目录的秒数。
+            </p>
+          </div>
+
+          <div class="divider"></div>
+
+          <!-- 4. 消息 Caption 说明模板 -->
           <div class="form-section">
             <div class="caption-head">
-              <label class="section-label">3. 消息 Caption 说明模板</label>
+              <label class="section-label">4. 消息 Caption 说明模板</label>
               <span class="caption-sub">支持 Telegram HTML</span>
             </div>
 
@@ -797,6 +826,10 @@ function onClose(): void {
   font-size: 12px;
   color: var(--text-secondary, #9ca3af);
   line-height: 1.4;
+}
+
+.settle-input {
+  max-width: 8.5rem;
 }
 
 .topic-box {

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from src.domain.task import AfterSuccess, TaskPolicy
 from src.domain.upload_settings import FolderRoute, PreviewMode, UploadSettings
@@ -51,9 +52,21 @@ class FakeRepo:
     def __init__(self):
         self.tasks: list[dict] = []
         self.active: dict[str, int] = {}
+        self.block: tuple[str, int] | None = None
 
     async def find_active_by_file_path(self, file_path: str) -> int | None:
         return self.active.get(file_path)
+
+    async def find_ingest_block(
+        self,
+        file_path: str,
+        file_size: int,
+        source_mtime: float | None,
+    ) -> tuple[str, int] | None:
+        active_id = self.active.get(file_path)
+        if active_id is not None:
+            return ("active", active_id)
+        return self.block
 
     async def record_unmatched(self, file_path: str, file_name: str, folder_name: str, file_size: int) -> None:
         return None
@@ -96,14 +109,41 @@ def _video(tmp_path: Path, name: str) -> Path:
     return path
 
 
-async def test_old_file_is_stable_immediately(tmp_path: Path) -> None:
+async def _size_now(file_path: Path, **_kwargs) -> int | None:
+    try:
+        if not file_path.is_file():
+            return None
+        return file_path.stat().st_size
+    except OSError:
+        return None
+
+
+async def test_old_file_rechecks_once(tmp_path: Path) -> None:
     path = _video(tmp_path, "old.mp4")
     past = time.time() - 60
     os.utime(path, (past, past))
     started = time.monotonic()
-    size = await wait_until_file_stable(path, check_interval=2.0, stable_rounds=3, timeout_seconds=5)
+    size = await wait_until_file_stable(path, check_interval=0.05, stable_rounds=3, timeout_seconds=2)
+    elapsed = time.monotonic() - started
     assert size == 5
-    assert time.monotonic() - started < 0.2
+    assert 0.04 <= elapsed < 0.25
+
+
+async def test_old_file_growth_restarts_stable_rounds(tmp_path: Path, monkeypatch) -> None:
+    path = _video(tmp_path, "grow.mp4")
+    past = time.time() - 60
+    os.utime(path, (past, past))
+    calls = {"n": 0}
+
+    async def fake_sleep(_seconds: float) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            path.write_bytes(b"video!!")
+
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.asyncio.sleep", fake_sleep)
+    size = await wait_until_file_stable(path, check_interval=0.05, stable_rounds=3, timeout_seconds=5)
+    assert size == 7
+    assert calls["n"] == 3
 
 
 async def test_fresh_file_counts_first_stat(tmp_path: Path, monkeypatch) -> None:
@@ -163,7 +203,8 @@ async def test_duplicate_path_skipped_while_inflight(tmp_path: Path, monkeypatch
     assert len(repo.tasks) == 1
 
 
-async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path) -> None:
+async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
     """建话题等待时，另一个目录的文件仍能入库。"""
     topic_started = asyncio.Event()
     topic_release = asyncio.Event()
@@ -211,6 +252,7 @@ async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path) -> None:
 
 async def test_missing_session_requeues_file(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("src.pipeline.ingest.ingestor.SESSION_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
 
     class UnavailableTopics:
         async def get_or_create_topic(self, fold_path: str, folder_name: str, chat_id: int) -> int:
@@ -238,6 +280,7 @@ async def test_missing_session_requeues_file(tmp_path: Path, monkeypatch) -> Non
 
 async def test_oversized_file_is_stored_without_schedule(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("src.domain.limits.TELEGRAM_BOT_MAX_BYTES", 1)
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
     ingestor, repo = _ingestor(tmp_path)
     path = _video(tmp_path, "big.mp4")
     past = time.time() - 60
@@ -252,6 +295,7 @@ async def test_oversized_file_is_stored_without_schedule(tmp_path: Path, monkeyp
 
 async def test_oversized_preview_stays_preparing_until_cover_finishes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("src.domain.limits.TELEGRAM_BOT_MAX_BYTES", 1)
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
     jobs: list[object] = []
 
     class Pool:
@@ -287,7 +331,8 @@ async def test_existing_task_is_kept_when_route_no_longer_matches(tmp_path: Path
     assert repo.tasks == []
 
 
-async def test_blank_caption_is_rendered_from_the_route(tmp_path: Path) -> None:
+async def test_blank_caption_is_rendered_from_the_route(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
     shown = _video(tmp_path, "Show.mp4")
     kept = _video(tmp_path, "Kept.mp4")
     past = time.time() - 60
@@ -311,3 +356,149 @@ async def test_blank_caption_is_rendered_from_the_route(tmp_path: Path) -> None:
     await ingestor.handle_new_file(kept, "手工说明")
     assert repo.tasks[0]["caption"] == "Show"
     assert repo.tasks[1]["caption"] == "手工说明"
+
+
+async def test_same_fingerprint_skips_insert(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
+    ingestor, repo = _ingestor(tmp_path)
+    repo.block = ("same", 3)
+    assert await ingestor.handle_new_file(_video(tmp_path, "again.mp4")) == 3
+    assert repo.tasks == []
+
+
+async def test_manual_dispatch_ignores_fingerprint(tmp_path: Path) -> None:
+    repo = FakeRepo()
+    repo.block = ("same", 9)
+    hub = FakeHub(
+        _settings(
+            observer_paths=(tmp_path,),
+            routes=(FolderRoute(path=tmp_path.resolve(), chat_id=-100, dest_id="-100"),),
+        )
+    )
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=1)
+    result = await ingestor.manual_dispatch(_video(tmp_path, "hand.mp4"))
+    assert result["ok"] is True
+    assert len(repo.tasks) == 1
+
+
+async def test_inner_temp_suffix_is_not_parked(tmp_path: Path) -> None:
+    repo = FakeRepo()
+    hub = FakeHub(
+        _settings(
+            routes=(
+                FolderRoute(
+                    path=tmp_path.resolve(),
+                    chat_id=-100,
+                    dest_id="-100",
+                    settle_delay_seconds=180,
+                ),
+            ),
+        )
+    )
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=1)
+    path = tmp_path / "clip.tmp.mp4"
+    path.write_bytes(b"video")
+    assert await ingestor.handle_new_file(path) is None
+    assert ingestor._settle == {}
+    assert repo.tasks == []
+
+
+async def test_settle_parks_outside_the_gate_and_resets_when_size_shrinks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
+    live = tmp_path / "live"
+    live.mkdir()
+    repo = FakeRepo()
+    hub = FakeHub(
+        _settings(
+            routes=(
+                FolderRoute(path=tmp_path.resolve(), chat_id=-100, dest_id="-100"),
+                FolderRoute(
+                    path=live.resolve(),
+                    chat_id=-100,
+                    dest_id="-100",
+                    settle_delay_seconds=180,
+                ),
+            ),
+        )
+    )
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=1)
+    try:
+        parked = live / "stream.mp4"
+        parked.write_bytes(b"video")
+        normal = _video(tmp_path, "done.mp4")
+        assert await ingestor.handle_new_file(parked) is None
+        assert str(parked.resolve()) not in ingestor._inflight_paths
+        assert await ingestor.handle_new_file(normal) == 1
+        assert len(repo.tasks) == 1
+
+        key = str(parked.resolve())
+        item = ingestor._settle[key]
+        first_ready = item.ready_at
+        parked.write_bytes(b"vi")
+        assert await ingestor.handle_new_file(parked) is None
+        item = ingestor._settle[key]
+        assert item.last_size == 2
+        assert item.ready_at >= first_ready
+
+        item.ready_at = time.monotonic() - 1
+        ready = await ingestor._poll_settle_once()
+        assert ready == [(key, "")]
+        task_id = None
+        for path_key, caption in ready:
+            task_id = await ingestor.handle_new_file(Path(path_key), caption, settled=True)
+        assert task_id == 2
+        assert len(repo.tasks) == 2
+        assert repo.tasks[1]["file_size"] == 2
+        assert repo.tasks[1]["source_mtime"] == parked.stat().st_mtime
+    finally:
+        await ingestor.stop()
+
+
+async def test_settle_releases_when_delay_becomes_zero(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
+    repo = FakeRepo()
+    route = FolderRoute(
+        path=tmp_path.resolve(),
+        chat_id=-100,
+        dest_id="-100",
+        settle_delay_seconds=180,
+    )
+    hub = FakeHub(_settings(routes=(route,)))
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=1)
+    try:
+        path = _video(tmp_path, "live.mp4")
+        assert await ingestor.handle_new_file(path) is None
+        hub._settings = _settings(routes=(replace(route, settle_delay_seconds=0),))
+        ready = await ingestor._poll_settle_once()
+        assert [item[0] for item in ready] == [str(path.resolve())]
+        assert ingestor._settle == {}
+    finally:
+        await ingestor.stop()
+
+
+async def test_settle_drops_a_missing_file(tmp_path: Path) -> None:
+    repo = FakeRepo()
+    hub = FakeHub(
+        _settings(
+            routes=(
+                FolderRoute(
+                    path=tmp_path.resolve(),
+                    chat_id=-100,
+                    dest_id="-100",
+                    settle_delay_seconds=180,
+                ),
+            ),
+        )
+    )
+    ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=1)
+    try:
+        path = _video(tmp_path, "gone.mp4")
+        assert await ingestor.handle_new_file(path) is None
+        path.unlink()
+        assert await ingestor._poll_settle_once() == []
+        assert ingestor._settle == {}
+    finally:
+        await ingestor.stop()

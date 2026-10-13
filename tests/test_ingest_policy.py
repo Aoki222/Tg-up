@@ -42,6 +42,41 @@ def test_empty_watch_extensions_allows_any_file() -> None:
     assert decision.need_single is False
 
 
+def test_settle_delay_uses_the_nearest_enabled_route(tmp_path: Path) -> None:
+    parent = tmp_path / "live"
+    child = parent / "done"
+    parent.mkdir()
+    child.mkdir()
+    settings = _settings(
+        routes=(
+            FolderRoute(path=parent, chat_id=-100, dest_id="-100", settle_delay_seconds=180),
+            FolderRoute(path=child, chat_id=-100, dest_id="-100", settle_delay_seconds=0),
+        )
+    )
+    parent_decision = IngestPolicy().decide(parent / "a.mp4", settings)
+    child_decision = IngestPolicy().decide(child / "b.mp4", settings)
+    assert parent_decision.allowed is True
+    assert parent_decision.settle_delay_seconds == 180
+    assert child_decision.allowed is True
+    assert child_decision.settle_delay_seconds == 0
+
+    disabled = _settings(
+        routes=(
+            FolderRoute(path=parent, chat_id=-100, dest_id="-100", settle_delay_seconds=180),
+            FolderRoute(
+                path=child,
+                chat_id=-100,
+                dest_id="-100",
+                enabled=False,
+                settle_delay_seconds=30,
+            ),
+        )
+    )
+    blocked = IngestPolicy().decide(child / "b.mp4", disabled)
+    assert blocked.allowed is False
+    assert blocked.settle_delay_seconds == 0
+
+
 def test_video_gets_preview_when_enabled() -> None:
     decision = IngestPolicy().decide(
         Path("clip.mp4"),

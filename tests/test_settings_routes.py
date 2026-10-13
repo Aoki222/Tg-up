@@ -70,6 +70,67 @@ def test_render_and_load_routes_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert "preview" not in follow_block
 
 
+def test_settle_delay_roundtrip(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    live = tmp_path / "live"
+    still = tmp_path / "still"
+    live.mkdir()
+    still.mkdir()
+    text = render_upload_toml(
+        {
+            "chat_id": -100,
+            "observer_paths": [str(tmp_path / "download")],
+            "preview": "off",
+            "topic_creation_enabled": False,
+            "after_success": "keep",
+            "concurrency": 1,
+            "max_retries": 3,
+            "upload_timeout_seconds": 1200,
+            "assigned_timeout_seconds": 600,
+            "stable_timeout_seconds": 30,
+            "watch_extensions": ["mp4"],
+            "routes": [
+                {
+                    "name": "直播",
+                    "path": str(live),
+                    "chat_id": -100111,
+                    "dest_id": "-100111",
+                    "settle_delay_seconds": 180,
+                },
+                {
+                    "name": "静",
+                    "path": str(still),
+                    "chat_id": -100222,
+                    "dest_id": "-100222",
+                    "settle_delay_seconds": 0,
+                },
+            ],
+        }
+    )
+    assert "settle_delay_seconds = 180" in text
+    still_block = text.split('name = "静"', 1)[1]
+    assert "settle_delay_seconds" not in still_block
+    config = tmp_path / "upload.toml"
+    config.write_text(text, encoding="utf-8")
+    settings = load_upload_settings(config, tmp_path)
+    by_name = {route.name: route for route in settings.routes}
+    assert by_name["直播"].settle_delay_seconds == 180
+    assert by_name["静"].settle_delay_seconds == 0
+
+    config.write_text(text.replace("settle_delay_seconds = 180", "settle_delay_seconds = -4"), encoding="utf-8")
+    assert load_upload_settings(config, tmp_path).routes[0].settle_delay_seconds == 0
+    config.write_text(
+        text.replace("settle_delay_seconds = 180", 'settle_delay_seconds = "soon"'),
+        encoding="utf-8",
+    )
+    assert load_upload_settings(config, tmp_path).routes[0].settle_delay_seconds == 0
+    config.write_text(
+        text.replace("settle_delay_seconds = 180", "settle_delay_seconds = 90000"),
+        encoding="utf-8",
+    )
+    assert load_upload_settings(config, tmp_path).routes[0].settle_delay_seconds == 86400
+
+
 def test_render_chats_and_disabled_route(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     movies = tmp_path / "movies"

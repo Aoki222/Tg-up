@@ -1,8 +1,9 @@
 """发现层之后的入库。
 
-顺序：路径是否命中路由 → 扩展名过滤 → 路径去重 → 等文件写完 → 再建话题 → 入库。
+顺序：临时文件跳过 → 目录落稳等待（不占入库名额）→ 路径去重 → 等文件写稳 → 再建话题 → 按指纹入库。
 未命中只写入 unmatched_files，不进上传队列。
 写稳和建话题不占全局锁，多个文件可并行等待；只有「再查重 + INSERT」串行。
+落稳等待在信号量外面，分钟级安静不会堵住其他文件。
 需要封面时写成 preparing 后立刻返回；截图由 PreviewPool 做完再转 pending。
 封面失败不丢视频：page_path 置空，仍然上传。
 """
@@ -10,7 +11,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import time
 
@@ -34,6 +35,17 @@ logger = get_logger(__name__)
 INGEST_CONCURRENCY = 8
 # session 还没连上时先放回队列。启动扫描和连接是并行的，不能把文件直接丢掉。
 SESSION_RETRY_SECONDS = 5.0
+# 落稳池只 stat，不占上面的入库名额。
+SETTLE_POLL_SECONDS = 2.5
+# 复检时 mtime 差小于这个值视为没被改写。
+_STABLE_MTIME_SECONDS = 0.01
+
+
+@dataclass
+class _SettleWait:
+    last_size: int
+    ready_at: float
+    caption: str
 
 
 async def wait_until_file_stable(
@@ -44,8 +56,9 @@ async def wait_until_file_stable(
 ) -> int | None:
     """等拷贝/下载结束：连续若干次看到的文件大小不变才返回。
 
-    第一次 stat 算一轮。mtime 已经久于「还要再观察的总间隔」时，
-    视为启动扫盘碰到的旧文件，立刻返回，不必再睡。
+    第一次 stat 算一轮。mtime 已经较旧时仍再睡一个检查间隔并复检，
+    避免拷贝保留了源文件时间戳、内容却还在增长。
+    这一次复检里大小和 mtime 都没变就返回。大小变了，再按连续稳定轮数等。
     文件中途消失或总等待超时返回 None，本轮放弃，等下次扫盘或新事件再试。
     """
     deadline = time.monotonic() + timeout_seconds
@@ -57,10 +70,29 @@ async def wait_until_file_stable(
         return None
 
     last_size = stat_result.st_size
-    age = time.time() - stat_result.st_mtime
+    last_mtime = stat_result.st_mtime
+    age = time.time() - last_mtime
     remaining_rounds = max(0, stable_rounds - 1)
-    if remaining_rounds == 0 or age >= check_interval * remaining_rounds:
+    if remaining_rounds == 0:
         return last_size
+
+    if age >= check_interval * remaining_rounds:
+        if time.monotonic() >= deadline:
+            logger.warning("等待文件稳定超时: %s", file_path)
+            return None
+        await asyncio.sleep(check_interval)
+        try:
+            again = file_path.stat()
+        except OSError:
+            return None
+        if not file_path.is_file():
+            return None
+        if (
+            again.st_size == last_size
+            and abs(again.st_mtime - last_mtime) < _STABLE_MTIME_SECONDS
+        ):
+            return last_size
+        last_size = again.st_size
 
     stable_hits = 1
     while stable_hits < stable_rounds:
@@ -108,10 +140,20 @@ class FileIngestor:
         self._running = True
         self._file_queue: asyncio.Queue[Path | None] | None = None
         self._inflight: set[asyncio.Task] = set()
+        self._settle_lock = asyncio.Lock()
+        self._settle: dict[str, _SettleWait] = {}
+        self._settle_task: asyncio.Task | None = None
 
-    async def handle_new_file(self, file_path: Path, caption: str = "") -> int | None:
+    async def handle_new_file(
+        self,
+        file_path: Path,
+        caption: str = "",
+        *,
+        settled: bool = False,
+    ) -> int | None:
         """发现层回调。同一路径正在处理时直接跳过，避免并行双等。
 
+        落稳等待发生在占入库名额之前。settled=True 表示安静时间已经到了，不再放回等待池。
         返回入库后的数字 id；扩展名不符、未写稳则 None。
         已有未完成任务时返回那条 id，不重复插入。
         """
@@ -132,6 +174,18 @@ class FileIngestor:
                 logger.info("未命中路由，不上传: %s", file_path)
             else:
                 logger.info("跳过非目标扩展名: %s", file_path)
+            return None
+
+        if not settled and decision.settle_delay_seconds > 0:
+            async with self._paths_lock:
+                if path_key in self._inflight_paths:
+                    logger.info("已在入库中，忽略重复发现: %s", file_path)
+                    return None
+            existing = await self.task_repository.find_active_by_file_path(path_key)
+            if existing:
+                logger.info("已有未完成任务，忽略重复发现: %s", file_path)
+                return existing
+            await self._note_settle(file_path, caption, decision.settle_delay_seconds)
             return None
 
         async with self._paths_lock:
@@ -367,6 +421,13 @@ class FileIngestor:
         if file_size is None:
             logger.warning("文件不存在或未写稳: %s", file_path)
             return None
+        try:
+            fresh = file_path.stat()
+        except OSError:
+            logger.warning("文件不存在或未写稳: %s", file_path)
+            return None
+        file_size = fresh.st_size
+        source_mtime = fresh.st_mtime
         if not self._running:
             return None
 
@@ -418,9 +479,17 @@ class FileIngestor:
             return None
 
         async with self._insert_lock:
-            existing = await self.task_repository.find_active_by_file_path(str(file_path))
-            if existing:
-                logger.info("已有未完成任务，忽略重复发现: %s", file_path)
+            block = await self.task_repository.find_ingest_block(
+                str(file_path),
+                file_size,
+                source_mtime,
+            )
+            if block is not None:
+                kind, existing = block
+                if kind == "same":
+                    logger.info("已有相同指纹记录，忽略: %s", file_path)
+                else:
+                    logger.info("已有未完成任务，忽略重复发现: %s", file_path)
                 return existing
             platform = decision.platform or "telegram"
             oversized = limits.telegram_bot_blocked(file_size, platform)
@@ -446,6 +515,7 @@ class FileIngestor:
                 caption=caption,
                 after_success=policy.after_success.value,
                 error_msg=limits.OVERSIZED_REASON if oversized and not need_preview else None,
+                source_mtime=source_mtime,
             )
             self.settings_hub.remember_policy(task_id, policy)
 
@@ -559,11 +629,111 @@ class FileIngestor:
             return
         await self._file_queue.put(file_path)
 
+    def _current_settle_delay(self, file_path: Path) -> int:
+        decision = self.ingest_policy.decide(file_path, self.settings_hub.get())
+        if not decision.allowed:
+            return 0
+        return max(0, int(decision.settle_delay_seconds or 0))
+
+    async def _note_settle(self, file_path: Path, caption: str, delay: int) -> None:
+        """记下路径和当前大小。大小一变就重算安静截止时间。不占入库名额。"""
+        path_key = str(file_path)
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            return
+        if not file_path.is_file():
+            return
+        now = time.monotonic()
+        async with self._settle_lock:
+            if not self._running:
+                return
+            current = self._settle.get(path_key)
+            if current is None:
+                self._settle[path_key] = _SettleWait(last_size=size, ready_at=now + delay, caption=caption)
+            elif current.last_size != size:
+                current.last_size = size
+                current.ready_at = now + delay
+                if caption:
+                    current.caption = caption
+            elif caption:
+                current.caption = caption
+            self._ensure_settle_loop_locked()
+
+    def _ensure_settle_loop_locked(self) -> None:
+        task = self._settle_task
+        if task is None or task.done():
+            self._settle_task = asyncio.create_task(self._settle_loop())
+
+    async def _poll_settle_once(self) -> list[tuple[str, str]]:
+        """看一眼等待池。到点或等待被改成 0 的路径交出去，调用方再入库。"""
+        now = time.monotonic()
+        ready: list[tuple[str, str]] = []
+        async with self._settle_lock:
+            for path_key, item in list(self._settle.items()):
+                path = Path(path_key)
+                try:
+                    stat_result = path.stat()
+                except OSError:
+                    self._settle.pop(path_key, None)
+                    continue
+                if not path.is_file():
+                    self._settle.pop(path_key, None)
+                    continue
+                delay = self._current_settle_delay(path)
+                size = stat_result.st_size
+                if delay <= 0:
+                    ready.append((path_key, item.caption))
+                    self._settle.pop(path_key, None)
+                    continue
+                if size != item.last_size:
+                    item.last_size = size
+                    item.ready_at = now + delay
+                    continue
+                if now >= item.ready_at:
+                    ready.append((path_key, item.caption))
+                    self._settle.pop(path_key, None)
+            return ready
+
+    async def _settle_loop(self) -> None:
+        try:
+            while self._running:
+                await asyncio.sleep(SETTLE_POLL_SECONDS)
+                if not self._running:
+                    break
+                ready = await self._poll_settle_once()
+                for path_key, caption in ready:
+                    if not self._running:
+                        break
+                    await self._ingest_settled(path_key, caption)
+                async with self._settle_lock:
+                    if self._settle and self._running:
+                        continue
+                    if self._settle_task is asyncio.current_task():
+                        self._settle_task = None
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _ingest_settled(self, path_key: str, caption: str) -> None:
+        try:
+            await self.handle_new_file(Path(path_key), caption, settled=True)
+        except TopicSessionUnavailable:
+            logger.warning("暂无已连接的 Telegram session，落稳文件稍后重试: %s", path_key)
+            await self._requeue_when_session_may_connect(Path(path_key))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("落稳后入库失败: %s", path_key)
+
     async def stop(self) -> None:
-        """不再接新文件，并取消正在跑的入库（含写稳等待）。"""
+        """不再接新文件，并取消正在跑的入库（含写稳等待和落稳池）。"""
         self._running = False
         for task in list(self._inflight):
             task.cancel()
+        settle = self._settle_task
+        if settle is not None:
+            settle.cancel()
         queue = self._file_queue
         if queue is not None:
             # 队列满时丢掉一个待扫路径，也要把停止哨兵放进去，否则消费循环会卡在 get。
@@ -578,5 +748,7 @@ class FileIngestor:
                         break
                     queue.task_done()
         pending = list(self._inflight)
+        if settle is not None and settle not in self._inflight:
+            pending.append(settle)
         if pending:
             await asyncio.wait(pending, timeout=3)

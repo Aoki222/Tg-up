@@ -40,6 +40,8 @@ class FolderRoute:
     topic_mode: str | None = None
     topic_id: int | None = None
     auto_blocked: bool = False
+    # 0 表示发现后立刻走原来的写稳。直播目录可设 180，大小连续安静这么多秒再入库。
+    settle_delay_seconds: int = 0
 
 
 @dataclass(frozen=True)

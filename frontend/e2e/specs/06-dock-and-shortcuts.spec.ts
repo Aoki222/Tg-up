@@ -61,6 +61,27 @@ test("删除监听路径后列表清空并暂停", async ({ page, world }) => {
   expect(world.settings.watch_enabled).toBe(false);
 });
 
+test("目录策略可以单独保存落稳等待", async ({ page, world }) => {
+  await openApp(page);
+  await page.locator("aside.dock").getByRole("button", { name: "策略" }).click();
+  const policy = page.getByRole("dialog", { name: /路径交付策略/ });
+  const delay = policy.locator("#settle-delay");
+  await expect(delay).toBeVisible();
+  await expect(delay).toHaveValue("0");
+  await policy.locator("select.target-select").selectOption("tg:-100123");
+  await delay.fill("180");
+  await policy.getByRole("button", { name: "保存此策略" }).click();
+  await expect(page.locator(".el-message--success")).toContainText("已保存「inbox」");
+  const route = world.settingsPuts.at(-1)?.routes[0] as {
+    path: string;
+    settle_delay_seconds: number;
+    dest_id: string;
+  };
+  expect(route.path).toBe("D:/media/inbox");
+  expect(route.settle_delay_seconds).toBe(180);
+  expect(route.dest_id).toBe("-100123");
+});
+
 test("策略弹层和空的手动投递", async ({ page }) => {
   await openApp(page);
   await expect(page.locator("aside.dock")).toContainText("inbox");

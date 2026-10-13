@@ -77,6 +77,13 @@ def test_generic_and_downloader_transient_files_detected() -> None:
     assert is_transient_file(Path("video.crdownload")) is True
     assert is_transient_file(Path("download.aria2")) is True
     assert is_transient_file(Path("tempfile.tmp")) is True
+    # 最终后缀是正片，中间仍是临时标记
+    assert is_transient_file(Path("file.tmp.ts")) is True
+    assert is_transient_file(Path("file.part.ts")) is True
+    assert is_transient_file(Path("file.temp.ts")) is True
+    nested = check_transient_file(Path("clip.tmp.mp4"))
+    assert nested.is_transient is True
+    assert nested.source_platform == "generic"
 
     # 隐藏临时文件
     assert is_transient_file(Path(".metube/queue.json")) is True

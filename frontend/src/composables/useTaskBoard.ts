@@ -4,7 +4,7 @@
  * 切片换段看 part_index，不解析中文说明。
  */
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
-import { fetchBoardTasks, fetchStatusPage, openProgressStream } from "../api";
+import { authRequired, fetchBoardTasks, fetchStatusPage, openProgressStream } from "../api";
 import { mergeLiveBytes } from "../boardProgress";
 import type { BoardCounts, BoardTask, UploadProgress } from "../types";
 
@@ -174,6 +174,7 @@ export function useTaskBoard() {
   }
 
   async function refresh(): Promise<void> {
+    if (authRequired.value) return;
     // 上一轮还没回来就记一笔，结束后用最新页码再拉一次。
     if (boardFlight) {
       refreshAgain = true;

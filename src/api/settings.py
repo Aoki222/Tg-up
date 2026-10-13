@@ -33,6 +33,7 @@ class FolderRoutePayload(BaseModel):
     grid_layout: str | None = None
     topic_mode: Literal["off", "auto", "fixed"] | None = None
     topic_id: int | None = None
+    settle_delay_seconds: int = Field(default=0, ge=0, le=86400)
 
     @field_validator("path")
     @classmethod

@@ -28,6 +28,17 @@ def _bot_limit() -> int:
     return limits.TELEGRAM_BOT_MAX_BYTES
 
 
+# 同一路径上，mtime 差小于这个值视为没改过。
+_MTIME_MATCH_SECONDS = 0.01
+
+
+def _same_fingerprint(stored_mtime: float | None, source_mtime: float | None) -> bool:
+    """旧行没有 source_mtime 时只认大小（调用方已比过大小）。两边都有才比时间。"""
+    if stored_mtime is None or source_mtime is None:
+        return True
+    return abs(float(stored_mtime) - float(source_mtime)) < _MTIME_MATCH_SECONDS
+
+
 async def _requeue_ids(database, task_ids: list[int], status: str, error_message: str) -> int:
     updated = 0
     for offset in range(0, len(task_ids), 400):
@@ -64,6 +75,7 @@ class TaskRepository:
         platform: str = "telegram",
         dest_id: str | None = None,
         error_msg: str | None = None,
+        source_mtime: float | None = None,
     ) -> int:
         """插入一条任务。封面需求和 after_success 入库时拍快照。"""
         born = extract_source_born_at(Path(file_path))
@@ -90,9 +102,10 @@ class TaskRepository:
                    dest_extra,
                    error_msg,
                    source_born_at,
-                   natural_key
+                   natural_key,
+                   source_mtime
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     file_path,
@@ -112,6 +125,7 @@ class TaskRepository:
                     error_msg,
                     born,
                     natural_key,
+                    source_mtime,
                 ),
             )
             await database.commit()
@@ -121,7 +135,7 @@ class TaskRepository:
             return int(task_id)
 
     async def find_active_by_file_path(self, file_path: str) -> int | None:
-        """未完成任务按绝对路径去重。success/failed 的同路径允许再来一条。"""
+        """未完成任务按绝对路径去重。结束的行由 find_ingest_block 再认指纹。"""
         async with get_db() as database:
             async with database.execute(
                 """SELECT id FROM upload_tasks
@@ -131,6 +145,54 @@ class TaskRepository:
             ) as cursor:
                 row = await cursor.fetchone()
                 return int(row[0]) if row else None
+
+    async def find_ingest_block(
+        self,
+        file_path: str,
+        file_size: int,
+        source_mtime: float | None,
+    ) -> tuple[str, int] | None:
+        """自动入库是否该跳过。
+
+        返回 ("active", id) 表示还有未完成任务。
+        返回 ("same", id) 表示最近一条结束记录和当前文件是同一份。
+        返回 None 表示可以再插一条。
+
+        删除成功只比路径和大小：同步或转码经常把 mtime 改成现在。
+        保留、归档成功，以及失败，还要比 source_mtime。失败的文件并没有被删掉。
+        旧行 source_mtime 为空时，只比大小。
+        """
+        async with get_db() as database:
+            async with database.execute(
+                """SELECT id FROM upload_tasks
+                   WHERE file_path = ? AND status NOT IN ('success', 'failed')
+                   LIMIT 1""",
+                (file_path,),
+            ) as cursor:
+                active = await cursor.fetchone()
+            if active is not None:
+                return ("active", int(active[0]))
+            async with database.execute(
+                """SELECT id, status, file_size, source_mtime, after_success
+                   FROM upload_tasks
+                   WHERE file_path = ?
+                   ORDER BY id DESC
+                   LIMIT 1""",
+                (file_path,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        if row is None:
+            return None
+        task_id = int(row[0])
+        status = str(row[1])
+        if int(row[2]) != int(file_size):
+            return None
+        if status == "success" and str(row[4] or "") == "delete":
+            return ("same", task_id)
+        stored_mtime = None if row[3] is None else float(row[3])
+        if _same_fingerprint(stored_mtime, source_mtime):
+            return ("same", task_id)
+        return None
 
     async def get_chat_topic(self, chat_id: int, topic_path: str) -> int | None:
         """转调 adapters.db.topics。topic_path 是目录绝对路径。"""

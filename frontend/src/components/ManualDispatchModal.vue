@@ -83,6 +83,7 @@ watch(
       return;
     }
     await loadInitialConfig();
+    treeEpoch.value += 1;
   },
 );
 
@@ -120,6 +121,9 @@ function closeModal(): void {
 
 async function loadFsTreeNode(node: any, resolve: (data: FsNode[]) => void): Promise<void> {
   if (node.level === 0) {
+    if (watchRoots.value.length === 0) {
+      await loadInitialConfig();
+    }
     // 顶级节点：返回已配置的各物理监控根目录
     const rootNodes: FsNode[] = watchRoots.value.map((path) => {
       const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);

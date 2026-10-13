@@ -86,6 +86,7 @@ class RoutePublicModel(_Loose):
     topic_mode: str | None = None
     topic_id: int | None = None
     auto_blocked: bool
+    settle_delay_seconds: int = 0
 
 
 class ChatPublicModel(_Loose):

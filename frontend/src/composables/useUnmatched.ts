@@ -2,7 +2,7 @@
  * 未命中文件：监控和设置共用一份结果。只有当前可见的页面每 5 秒拉一次。
  */
 import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
-import { fetchUnmatched } from "../api";
+import { authRequired, fetchUnmatched } from "../api";
 import type { UnmatchedFile } from "../types";
 
 const files = ref<UnmatchedFile[]>([]);
@@ -11,6 +11,7 @@ let inflight = false;
 let activeCount = 0;
 
 async function refresh(): Promise<void> {
+  if (authRequired.value) return;
   if (inflight) return;
   inflight = true;
   try {

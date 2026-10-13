@@ -55,6 +55,33 @@ test("normalizeSettings keeps revision and only smallest or oldest", () => {
   expect(normalizeSettings(config({ schedule_order: "created" })).schedule_order).toBe("created");
 });
 
+test("normalizeSettings clamps a route settle delay", () => {
+  const route = {
+    name: "live",
+    path: "/live",
+    chat_id: -100,
+    topic_enabled: null,
+    enabled: true,
+    caption_template: null,
+    preview: null,
+    topic_mode: null,
+    topic_id: null,
+    settle_delay_seconds: 180.9,
+  };
+  const kept = normalizeSettings(config({ routes: [route] }));
+  expect(kept.routes[0].settle_delay_seconds).toBe(180);
+
+  const missing = normalizeSettings(
+    config({ routes: [{ ...route, settle_delay_seconds: undefined }] }),
+  );
+  expect(missing.routes[0].settle_delay_seconds).toBe(0);
+
+  const negative = normalizeSettings(
+    config({ routes: [{ ...route, settle_delay_seconds: -3 }] }),
+  );
+  expect(negative.routes[0].settle_delay_seconds).toBe(0);
+});
+
 test("a new watch path is added paused", () => {
   const root = pausedObserverRoot("D:/incoming");
   expect(root.enabled).toBe(false);
