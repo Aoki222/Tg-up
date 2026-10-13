@@ -1,104 +1,53 @@
-# Telegram Video Uploader
+# Tg-up
 
-A lightweight, efficient, and fully automated workspace for batch uploading and routing videos to Telegram.
+把监听目录里的视频，按目录策略发到 Telegram，并在网页上看进度和结果。
 
-No manual intervention required: simply drop your video files into the watched directory, and the system automatically discovers them, extracts preview thumbnails, routes them according to custom directory policies, and uploads them concurrently across multiple Telegram accounts to target channels or groups — all monitored in real time via a sleek, modern Web dashboard.
+[English](README.en.md)
 
----
+## 能做什么
 
-## Key Features & Highlights
+**监听。** 可以监听多个目录，每个目录能单独暂停。新出现的文件和启动时扫到的文件都会入库。临时文件会被跳过，同一份文件不会重复上传。正在录制的目录可以单独设置落稳等待，文件大小连续安静够指定的秒数后才入库。
 
-### 1. Automated Directory Watching ("Drop and Upload")
-- **Seamless Automation**: Monitors one or more local or remote server directories. Whether writing new files in real time or scanning existing files, it handles write-stability detection, duplicate filtering, and automated ingest without missing a beat.
-- **Zero Manual Effort**: Eliminates tedious manual drag-and-drop uploads via Telegram Desktop or Web clients. Pairs seamlessly with downloaders like Aria2, qBittorrent, and yt-dlp to form an end-to-end automated pipeline.
+**投递。** 每个目录可以单独指定群、话题、说明、封面和落稳秒数。子目录沿用最近的上级策略。没有命中任何策略的文件不会上传。
 
-### 2. Multi-Account Parallelism & Load Balancing
-- **Multi-Session Coordination**: Drop multiple Telegram `.session` files into the `sessions/` directory, and the system automatically launches dedicated upload workers for each account.
-- **Dynamic Hot-Plugging**: Add or remove session files on the fly at any time. The system detects and mounts/unmounts workers within seconds without restarting the service.
-- **Smart Round-Robin Scheduling**: Dispatches tasks across active workers based on current load, maximizing bandwidth utilization and substantially boosting upload throughput.
+**上传。** 多个 Telegram 账号分摊任务。遇到限流时，按 Telegram 要求的时间暂停该账号，任务回到队列。失败的任务可以重试。超过 Bot 上限的文件停在看板上，也可以按设置自动切片。排队顺序有四种：入库顺序、自然排序、创建时间、文件大小。
 
-### 3. Intelligent Rate-Limit Protection & Fault Tolerance
-- **FloodWait Shield**: When hitting Telegram rate limits, the system automatically pauses the affected session for the exact cool-down window requested by Telegram, re-queuing the task without marking it failed or endangering the account.
-- **SQLite State Persistence**: Task states are durably tracked in an atomic SQLite database. After service restarts or unexpected crashes, it reconciles tasks and resumes without missed or duplicated uploads.
-- **Configurable Retries & Manual Resend**: Sets maximum retry limits and provides a one-click manual retry button in the Web console for tasks interrupted by transient network errors.
+**网页。** 看板显示任务进度。监听、路由和上传策略在页面里修改后立即生效。Telegram 账号可以在网页上登录。
 
-### 4. Flexible Folder Routing & Forum Topics Support
-- **Folder-Based Multi-Channel Routing**: Route videos in different subdirectories to different target Telegram groups or channels based on path rules.
-- **Automatic Forum Topics**: Automatically creates and manages Telegram Forum Topics in Supergroups based on folder names or rules, keeping channels and groups neatly organized.
+## 使用
 
-### 5. Automated Thumbnails & Grid Previews
-- **Built-in FFmpeg Processing**: Automatically extracts crisp single-frame video covers or generates multi-timestamp composite grid contact sheets for quick content previews.
-
-### 6. Apple-Inspired Sleek Web Dashboard
-- **Kanban Task Board**: Full real-time visibility across four core task states: *Preparing*, *Pending*, *Uploading*, and *Failed*, with collapsible columns and batch operations.
-- **Real-Time Telemetry & SSE Streaming**: Ultra-smooth progress bars, sliding-window speed calculation, estimated time of arrival (ETA), and daily/cumulative success counters.
-- **Visual Settings with Hot-Reloading**: Update upload policies and routing rules on the fly with instant effect—no service restart required. Includes web-based Telegram login and credential management.
-
-### 7. Post-Upload Automation & Disk Cleanup
-- **Post-Upload Action**: Automatically keep, delete, or archive the source video to a designated directory upon successful upload, preventing disk space exhaustion.
-
----
-
-## Core Architecture & Modules
-
-| Module | Location | Description |
-|---|---|---|
-| **Discovery** | `src/pipeline/discover/` | Monitors directory changes and performs startup scans, dispatching discovered videos to the internal ingest pipeline. |
-| **Ingest** | `src/pipeline/ingest/` | Ensures file write stability, deduplicates files, matches destination groups/topics, and invokes FFmpeg for preview generation. |
-| **Scheduler** | `src/pipeline/schedule/` | Atomically claims ready tasks from the database and distributes them via round-robin across available workers. |
-| **Worker** | `src/pipeline/worker.py` | Orchestrates chunked Telegram uploads, reports real-time progress events, and executes post-upload cleanup/archival. |
-| **Adapters** | `src/adapters/` | Manages the Telegram session pool, handling hot-plugging, multi-account concurrency, and transport abstraction. |
-| **Web Dashboard** | `frontend/` + `src/api/` | Provides an intuitive visual Kanban board, real-time SSE telemetry, account management, and live configuration editor. |
-
----
-
-## Quick Start
-
-### 1. Environment Setup
-
-Copy the sample environment file:
+在放有 `compose.yml` 的目录里：
 
 ```bash
 cp .env.example .env
-```
-
-Fill in your Telegram API credentials in `.env`:
-- `API_ID` & `API_HASH` (Obtain from [my.telegram.org](https://my.telegram.org))
-- `TARGET_CHAT_ID` (Default Telegram group or channel ID to receive uploads)
-- `API_TOKEN` (Optional, protects the Web Dashboard API)
-
-### 2. Prepare Telegram Account Sessions
-
-Place your Telegram `.session` files (e.g., `my_account.session`) into the `sessions/` directory.  
-Alternatively, generate a session interactively using the built-in CLI login tool:
-
-```bash
-python -m src.adapters.generate_session
-```
-
-### 3. Start the Service
-
-#### Option A: Docker Deployment (Recommended)
-
-```bash
-mkdir -p download sessions data page uploaded logs
 docker compose pull
 docker compose up -d
 ```
 
-#### Option B: Local Python Environment
+编辑 `.env`，至少填入从 [my.telegram.org](https://my.telegram.org) 取得的 `API_ID` 和 `API_HASH`。需要给控制台的写操作加口令时，再填 `API_TOKEN`。
+
+打开 `http://<主机>:8421`。第一次使用时，加上一个监听目录并打开它，再为它指定目标群。把 Session 放到旁边的 `sessions/` 目录，或在网页里登录。
+
+更新时重新拉取并启动：
 
 ```bash
-# Start the main service
-python -m src.main
+docker compose pull
+docker compose up -d
 ```
 
-### 4. Access the Web Dashboard
+这些目录和 `compose.yml` 放在一起。容器启动时，还没有的目录会建出来：
 
-Once the service is running, open your browser and navigate to:
+| 目录 | 内容 |
+| --- | --- |
+| `download` | 默认监听目录 |
+| `sessions` | Telegram Session |
+| `data` | 数据库和 `upload.toml` |
+| `page` | 封面图 |
+| `uploaded` | 上传成功后归档的文件 |
+| `logs` | 日志 |
 
-```
-http://localhost:8421
-```
+## 配置放在哪
 
-From the dashboard, you can monitor live upload tasks, view transfer speeds, manage accounts, and adjust upload policies and routing rules in real time.
+`.env` 里是进程身份：`API_ID`、`API_HASH`、`API_TOKEN`、可选的 `TELEGRAM_PROXY`，以及目录策略没有指定目标群时使用的 `TARGET_CHAT_ID`。
+
+监听目录、目录策略、封面、上传成功后的处理、上传顺序在网页里修改，写入 `data/upload.toml`，保存后生效，不用重启。
