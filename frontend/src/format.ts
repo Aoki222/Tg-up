@@ -1,6 +1,7 @@
 /**
  * 字节、速度、剩余时间的展示格式。遥测带和任务卡片共用。
  */
+import { t } from "./i18n";
 
 export function isAlbumProgress(current: number, total: number): boolean {
   return total > 0 && total <= 32 && current <= total;
@@ -34,7 +35,10 @@ export function formatETA(seconds: number): string {
 
 export function formatTransferred(current: number, total: number): string {
   if (isAlbumProgress(current, total)) {
-    return `文件 ${Math.max(1, Math.ceil(current))}/${Math.round(total)}`;
+    return t("format.file", {
+      n: Math.max(1, Math.ceil(current)),
+      total: Math.round(total),
+    });
   }
   return `${formatBytes(current)} / ${formatBytes(total)}`;
 }

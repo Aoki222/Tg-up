@@ -22,6 +22,7 @@ import {
 import type { SkippedTask } from "../api";
 import type { BoardTask } from "../types";
 import TaskCard from "./TaskCard.vue";
+import { t } from "../i18n";
 
 const props = withDefaults(
   defineProps<{
@@ -90,39 +91,39 @@ interface SectionMeta {
 const allSections = computed<SectionMeta[]>(() => [
   {
     key: "uploading",
-    title: "正在上传看板",
-    sub: "活跃中",
+    title: t("board.titleUploading"),
+    sub: t("board.subUploading"),
     dotClass: "dot-uploading",
     items: buckets.value.uploading,
   },
   {
     key: "oversized",
-    title: "过大待处理看板",
-    sub: "超过 2GB 限制",
+    title: t("board.titleOversized"),
+    sub: t("board.subOversized"),
     dotClass: "dot-oversized",
     items: buckets.value.oversized,
   },
   {
     key: "failed",
-    title: "失败与重试看板",
-    sub: "需人工介入或重试",
+    title: t("board.titleFailed"),
+    sub: t("board.subFailed"),
     dotClass: "dot-failed",
     items: buckets.value.failed,
   },
   {
     key: "queue",
-    title: "排队就绪看板",
-    sub: "待 Worker 调度",
+    title: t("board.titleQueue"),
+    sub: t("board.subQueue"),
     dotClass: "dot-queue",
     items: queueItems.value,
   },
 ]);
 
 function sectionCountLabel(section: SectionMeta): string {
-  if (section.key === "uploading") return `${section.items.length} 个任务并发`;
-  if (section.key === "oversized") return `${oversizedColumnTotal.value} 个任务待裁决`;
-  if (section.key === "failed") return `${failedColumnTotal.value} 个任务中断`;
-  return `${section.items.length} 个任务就绪`;
+  if (section.key === "uploading") return t("board.countUploading", { n: section.items.length });
+  if (section.key === "oversized") return t("board.countOversized", { n: oversizedColumnTotal.value });
+  if (section.key === "failed") return t("board.countFailed", { n: failedColumnTotal.value });
+  return t("board.countQueue", { n: section.items.length });
 }
 
 function pagerFor(key: string): { page: number; pages: number; total: number } | null {
@@ -146,7 +147,7 @@ function pageAtEnd(key: string): boolean {
 function pageLabel(key: string): string {
   const pager = pagerFor(key);
   if (pager == null) return "";
-  return `${pager.page} / ${pager.pages} · 共 ${pager.total}`;
+  return t("board.page", { page: pager.page, pages: pager.pages, total: pager.total });
 }
 
 function goPage(key: string, delta: number): void {
@@ -168,9 +169,9 @@ async function onRetry(id: number): Promise<void> {
   retryingId.value = id;
   try {
     const status = await retryBoardTask(id);
-    ElMessage.success(status === "oversized" ? "超过 2GB，已放到过大" : "已重新排队");
+    ElMessage.success(status === "oversized" ? t("board.parkedOne") : t("board.requeued"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "重试失败");
+    ElMessage.error(error instanceof Error ? error.message : t("board.retryFailed"));
   } finally {
     retryingId.value = null;
   }
@@ -184,18 +185,18 @@ async function onRetryAll(): Promise<void> {
   try {
     const result = await retryAllFailedTasks();
     const notes: string[] = [];
-    if (result.retried > 0) notes.push(`已重新排队 ${result.retried} 个`);
-    if (result.parked > 0) notes.push(`${result.parked} 个超过 2GB，已留在过大`);
-    if (result.skipped > 0) notes.push(`跳过 ${result.skipped} 个`);
+    if (result.retried > 0) notes.push(t("board.requeuedN", { n: result.retried }));
+    if (result.parked > 0) notes.push(t("board.parkedN", { n: result.parked }));
+    if (result.skipped > 0) notes.push(t("board.skippedN", { n: result.skipped }));
     if (notes.length === 0) {
-      ElMessage.info("没有可重试的任务");
+      ElMessage.info(t("board.nothingToRetry"));
     } else if (result.retried === 0 && result.parked === 0) {
-      ElMessage.warning(`文件不存在，已跳过 ${result.skipped} 个`);
+      ElMessage.warning(t("board.missingSkipped", { n: result.skipped }));
     } else {
-      ElMessage.success(notes.join("，"));
+      ElMessage.success(notes.join(t("common.sentenceSep")));
     }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "全部重试失败");
+    ElMessage.error(error instanceof Error ? error.message : t("board.retryAllFailed"));
   } finally {
     retryingAll.value = false;
   }
@@ -239,17 +240,20 @@ function forgetSelected(ids: number[]): void {
 }
 
 function reportBatch(doneLabel: string, done: number, skipped: SkippedTask[]): void {
-  const head = done > 0 ? `${doneLabel} ${done} 个` : "";
+  const head = done > 0 ? t("board.batchHead", { label: doneLabel, n: done }) : "";
   const tail =
     skipped.length > 0
-      ? `跳过 ${skipped.length} 个：${skipped
-          .slice(0, 3)
-          .map((item) => `${item.file_name || "文件"} ${item.reason}`)
-          .join("；")}`
+      ? t("board.batchSkip", {
+          n: skipped.length,
+          detail: skipped
+            .slice(0, 3)
+            .map((item) => `${item.file_name || t("common.file")} ${item.reason}`)
+            .join(t("common.listSep")),
+        })
       : "";
-  const text = [head, tail].filter(Boolean).join("，");
+  const text = [head, tail].filter(Boolean).join(t("common.sentenceSep"));
   if (!text) {
-    ElMessage.info("没有可处理的文件");
+    ElMessage.info(t("board.nothingToDo"));
     return;
   }
   if (skipped.length > 0) ElMessage.warning(text);
@@ -262,9 +266,9 @@ async function onDispatch(id: number): Promise<void> {
   dispatchingId.value = id;
   try {
     await dispatchOversizedTask(id);
-    ElMessage.success("已交给个人号");
+    ElMessage.success(t("board.sentUser"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法交给个人号");
+    ElMessage.error(error instanceof Error ? error.message : t("board.sendUserFailed"));
   } finally {
     dispatchingId.value = null;
   }
@@ -277,14 +281,14 @@ async function onSlice(id: number): Promise<void> {
   let parts = min;
   try {
     const result = await ElMessageBox.prompt(
-      `至少 ${min} 段，最多 30 段。按整段时长平均切，原文件留到全部传完。`,
-      "切片后上传",
+      t("board.slicePrompt", { min }),
+      t("board.sliceTitle"),
       {
         inputValue: String(min),
         inputPattern: /^[1-9]\d*$/,
-        inputErrorMessage: "请输入段数",
-        confirmButtonText: "开始切片",
-        cancelButtonText: "取消",
+        inputErrorMessage: t("board.sliceCount"),
+        confirmButtonText: t("board.startSlice"),
+        cancelButtonText: t("common.cancel"),
       },
     );
     parts = Number(result.value);
@@ -292,15 +296,15 @@ async function onSlice(id: number): Promise<void> {
     return;
   }
   if (parts < min || parts > 30) {
-    ElMessage.error(`段数至少为 ${min}，最多 30`);
+    ElMessage.error(t("board.sliceRange", { min }));
     return;
   }
   slicingId.value = id;
   try {
     await sliceOversizedTask(id, parts);
-    ElMessage.success("已加入切片");
+    ElMessage.success(t("board.sliced"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法切片");
+    ElMessage.error(error instanceof Error ? error.message : t("board.sliceFailed"));
   } finally {
     slicingId.value = null;
   }
@@ -311,9 +315,9 @@ async function onContinueSlice(id: number): Promise<void> {
   slicingId.value = id;
   try {
     await continueSliceTask(id);
-    ElMessage.success("已从失败的那段继续");
+    ElMessage.success(t("board.continued"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法继续");
+    ElMessage.error(error instanceof Error ? error.message : t("board.continueFailed"));
   } finally {
     slicingId.value = null;
   }
@@ -326,9 +330,9 @@ async function onRemove(id: number): Promise<void> {
   try {
     await deleteFailedTask(id);
     forgetSelected([id]);
-    ElMessage.success("已清除");
+    ElMessage.success(t("board.cleared"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+    ElMessage.error(error instanceof Error ? error.message : t("board.clearFailed"));
   } finally {
     clearing.value = false;
   }
@@ -343,9 +347,9 @@ async function onRemoveSelected(): Promise<void> {
   try {
     const deleted = await deleteSelectedFailedTasks(ids);
     selectedIds.value = new Set();
-    ElMessage.success(deleted ? `已清除 ${deleted} 条` : "没有可清除的任务");
+    ElMessage.success(deleted ? t("board.clearedN", { n: deleted }) : t("board.nothingToClear"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+    ElMessage.error(error instanceof Error ? error.message : t("board.clearFailed"));
   } finally {
     clearing.value = false;
   }
@@ -356,10 +360,10 @@ async function onRemoveAll(): Promise<void> {
   closeBatch();
   if (failedBusy.value || failedColumnTotal.value === 0) return;
   try {
-    await ElMessageBox.confirm("将从数据库删除全部失败记录，本地文件不会动。", "全部清除", {
+    await ElMessageBox.confirm(t("board.clearAllFailedBody"), t("board.clearAll"), {
       type: "warning",
-      confirmButtonText: "清除",
-      cancelButtonText: "取消",
+      confirmButtonText: t("common.clear"),
+      cancelButtonText: t("common.cancel"),
       confirmButtonClass: "el-button--danger",
     });
   } catch {
@@ -369,9 +373,9 @@ async function onRemoveAll(): Promise<void> {
   try {
     const deleted = await deleteAllFailedTasks();
     selectedIds.value = new Set();
-    ElMessage.success(deleted ? `已清除 ${deleted} 条` : "没有可清除的任务");
+    ElMessage.success(deleted ? t("board.clearedN", { n: deleted }) : t("board.nothingToClear"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+    ElMessage.error(error instanceof Error ? error.message : t("board.clearFailed"));
   } finally {
     clearing.value = false;
   }
@@ -383,9 +387,9 @@ async function onSliceBatch(ids: number[]): Promise<void> {
   oversizedActing.value = true;
   try {
     const result = await sliceOversizedBatch(ids);
-    reportBatch("已加入切片", result.queued, result.skipped);
+    reportBatch(t("board.slicedLabel"), result.queued, result.skipped);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法切片");
+    ElMessage.error(error instanceof Error ? error.message : t("board.sliceFailed"));
   } finally {
     oversizedActing.value = false;
   }
@@ -397,9 +401,9 @@ async function onDispatchBatch(ids: number[]): Promise<void> {
   oversizedActing.value = true;
   try {
     const result = await dispatchOversizedBatch(ids);
-    reportBatch("已交给个人号", result.assigned, result.skipped);
+    reportBatch(t("board.sentLabel"), result.assigned, result.skipped);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法交给个人号");
+    ElMessage.error(error instanceof Error ? error.message : t("board.sendUserFailed"));
   } finally {
     oversizedActing.value = false;
   }
@@ -413,9 +417,9 @@ async function onRemoveOversizedSelected(): Promise<void> {
   try {
     const result = await deleteSelectedOversizedTasks(ids);
     oversizedIds.value = new Set();
-    reportBatch("已清除", result.deleted, result.skipped);
+    reportBatch(t("board.clearedLabel"), result.deleted, result.skipped);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+    ElMessage.error(error instanceof Error ? error.message : t("board.clearFailed"));
   } finally {
     oversizedActing.value = false;
   }
@@ -425,10 +429,10 @@ async function onRemoveOversizedAll(): Promise<void> {
   closeBatch();
   if (failedBusy.value || oversizedColumnTotal.value === 0) return;
   try {
-    await ElMessageBox.confirm("将从数据库删除全部过大记录，本地源文件不会动。", "全部清除", {
+    await ElMessageBox.confirm(t("board.clearAllOversizedBody"), t("board.clearAll"), {
       type: "warning",
-      confirmButtonText: "清除",
-      cancelButtonText: "取消",
+      confirmButtonText: t("common.clear"),
+      cancelButtonText: t("common.cancel"),
       confirmButtonClass: "el-button--danger",
     });
   } catch {
@@ -438,9 +442,9 @@ async function onRemoveOversizedAll(): Promise<void> {
   try {
     const result = await deleteAllOversizedTasks();
     oversizedIds.value = new Set();
-    reportBatch("已清除", result.deleted, result.skipped);
+    reportBatch(t("board.clearedLabel"), result.deleted, result.skipped);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "清除失败");
+    ElMessage.error(error instanceof Error ? error.message : t("board.clearFailed"));
   } finally {
     oversizedActing.value = false;
   }
@@ -450,7 +454,7 @@ async function onRemoveOversizedAll(): Promise<void> {
 </script>
 
 <template>
-  <section class="stream" aria-label="任务看板">
+  <section class="stream" :aria-label="t('board.aria')">
     <!-- 看板选项卡分类控制器与动作条 -->
     <div class="stream-tabs">
       <div class="tabs-group">
@@ -460,7 +464,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           :class="{ on: boardTab === 'all' }"
           @click="boardTab = 'all'"
         >
-          <span>全部看板</span>
+          <span>{{ t("board.tabAll") }}</span>
           <span class="tab-badge badge-all">{{ activeTotal }}</span>
         </button>
         <button
@@ -470,7 +474,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           @click="boardTab = 'uploading'"
         >
           <span class="status-dot dot-uploading"></span>
-          <span>正在上传</span>
+          <span>{{ t("board.tabUploading") }}</span>
           <span class="tab-badge badge-uploading">{{ buckets.uploading.length }}</span>
         </button>
         <button
@@ -480,7 +484,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           @click="boardTab = 'oversized'"
         >
           <span class="status-dot dot-oversized"></span>
-          <span>过大待处理</span>
+          <span>{{ t("board.tabOversized") }}</span>
           <span class="tab-badge badge-oversized">{{ oversizedColumnTotal }}</span>
         </button>
         <button
@@ -490,7 +494,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           @click="boardTab = 'failed'"
         >
           <span class="status-dot dot-failed"></span>
-          <span>失败重试</span>
+          <span>{{ t("board.tabFailed") }}</span>
           <span class="tab-badge badge-failed">{{ failedColumnTotal }}</span>
         </button>
         <button
@@ -500,7 +504,7 @@ async function onRemoveOversizedAll(): Promise<void> {
           @click="boardTab = 'queue'"
         >
           <span class="status-dot dot-queue"></span>
-          <span>排队就绪</span>
+          <span>{{ t("board.tabQueue") }}</span>
           <span class="tab-badge badge-queue">{{ queueItems.length }}</span>
         </button>
       </div>
@@ -509,15 +513,15 @@ async function onRemoveOversizedAll(): Promise<void> {
       <div class="tabs-actions">
         <!-- 全部看板模式：显示任务总数概览 -->
         <span v-if="boardTab === 'all'" class="summary-text font-mono">
-          全部 {{ activeTotal }} 个活动任务流转中
+          {{ t("board.summaryAll", { n: activeTotal }) }}
         </span>
 
         <!-- 正在上传或排队模式：显示简要状态 -->
         <span v-else-if="boardTab === 'uploading'" class="summary-text font-mono">
-          {{ buckets.uploading.length }} 个任务并发中
+          {{ t("board.summaryUploading", { n: buckets.uploading.length }) }}
         </span>
         <span v-else-if="boardTab === 'queue'" class="summary-text font-mono">
-          {{ queueItems.length }} 个任务等待 Worker
+          {{ t("board.summaryQueue", { n: queueItems.length }) }}
         </span>
 
         <!-- 过大看板模式：批量操作按钮群 -->
@@ -529,7 +533,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy"
             @click="onSliceBatch([...oversizedIds])"
           >
-            切片选中 ({{ oversizedCount }})
+            {{ t("board.sliceSelected", { n: oversizedCount }) }}
           </button>
           <button
             type="button"
@@ -537,7 +541,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy || oversizedColumnTotal === 0"
             @click="onSliceBatch([])"
           >
-            全部切片
+            {{ t("board.sliceAll") }}
           </button>
           <button
             type="button"
@@ -545,7 +549,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy || oversizedColumnTotal === 0"
             @click="onDispatchBatch([])"
           >
-            全部交给个人号
+            {{ t("board.sendAllUser") }}
           </button>
           <button
             v-if="oversizedCount > 0"
@@ -554,7 +558,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy"
             @click="onRemoveOversizedSelected"
           >
-            清除选中 ({{ oversizedCount }})
+            {{ t("board.clearSelected", { n: oversizedCount }) }}
           </button>
           <button
             type="button"
@@ -562,7 +566,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy || oversizedColumnTotal === 0"
             @click="onRemoveOversizedAll"
           >
-            全部清除
+            {{ t("board.clearAll") }}
           </button>
         </div>
 
@@ -574,7 +578,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy || failedColumnTotal === 0"
             @click="onRetryAll"
           >
-            {{ retryingAll ? "重试中" : "全部重试" }}
+            {{ retryingAll ? t("board.retrying") : t("board.retryAll") }}
           </button>
           <button
             v-if="selectedCount > 0"
@@ -583,7 +587,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy"
             @click="onRemoveSelected"
           >
-            清除选中 ({{ selectedCount }})
+            {{ t("board.clearSelected", { n: selectedCount }) }}
           </button>
           <button
             type="button"
@@ -591,7 +595,7 @@ async function onRemoveOversizedAll(): Promise<void> {
             :disabled="failedBusy || failedColumnTotal === 0"
             @click="onRemoveAll"
           >
-            全部清除
+            {{ t("board.clearAll") }}
           </button>
         </div>
       </div>
@@ -625,7 +629,7 @@ async function onRemoveOversizedAll(): Promise<void> {
                 :disabled="failedBusy"
                 @click="onSliceBatch([])"
               >
-                全部切片
+                {{ t("board.sliceAll") }}
               </button>
               <button
                 type="button"
@@ -633,7 +637,7 @@ async function onRemoveOversizedAll(): Promise<void> {
                 :disabled="failedBusy"
                 @click="onRemoveOversizedAll"
               >
-                全部清除
+                {{ t("board.clearAll") }}
               </button>
             </template>
 
@@ -644,7 +648,7 @@ async function onRemoveOversizedAll(): Promise<void> {
                 :disabled="failedBusy"
                 @click="onRetryAll"
               >
-                {{ retryingAll ? "重试中" : "全部重试" }}
+                {{ retryingAll ? t("board.retrying") : t("board.retryAll") }}
               </button>
               <button
                 type="button"
@@ -652,7 +656,7 @@ async function onRemoveOversizedAll(): Promise<void> {
                 :disabled="failedBusy"
                 @click="onRemoveAll"
               >
-                全部清除
+                {{ t("board.clearAll") }}
               </button>
             </template>
           </div>
@@ -679,18 +683,18 @@ async function onRemoveOversizedAll(): Promise<void> {
 
         <div v-if="pagerFor(section.key)" class="section-pager">
           <button type="button" :disabled="pageAtStart(section.key)" @click="goPage(section.key, -1)">
-            上一页
+            {{ t("board.prev") }}
           </button>
           <span class="font-mono">{{ pageLabel(section.key) }}</span>
           <button type="button" :disabled="pageAtEnd(section.key)" @click="goPage(section.key, 1)">
-            下一页
+            {{ t("board.next") }}
           </button>
         </div>
 
         <!-- 列表空状态 (当特定分类无任务时) -->
         <div v-if="section.items.length === 0" class="empty-state-card">
           <span class="empty-dot"></span>
-          <span>当前分类下暂无任务</span>
+          <span>{{ t("board.emptyCategory") }}</span>
         </div>
       </section>
 
@@ -702,8 +706,8 @@ async function onRemoveOversizedAll(): Promise<void> {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <p class="empty-title">当前没有进行中的任务</p>
-          <p class="empty-desc">监听目录中若有新文件落盘，将自动加入调度序列</p>
+          <p class="empty-title">{{ t("board.emptyTitle") }}</p>
+          <p class="empty-desc">{{ t("board.emptyDesc") }}</p>
         </div>
       </div>
     </div>

@@ -1,19 +1,24 @@
 <script setup lang="ts">
 /**
  * 整页外壳。监控台自己放顶栏、目录坞和设置层，这里只占满视口。
+ * Element Plus 的空状态、分页跟着顶栏语言走。
  */
+import { ElConfigProvider } from "element-plus";
+import { elementLocale } from "./i18n";
 </script>
 
 <template>
-  <div class="app-shell">
-    <main class="main-viewport">
-      <router-view v-slot="{ Component }">
-        <keep-alive include="MonitorPage">
-          <component :is="Component" />
-        </keep-alive>
-      </router-view>
-    </main>
-  </div>
+  <el-config-provider :locale="elementLocale">
+    <div class="app-shell">
+      <main class="main-viewport">
+        <router-view v-slot="{ Component }">
+          <keep-alive include="MonitorPage">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
+      </main>
+    </div>
+  </el-config-provider>
 </template>
 
 <style scoped>

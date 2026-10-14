@@ -36,15 +36,15 @@ test("SSE 把进度、速率和剩余时间写进同一张卡片", async ({ page
 
   await openApp(page);
   const card = page.locator(".task-card.uploading");
-  await expect(card.locator(".speed-text")).toHaveText("测算中");
+  await expect(card.locator(".speed-text")).toHaveText("Measuring");
   await expect(card).toContainText("10%");
-  await expect(page.locator(".telemetry-val")).toHaveText("测算中");
+  await expect(page.locator(".telemetry-val")).toHaveText("Measuring");
 
   await world.pushProgress(liveEvent());
 
   await expect(card).toContainText("80%");
   await expect(card.locator(".speed-text")).toHaveText("12.0 MB/s");
-  await expect(card).toContainText("预计剩余:");
+  await expect(card).toContainText("Left:");
   await expect(card.locator(".eta-val")).toHaveText("00:05");
   await expect(page.locator(".telemetry-val")).toHaveText("12.0 MB/s");
   await expect(card.locator(".worker-chip")).toHaveText("worker_1");
@@ -117,7 +117,7 @@ test("换段后进度从新段重新计", async ({ page, world }) => {
   ];
   await openApp(page);
   const card = page.locator(".task-card.uploading");
-  await expect(card).toContainText("第 1/3 段");
+  await expect(card).toContainText("Part 1/3");
 
   await world.pushProgress(
     liveEvent({
@@ -132,7 +132,7 @@ test("换段后进度从新段重新计", async ({ page, world }) => {
   );
 
   await expect(card).toContainText("2%");
-  await expect(card).toContainText("第 2/3 段");
+  await expect(card).toContainText("Part 2/3");
   await expect(card.locator(".speed-text")).toHaveText("1.0 KB/s");
 });
 
@@ -149,7 +149,7 @@ test("限流事件把卡片移到排队列", async ({ page, world }) => {
     }),
   ];
   await openApp(page);
-  await expect(column(page, "正在上传看板")).toContainText("test_movie.mp4");
+  await expect(column(page, "Uploading")).toContainText("test_movie.mp4");
   world.board = [
     task({
       id: 101,
@@ -160,8 +160,8 @@ test("限流事件把卡片移到排队列", async ({ page, world }) => {
 
   await world.pushProgress(liveEvent({ stage: "flood_wait", speed_bps: 0, eta_seconds: -1, message: "稍后再试" }));
 
-  await expect(column(page, "排队就绪看板")).toContainText("test_movie.mp4");
-  await expect(page.locator(".section-title", { hasText: "正在上传看板" })).toHaveCount(0);
+  await expect(column(page, "Queue")).toContainText("test_movie.mp4");
+  await expect(page.locator(".section-title", { hasText: "Uploading" })).toHaveCount(0);
 });
 
 test("成功后短暂留下卡片，随后从看板消失", async ({ page, world }) => {
@@ -181,7 +181,7 @@ test("成功后短暂留下卡片，随后从看板消失", async ({ page, world
   world.board = [];
 
   await world.pushProgress(liveEvent({ stage: "success", percent: 100, current: 10000, speed_bps: 0, eta_seconds: -1, message: "上传成功" }));
-  await expect(page.locator(".task-card")).toContainText("上传成功");
+  await expect(page.locator(".task-card")).toContainText("Uploaded");
   await expect(page.getByText("test_movie.mp4")).toHaveCount(0);
 });
 
@@ -211,7 +211,7 @@ test("失败事件把错误写进失败列", async ({ page, world }) => {
   ];
 
   await world.pushProgress(liveEvent({ stage: "failed", speed_bps: 0, eta_seconds: -1, message: "连接重置" }));
-  const failed = column(page, "失败与重试看板");
+  const failed = column(page, "Failed");
   await expect(failed).toContainText("test_movie.mp4");
   await expect(failed).toContainText("连接重置");
 });

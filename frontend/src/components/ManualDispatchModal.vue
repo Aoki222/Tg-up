@@ -25,6 +25,7 @@ import type {
   ManualDispatchResult,
 } from "../types";
 import { formatBytes } from "../format";
+import { t } from "../i18n";
 
 const props = defineProps<{
   /** 控制弹窗显隐 */
@@ -97,7 +98,7 @@ async function loadInitialConfig(): Promise<void> {
       targetChatId.value = configuredChats.value[0].chat_id;
     }
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : "读取监控配置失败");
+    ElMessage.error(err instanceof Error ? err.message : t("dispatch.loadFailed"));
   } finally {
     loading.value = false;
   }
@@ -181,7 +182,7 @@ function clearAllSelected(): void {
 async function refreshTree(): Promise<void> {
   treeEpoch.value += 1;
   clearAllSelected();
-  ElMessage.success("目录结构已刷新");
+  ElMessage.success(t("dispatch.refreshed"));
 }
 
 // 过滤搜索判定
@@ -207,13 +208,13 @@ watch([filterText, onlyUnfinished], () => {
 
 async function handleDispatch(): Promise<void> {
   if (selectedFiles.value.length === 0) {
-    ElMessage.warning("请至少勾选一个文件进行投递");
+    ElMessage.warning(t("dispatch.needFile"));
     return;
   }
 
   // 校验：如果选择直接提交，但包含未命中任何规则的文件，且没有配置默认群
   if (dispatchMode.value === "default" && hasUnmatchedSelected.value) {
-    ElMessage.error("选中的文件中含有「未命中规则」的文件，请切换为「自定义参数」指定目标群组后提交");
+    ElMessage.error(t("dispatch.needCustom"));
     dispatchMode.value = "custom";
     return;
   }
@@ -245,13 +246,13 @@ async function handleDispatch(): Promise<void> {
   try {
     const res = await dispatchManualTasks(payload);
     if (res.dispatched_count > 0) {
-      ElMessage.success(`成功投递 ${res.dispatched_count} 个文件至上传队列`);
+      ElMessage.success(t("dispatch.sent", { n: res.dispatched_count }));
     }
 
     if (res.skipped_count > 0) {
-      const skipReasons = res.skipped.map((s) => `${s.file_path}: ${s.reason || "跳过"}`).join("\n");
+      const skipReasons = res.skipped.map((s) => `${s.file_path}: ${s.reason || t("dispatch.skipReason")}`).join("\n");
       ElNotification({
-        title: `${res.skipped_count} 个文件被跳过`,
+        title: t("dispatch.skipTitle", { n: res.skipped_count }),
         message: skipReasons,
         type: "warning",
         duration: 5000,
@@ -262,7 +263,7 @@ async function handleDispatch(): Promise<void> {
     emit("dispatched", res);
     closeModal();
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : "手动投递失败");
+    ElMessage.error(err instanceof Error ? err.message : t("dispatch.failed"));
   } finally {
     dispatching.value = false;
   }
@@ -274,7 +275,7 @@ async function handleDispatch(): Promise<void> {
     <div
       class="dispatch-modal"
       role="dialog"
-      aria-label="手动投递任务"
+      :aria-label="t('dispatch.dialog')"
       @click.stop
     >
       <!-- ── 弹窗顶栏 ── -->
@@ -282,16 +283,16 @@ async function handleDispatch(): Promise<void> {
         <div class="head-lead">
           <div class="head-icon-box">🚀</div>
           <div>
-            <h2 class="head-title">手动投递任务 (Manual Dispatch)</h2>
+            <h2 class="head-title">{{ t("dispatch.heading") }}</h2>
             <p class="head-sub">
-              勾选需要上传的文件，立即派发至队列 · 支持直接提交或自定义目标群组/文案覆盖
+              {{ t("dispatch.sub") }}
             </p>
           </div>
         </div>
         <button
           type="button"
           class="head-close-btn"
-          aria-label="关闭"
+          :aria-label="t('dispatch.close')"
           @click="closeModal"
         >
           ✕
@@ -309,22 +310,22 @@ async function handleDispatch(): Promise<void> {
               v-model="filterText"
               type="text"
               class="tree-search-input"
-              placeholder="🔍 搜索文件名..."
+              :placeholder="t('dispatch.search')"
             />
 
             <label class="unfinished-filter-chip" :class="{ 'is-active': onlyUnfinished }">
               <input v-model="onlyUnfinished" type="checkbox" class="sr-only" />
               <span class="chip-dot"></span>
-              <span>仅看未上传/未命中</span>
+              <span>{{ t("dispatch.onlyPending") }}</span>
             </label>
 
             <button
               type="button"
               class="tree-action-btn font-mono"
-              title="重新加载目录结构"
+              :title="t('dispatch.refreshTitle')"
               @click="refreshTree"
             >
-              🔄 刷新
+              {{ t("dispatch.refresh") }}
             </button>
           </div>
 
@@ -361,34 +362,34 @@ async function handleDispatch(): Promise<void> {
                       v-if="data.task_status === 'uploading'"
                       class="row-badge status-uploading"
                     >
-                      上传中
+                      {{ t("dispatch.uploading") }}
                     </span>
                     <span
                       v-else-if="data.task_status === 'success'"
                       class="row-badge status-success"
                     >
-                      已上传
+                      {{ t("dispatch.uploaded") }}
                     </span>
                     <span
                       v-else-if="data.task_status === 'pending' || data.task_status === 'preparing'"
                       class="row-badge status-pending"
                     >
-                      排队中
+                      {{ t("dispatch.queued") }}
                     </span>
                     <span
                       v-else-if="data.task_status === 'failed'"
                       class="row-badge status-failed"
-                      :title="data.task_error || '失败'"
+                      :title="data.task_error || t('dispatch.failedBadge')"
                     >
-                      失败
+                      {{ t("dispatch.failedBadge") }}
                     </span>
                     <span
                       v-else-if="data.task_status === 'unmatched' || !data.current_route?.matched"
                       class="row-badge status-unmatched"
                     >
-                      ⚠️ 未命中
+                      {{ t("dispatch.unmatched") }}
                     </span>
-                    <span v-else class="row-badge status-ready">待上传</span>
+                    <span v-else class="row-badge status-ready">{{ t("dispatch.ready") }}</span>
 
                     <!-- 匹配规则展示 -->
                     <span
@@ -414,20 +415,20 @@ async function handleDispatch(): Promise<void> {
             <div class="summary-lead">
               <div>
                 <strong class="summary-count font-mono">
-                  已选 {{ selectedFiles.length }} 个文件
+                  {{ t("dispatch.selected", { n: selectedFiles.length }) }}
                 </strong>
                 <span class="summary-size font-mono">
-                  (共 {{ formatBytes(totalSelectedBytes) }})
+                  {{ t("dispatch.selectedSize", { size: formatBytes(totalSelectedBytes) }) }}
                 </span>
               </div>
               <button
                 v-if="selectedFiles.length > 0"
                 type="button"
                 class="summary-clear-btn"
-                title="清空已选择文件"
+                :title="t('dispatch.clearTitle')"
                 @click="clearAllSelected"
               >
-                清空
+                {{ t("dispatch.clear") }}
               </button>
             </div>
 
@@ -444,7 +445,7 @@ async function handleDispatch(): Promise<void> {
                 <button
                   type="button"
                   class="mini-remove-btn"
-                  title="移除此项"
+                  :title="t('dispatch.remove')"
                   @click="removeSelectedFile(item.path)"
                 >
                   ✕
@@ -452,7 +453,7 @@ async function handleDispatch(): Promise<void> {
               </div>
             </div>
             <p v-else class="summary-empty-tip">
-              👈 请在左侧目录树中勾选想要投递上传的文件
+              {{ t("dispatch.pick") }}
             </p>
           </div>
 
@@ -464,7 +465,7 @@ async function handleDispatch(): Promise<void> {
               :class="{ 'is-active': dispatchMode === 'default' }"
               @click="dispatchMode = 'default'"
             >
-              直接提交 (默认规则)
+              {{ t("dispatch.modeDefault") }}
             </button>
             <button
               type="button"
@@ -472,18 +473,18 @@ async function handleDispatch(): Promise<void> {
               :class="{ 'is-active': dispatchMode === 'custom' }"
               @click="dispatchMode = 'custom'"
             >
-              自定义参数覆盖
+              {{ t("dispatch.modeCustom") }}
             </button>
           </div>
 
           <!-- 模式 1：默认说明 -->
           <div v-if="dispatchMode === 'default'" class="default-mode-hint">
-            <p class="hint-title">⚡ 极速自动模式</p>
+            <p class="hint-title">{{ t("dispatch.fastTitle") }}</p>
             <p class="hint-desc">
-              所选文件将自动按照各自所在目录的规则配置（目标频道、话题、文案模板）直接分发上传。
+              {{ t("dispatch.fastBody") }}
             </p>
             <div v-if="hasUnmatchedSelected" class="unmatched-warn-box">
-              ⚠️ 选中的文件包含未命中任何路由规则的项。请切换至「自定义参数覆盖」指定目标群组。
+              {{ t("dispatch.fastWarn") }}
             </div>
           </div>
 
@@ -492,11 +493,11 @@ async function handleDispatch(): Promise<void> {
             <!-- 目标群组 -->
             <div class="form-field">
               <label class="form-label">
-                目标群组 / 频道 (chat_id)
+                {{ t("dispatch.chat") }}
                 <span class="text-danger">*</span>
               </label>
               <select v-model="targetChatId" class="app-select">
-                <option :value="null">-- 请选择已绑定的目标群组 --</option>
+                <option :value="null">{{ t("dispatch.pickChat") }}</option>
                 <option
                   v-for="chat in configuredChats"
                   :key="chat.chat_id"
@@ -509,37 +510,37 @@ async function handleDispatch(): Promise<void> {
 
             <!-- 话题 ID -->
             <div class="form-field">
-              <label class="form-label">指定话题 ID (topic_id，可选)</label>
+              <label class="form-label">{{ t("dispatch.topic") }}</label>
               <input
                 v-model.number="targetTopicId"
                 type="number"
                 class="app-input font-mono"
-                placeholder="留空则按所属目录规则自动决议"
+                :placeholder="t('dispatch.topicPlaceholder')"
               />
             </div>
 
             <!-- 附加文案 -->
             <div class="form-field">
-              <label class="form-label">附加说明文案 (caption，可选)</label>
+              <label class="form-label">{{ t("dispatch.caption") }}</label>
               <textarea
                 v-model="customCaption"
                 class="app-textarea"
                 rows="2"
-                placeholder="留空则自动按全局宏模板生成，支持 #标签"
+                :placeholder="t('dispatch.captionPlaceholder')"
               ></textarea>
             </div>
 
             <!-- 成功后处理 -->
             <div class="form-field">
-              <label class="form-label">上传成功后本地源文件操作</label>
+              <label class="form-label">{{ t("dispatch.after") }}</label>
               <div class="radio-row">
                 <label class="radio-label">
                   <input v-model="afterSuccess" type="radio" value="none" />
-                  <span>保留本地文件</span>
+                  <span>{{ t("dispatch.keep") }}</span>
                 </label>
                 <label class="radio-label">
                   <input v-model="afterSuccess" type="radio" value="delete" />
-                  <span class="text-danger">上传后删除</span>
+                  <span class="text-danger">{{ t("dispatch.deleteAfter") }}</span>
                 </label>
               </div>
             </div>
@@ -547,8 +548,8 @@ async function handleDispatch(): Promise<void> {
             <!-- 视频预览抽帧 -->
             <div class="form-field-switch">
               <div>
-                <strong class="switch-title">生成视频封面与九宫格预览</strong>
-                <span class="switch-desc">关闭则不提取首帧与拼图，提升处理速度</span>
+                <strong class="switch-title">{{ t("dispatch.previewTitle") }}</strong>
+                <span class="switch-desc">{{ t("dispatch.previewDesc") }}</span>
               </div>
               <el-switch
                 :model-value="needPreview ?? true"
@@ -566,7 +567,7 @@ async function handleDispatch(): Promise<void> {
               :disabled="dispatching"
               @click="closeModal"
             >
-              取消
+              {{ t("dispatch.cancel") }}
             </button>
             <button
               type="button"
@@ -574,9 +575,9 @@ async function handleDispatch(): Promise<void> {
               :disabled="selectedFiles.length === 0 || dispatching"
               @click="handleDispatch"
             >
-              <span v-if="dispatching">正在投递...</span>
+              <span v-if="dispatching">{{ t("dispatch.working") }}</span>
               <span v-else>
-                🚀 立即投递至上传队列 ({{ selectedFiles.length }})
+                {{ t("dispatch.submit", { n: selectedFiles.length }) }}
               </span>
             </button>
           </footer>

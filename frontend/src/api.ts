@@ -11,6 +11,7 @@
 
 import axios, { type AxiosError } from "axios";
 import { ref } from "vue";
+import { t } from "./i18n";
 import type {
   BoardTask,
   BoardSnapshot,
@@ -100,7 +101,7 @@ apiClient.interceptors.response.use(
     }
 
     // 统一提取服务端明确给出的 detail 错误提示
-    let message = error.message || "网络请求失败";
+    let message = error.message || t("api.network");
     if (error.response?.data?.detail) {
       message = error.response.data.detail;
     }

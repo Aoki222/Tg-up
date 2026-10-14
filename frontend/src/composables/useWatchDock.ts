@@ -14,6 +14,7 @@ import {
 } from "../api";
 import type { FolderRouteItem, FsNode, ObserverPathInfo, ObserverRootItem } from "../types";
 import { pausedObserverRoot } from "../watchPath";
+import { t } from "../i18n";
 
 export function useWatchDock() {
   const watchPaths = ref<string[]>([]);
@@ -65,7 +66,7 @@ export function useWatchDock() {
 
   async function refreshCardRoot(_rootPath: string): Promise<void> {
     bumpTrees();
-    ElMessage.success("目录结构已刷新");
+    ElMessage.success(t("dock.refreshed"));
   }
 
   async function refreshCardFsNode(_node: unknown, _data: FsNode): Promise<void> {
@@ -77,9 +78,9 @@ export function useWatchDock() {
       await deleteRoute(subPath);
       await loadWatchPaths();
       bumpTrees();
-      ElMessage.success("已清除专属规则，恢复跟随父级");
+      ElMessage.success(t("dock.restored"));
     } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : "恢复继承失败");
+      ElMessage.error(err instanceof Error ? err.message : t("dock.restoreFailed"));
     }
   }
 
@@ -168,14 +169,14 @@ export function useWatchDock() {
         observerRoots.value = res.observer_roots;
       }
       if (res.watch_enabled) {
-        ElMessage.success("已开启全局自动监控，正在全量补扫各目录");
+        ElMessage.success(t("dock.globalOnToast"));
       } else {
-        ElMessage.warning("已暂停全局自动监控，各目录已联动暂停");
+        ElMessage.warning(t("dock.globalOffToast"));
       }
       await loadWatchPaths();
       bumpTrees();
     } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : "切换全局监控失败");
+      ElMessage.error(err instanceof Error ? err.message : t("dock.globalFailed"));
     } finally {
       togglingGlobalWatch.value = false;
     }
@@ -194,13 +195,13 @@ export function useWatchDock() {
       const root = res.observer_roots.find((item) => samePath(item.path, path));
       const isNowOn = root ? root.enabled !== false : true;
       if (isNowOn) {
-        ElMessage.success(`已恢复「${pathName(path)}」监控并执行补扫`);
+        ElMessage.success(t("dock.rootOn", { name: pathName(path) }));
       } else {
-        ElMessage.info(`已暂停「${pathName(path)}」监控`);
+        ElMessage.info(t("dock.rootOff", { name: pathName(path) }));
       }
       bumpTrees();
     } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : "切换根目录监控失败");
+      ElMessage.error(err instanceof Error ? err.message : t("dock.rootFailed"));
     } finally {
       togglingRoots.value.delete(key);
     }
@@ -227,9 +228,9 @@ export function useWatchDock() {
       const rule = res.routes.find((item) => samePath(item.path, path));
       const isNowOn = rule ? rule.enabled !== false : true;
       if (isNowOn) {
-        ElMessage.success(`已恢复「${pathName(path)}」监控并开始补扫`);
+        ElMessage.success(t("dock.childOn", { name: pathName(path) }));
       } else {
-        ElMessage.warning(`已就地阻断「${pathName(path)}」，阻止落入父级规则`);
+        ElMessage.warning(t("dock.childOff", { name: pathName(path) }));
       }
       if (data) {
         if (!data.current_route) {
@@ -242,7 +243,7 @@ export function useWatchDock() {
       }
       bumpTrees();
     } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : "切换子目录监控失败");
+      ElMessage.error(err instanceof Error ? err.message : t("dock.childFailed"));
     } finally {
       togglingRoutes.value.delete(key);
     }
@@ -251,15 +252,15 @@ export function useWatchDock() {
   async function promptAddWatchPath(): Promise<void> {
     try {
       const { value } = await ElMessageBox.prompt(
-        "请输入本地监控目录的绝对或相对路径。新路径默认关闭监控，打开该行开关后才会扫描已有文件。",
-        "添加监控路径",
+        t("dock.addBody"),
+        t("dock.addTitle"),
         {
-          confirmButtonText: "添加",
-          cancelButtonText: "取消",
-          inputPlaceholder: "例如 D:\\Downloads 或 download",
+          confirmButtonText: t("common.add"),
+          cancelButtonText: t("common.cancel"),
+          inputPlaceholder: t("dock.addPlaceholder"),
           inputValidator: (val) => {
-            if (!val || !val.trim()) return "路径不能为空";
-            if (observerRoots.value.some((item) => samePath(item.path, val.trim()))) return "该路径已在监控列表中";
+            if (!val || !val.trim()) return t("dock.pathRequired");
+            if (observerRoots.value.some((item) => samePath(item.path, val.trim()))) return t("dock.pathExists");
             return true;
           },
         },
@@ -277,7 +278,7 @@ export function useWatchDock() {
           await saveSettings(config);
           await loadWatchPaths();
           bumpTrees();
-          ElMessage.success(`已添加「${pathName(trimmed)}」，监控关闭。打开这一行的开关后才会扫描。`);
+          ElMessage.success(t("dock.added", { name: pathName(trimmed) }));
         }
       }
     } catch {
@@ -289,11 +290,11 @@ export function useWatchDock() {
     const name = pathName(path);
     try {
       await ElMessageBox.confirm(
-        `确定要删除监控路径「${name}」吗？\n\n完整路径：${path}\n\n确认后将立即从配置中移除并同步至后端，停止监听该目录。`,
-        "二次确认：删除监控路径",
+        t("dock.removeBody", { name, path }),
+        t("dock.removeTitle"),
         {
-          confirmButtonText: "确认删除",
-          cancelButtonText: "取消",
+          confirmButtonText: t("workers.confirmDelete"),
+          cancelButtonText: t("common.cancel"),
           type: "warning",
           confirmButtonClass: "el-button--danger",
           distinguishCancelAndClose: true,
@@ -312,7 +313,7 @@ export function useWatchDock() {
       expandedPaths.value.delete(normPath(path));
       await loadWatchPaths();
       bumpTrees();
-      ElMessage.success(`已删除监控路径「${name}」，后端已同步生效`);
+      ElMessage.success(t("dock.removed", { name }));
     } catch {
       // 用户取消删除
     }

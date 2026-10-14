@@ -19,6 +19,7 @@ import {
   formatTransferred,
   isAlbumProgress,
 } from "../format";
+import { t } from "../i18n";
 
 const { task, retrying, selected, selectable, dispatching } = defineProps<{
   task: BoardTask;
@@ -43,7 +44,7 @@ function pendingHint(item: BoardTask): string | null {
   const text = item.message || item.error || "";
   if (!text) return null;
   const lower = text.toLowerCase();
-  if (lower.includes("manual retry")) return "手动重试";
+  if (lower.includes("manual retry")) return t("card.manualRetry");
   if (
     lower.includes("flood") ||
     lower.includes("disconnect") ||
@@ -57,15 +58,15 @@ function pendingHint(item: BoardTask): string | null {
 
 function oversizedHint(item: BoardTask): string {
   const phase = item.slice_phase || "idle";
-  if (phase === "queued") return "等待切片";
-  if (phase === "cutting" && item.stage !== "uploading") return "正在切片";
-  if (phase === "released") return item.error || "分段已进入队列";
+  if (phase === "queued") return t("card.sliceQueued");
+  if (phase === "cutting" && item.stage !== "uploading") return t("card.slicing");
+  if (phase === "released") return item.error || t("card.sliceReleased");
   if (phase === "uploading" || item.stage === "uploading") {
-    return item.message || item.error || "正在上传切片";
+    return item.message || item.error || t("card.sliceUploading");
   }
-  if (phase === "failed") return item.error || "切片上传失败";
-  if (phase === "blocked") return item.error || "切片未完成";
-  return "单文件超过 Telegram 普通通道 2.0GB 限制，等待个人号或切片后上传。";
+  if (phase === "failed") return item.error || t("card.sliceFailed");
+  if (phase === "blocked") return item.error || t("card.sliceBlocked");
+  return t("card.oversizeHint");
 }
 
 function showSlice(item: BoardTask): boolean {
@@ -84,12 +85,12 @@ function showContinue(item: BoardTask): boolean {
 
 function partLabel(item: BoardTask): string {
   if (item.status === "oversized" || !item.part_index || !item.part_count) return "";
-  return `第 ${item.part_index}/${item.part_count} 段`;
+  return t("card.part", { index: item.part_index, count: item.part_count });
 }
 
 function speedLabel(item: BoardTask): string {
   if (item.speed_bps > 0) return formatSpeed(item.speed_bps);
-  return "测算中";
+  return t("card.measuring");
 }
 </script>
 
@@ -124,15 +125,15 @@ function speedLabel(item: BoardTask): string {
 
         <div class="head-right shrink-0">
           <span class="speed-text font-mono font-bold">{{ speedLabel(task) }}</span>
-          <span class="badge-chip uploading">传输中</span>
+          <span class="badge-chip uploading">{{ t("card.sending") }}</span>
         </div>
       </div>
 
       <!-- 源与目标路径条 -->
       <div class="route-line truncate">
-        <span>源: <code>{{ task.folder_name || '默认监听目录' }}</code></span>
+        <span>{{ t("card.source") }} <code>{{ task.folder_name || t("card.defaultFolder") }}</code></span>
         <span class="route-arrow">➔</span>
-        <span>目标: <span class="dest-name font-medium">Telegram</span></span>
+        <span>{{ t("card.dest") }} <span class="dest-name font-medium">Telegram</span></span>
       </div>
 
       <!-- 进度条 (翠绿 #28995a) -->
@@ -149,9 +150,9 @@ function speedLabel(item: BoardTask): string {
       <!-- 进度详情数据条 -->
       <div class="progress-stats font-mono">
         <span>{{ task.percent }}% ({{ formatTransferred(task.current, task.total) }})</span>
-        <div v-if="task.stage === 'success'" class="stat-ok font-sans font-semibold">上传成功</div>
+        <div v-if="task.stage === 'success'" class="stat-ok font-sans font-semibold">{{ t("card.uploaded") }}</div>
         <div v-else-if="!isAlbumProgress(task.current, task.total)">
-          预计剩余: <span class="eta-val font-sans font-semibold">{{ formatETA(task.eta_seconds) }}</span>
+          {{ t("card.eta") }} <span class="eta-val font-sans font-semibold">{{ formatETA(task.eta_seconds) }}</span>
         </div>
       </div>
     </template>
@@ -165,7 +166,7 @@ function speedLabel(item: BoardTask): string {
           <label v-if="selectable" class="pick" @click.stop>
             <input type="checkbox" :checked="selected" @change="emit('toggle', task.id)" />
           </label>
-          <span class="badge-chip oversized">超过 2GB</span>
+          <span class="badge-chip oversized">{{ t("card.over2gb") }}</span>
           <div class="card-title truncate" :title="task.file_name">
             {{ task.file_name }}
           </div>
@@ -178,9 +179,9 @@ function speedLabel(item: BoardTask): string {
 
       <div class="route-line oversized-text space-y-1">
         <div>
-          <span>来源: <code class="code-oversized">{{ task.folder_name || '默认监听目录' }}</code></span>
+          <span>{{ t("card.source") }} <code class="code-oversized">{{ task.folder_name || t("card.defaultFolder") }}</code></span>
           <span class="route-arrow">➔</span>
-          <span>目标: <span class="font-semibold">Telegram</span></span>
+          <span>{{ t("card.dest") }} <span class="font-semibold">Telegram</span></span>
         </div>
         <div class="hint-oversized">{{ oversizedHint(task) }}</div>
       </div>
@@ -197,7 +198,7 @@ function speedLabel(item: BoardTask): string {
         </div>
         <div class="progress-stats font-mono text-amber-900">
           <span>{{ task.percent }}% ({{ formatTransferred(task.current, task.total) }})</span>
-          <span>剩余 {{ formatETA(task.eta_seconds) }}</span>
+          <span>{{ t("card.etaShort", { eta: formatETA(task.eta_seconds) }) }}</span>
         </div>
       </template>
 
@@ -211,7 +212,7 @@ function speedLabel(item: BoardTask): string {
             :disabled="retrying"
             @click="emit('slice', task.id)"
           >
-            切片后上传
+            {{ t("card.sliceUpload") }}
           </button>
           <button
             v-if="showContinue(task)"
@@ -220,7 +221,7 @@ function speedLabel(item: BoardTask): string {
             :disabled="retrying"
             @click="emit('continue', task.id)"
           >
-            继续
+            {{ t("card.continue") }}
           </button>
           <button
             v-if="showDispatch(task)"
@@ -229,7 +230,7 @@ function speedLabel(item: BoardTask): string {
             :disabled="retrying"
             @click="emit('dispatch', task.id)"
           >
-            {{ dispatching ? "提交中" : "用个人号上传" }}
+            {{ dispatching ? t("card.sendingUser") : t("card.sendUser") }}
           </button>
         </div>
 
@@ -240,7 +241,7 @@ function speedLabel(item: BoardTask): string {
             :disabled="retrying"
             @click="emit('remove', task.id)"
           >
-            清除
+            {{ t("card.clear") }}
           </button>
         </div>
       </div>
@@ -255,7 +256,7 @@ function speedLabel(item: BoardTask): string {
           <label v-if="selectable" class="pick" @click.stop>
             <input type="checkbox" :checked="selected" @change="emit('toggle', task.id)" />
           </label>
-          <span class="badge-chip failed">传输中断</span>
+          <span class="badge-chip failed">{{ t("card.interrupted") }}</span>
           <div class="card-title truncate" :title="task.file_name">
             {{ task.file_name }}
           </div>
@@ -263,16 +264,16 @@ function speedLabel(item: BoardTask): string {
 
         <div class="head-right shrink-0">
           <span class="card-size-failed font-mono font-bold">
-            失败 · {{ formatBytes(task.file_size) }}
+            {{ t("card.failedSize", { size: formatBytes(task.file_size) }) }}
           </span>
         </div>
       </div>
 
       <div class="route-line failed-text space-y-1">
         <div>
-          <span>来源: <code class="code-failed">{{ task.folder_name || '默认监听目录' }}</code></span>
+          <span>{{ t("card.source") }} <code class="code-failed">{{ task.folder_name || t("card.defaultFolder") }}</code></span>
           <span class="route-arrow">➔</span>
-          <span>目标: <span class="font-semibold">Telegram</span></span>
+          <span>{{ t("card.dest") }} <span class="font-semibold">Telegram</span></span>
         </div>
         <div v-if="task.error || task.message" class="error-msg-box font-mono">
           {{ task.error || task.message }}
@@ -287,14 +288,14 @@ function speedLabel(item: BoardTask): string {
       <!-- 卡片专属真实操作按钮条 -->
       <div class="action-footer failed-footer">
         <div class="footer-left">
-          <span class="retry-counter font-mono">重试 {{ task.retry_count }}/{{ task.max_retries }}</span>
+          <span class="retry-counter font-mono">{{ t("card.retries", { used: task.retry_count, max: task.max_retries }) }}</span>
           <button
             type="button"
             class="btn-red-solid"
             :disabled="retrying"
             @click="emit('retry', task.id)"
           >
-            {{ retrying ? "重试中" : "重试" }}
+            {{ retrying ? t("card.retrying") : t("card.retry") }}
           </button>
           <button
             v-if="task.error || task.message"
@@ -302,7 +303,7 @@ function speedLabel(item: BoardTask): string {
             class="btn-gray-outline"
             @click="showErrorLog = !showErrorLog"
           >
-            {{ showErrorLog ? "收起日志" : "查看错误日志" }}
+            {{ showErrorLog ? t("card.hideLog") : t("card.showLog") }}
           </button>
         </div>
 
@@ -313,7 +314,7 @@ function speedLabel(item: BoardTask): string {
             :disabled="retrying"
             @click="emit('remove', task.id)"
           >
-            清除
+            {{ t("card.clear") }}
           </button>
         </div>
       </div>
@@ -337,7 +338,7 @@ function speedLabel(item: BoardTask): string {
               {{ task.file_name }}
             </div>
             <div class="compact-sub font-mono">
-              {{ formatBytes(task.file_size) }} · 来源: {{ task.folder_name || '默认监听目录' }}
+              {{ t("card.from", { size: formatBytes(task.file_size), folder: task.folder_name || t("card.defaultFolder") }) }}
             </div>
           </div>
         </div>
@@ -347,7 +348,7 @@ function speedLabel(item: BoardTask): string {
             class="badge-chip font-mono"
             :class="pendingHint(task) ? 'queue-warn' : 'queue'"
           >
-            {{ task.status === 'preparing' ? '生成封面中' : '等待 Worker' }}
+            {{ task.status === 'preparing' ? t('card.makingCover') : t('card.waiting') }}
           </span>
           <button
             type="button"
@@ -355,7 +356,7 @@ function speedLabel(item: BoardTask): string {
             :disabled="retrying"
             @click="emit('remove', task.id)"
           >
-            清除
+            {{ t("card.clear") }}
           </button>
         </div>
       </div>
@@ -388,20 +389,20 @@ function speedLabel(item: BoardTask): string {
               {{ task.file_name }}
             </div>
             <div class="compact-sub font-mono">
-              {{ formatBytes(task.file_size) }} · 已分配就绪
+              {{ formatBytes(task.file_size) }} · {{ t("card.assignedReady") }}
             </div>
           </div>
         </div>
 
         <div class="compact-right shrink-0">
-          <span class="badge-chip uploading font-mono">已分配</span>
+          <span class="badge-chip uploading font-mono">{{ t("card.assigned") }}</span>
           <button
             type="button"
             class="btn-gray-outline btn-compact-clear"
             :disabled="retrying"
             @click="emit('remove', task.id)"
           >
-            清除
+            {{ t("card.clear") }}
           </button>
         </div>
       </div>

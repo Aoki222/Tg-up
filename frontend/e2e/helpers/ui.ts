@@ -13,7 +13,7 @@ export async function openApp(page: Page): Promise<void> {
 
 export async function openSettings(page: Page, section?: string): Promise<Locator> {
   await page.locator(".settings-pill-btn").click();
-  const dialog = page.getByRole("dialog", { name: "系统配置" });
+  const dialog = page.getByRole("dialog", { name: "Settings" });
   await expect(dialog).toBeVisible();
   if (section) {
     // 导航按钮上会挂数量角标，可访问名称不是纯标题。

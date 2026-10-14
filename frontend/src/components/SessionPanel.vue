@@ -22,6 +22,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import QRCode from "qrcode";
+import { t } from "../i18n";
 import {
   cancelSessionLogin,
   pollSessionLogin,
@@ -89,7 +90,7 @@ async function loadMeta(): Promise<void> {
       form.group_id = meta.default_group_id;
     }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法读取 session 列表");
+    ElMessage.error(error instanceof Error ? error.message : t("session.listFailed"));
   }
 }
 
@@ -99,12 +100,12 @@ async function loadMeta(): Promise<void> {
 function handleResult(result: SessionLoginResult): void {
   // 群组验证告警（如果要求绑定群组但发帖探针失败）
   if (result.group_ok === false) {
-    ElMessage.warning(`Session 已保存，但群组验证失败：${result.group_error || ""}`);
+    ElMessage.warning(t("session.groupFailed", { error: result.group_error || "" }));
   }
 
   // 流程完结：登录成功
   if (result.done) {
-    ElMessage.success(result.message || "已创建 session");
+    ElMessage.success(result.message || t("session.created"));
     void reloadSessionAccounts();
     close();
     return;
@@ -114,7 +115,7 @@ function handleResult(result: SessionLoginResult): void {
   if (result.step === "code") {
     loginId.value = result.login_id || "";
     step.value = "code";
-    ElMessage.info(result.message || "请输入验证码");
+    ElMessage.info(result.message || t("session.enterCode"));
     return;
   }
 
@@ -124,7 +125,7 @@ function handleResult(result: SessionLoginResult): void {
     stopQrClock();
     loginId.value = result.login_id || "";
     step.value = "password";
-    ElMessage.info(result.message || "请输入两步验证密码");
+    ElMessage.info(result.message || t("session.enterPassword"));
     return;
   }
 
@@ -187,7 +188,7 @@ function startQrPoll(): void {
         return;
       }
     } catch (error) {
-      ElMessage.error(error instanceof Error ? error.message : "二维码登录失败");
+      ElMessage.error(error instanceof Error ? error.message : t("session.qrFailed"));
       return;
     }
     qrTimer = window.setTimeout(tick, 1500);
@@ -198,7 +199,7 @@ function startQrPoll(): void {
 /** 发起初始创建握手 */
 async function start(): Promise<void> {
   if (apiConfigured.value === false) {
-    ElMessage.warning("尚未配置 Telegram API 凭据，无法添加账号");
+    ElMessage.warning(t("session.needApi"));
     return;
   }
   // 发起登录请求。QR 模式下请求会等待现场 connect() 和 qr_login() 完成，期间显示 loading。
@@ -214,7 +215,7 @@ async function start(): Promise<void> {
     });
     handleResult(result);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "创建失败");
+    ElMessage.error(error instanceof Error ? error.message : t("session.createFailed"));
   } finally {
     loading.value = false;
   }
@@ -227,7 +228,7 @@ async function sendCode(): Promise<void> {
   try {
     handleResult(await submitSessionCode(loginId.value, code.value));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "验证码失败");
+    ElMessage.error(error instanceof Error ? error.message : t("session.codeFailed"));
   } finally {
     loading.value = false;
   }
@@ -240,7 +241,7 @@ async function sendPassword(): Promise<void> {
   try {
     handleResult(await submitSessionPassword(loginId.value, password.value));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "密码失败");
+    ElMessage.error(error instanceof Error ? error.message : t("session.passwordFailed"));
   } finally {
     loading.value = false;
   }
@@ -296,7 +297,7 @@ watch(
   (mode) => {
     if (mode === "qr" && step.value === "form" && !loading.value) {
       if (apiConfigured.value === false) {
-        ElMessage.warning("尚未配置 Telegram API 凭据，无法添加账号");
+        ElMessage.warning(t("session.needApi"));
         form.mode = "bot";
         return;
       }
@@ -322,8 +323,8 @@ onUnmounted(() => {
   <el-card shadow="never" class="session-card">
     <template #header>
       <div class="head">
-        <span>添加 Session 凭证</span>
-        <el-button size="small" @click="close">关闭</el-button>
+        <span>{{ t("session.title") }}</span>
+        <el-button size="small" @click="close">{{ t("session.close") }}</el-button>
       </div>
     </template>
 
@@ -334,12 +335,12 @@ onUnmounted(() => {
       :closable="false"
       class="banner"
     >
-      <template #title>尚未配置 Telegram API 凭据，无法添加账号</template>
-      <router-link to="/settings/account">前往账号设置</router-link>
+      <template #title>{{ t("session.needApi") }}</template>
+      <router-link to="/settings/account">{{ t("session.goSettings") }}</router-link>
     </el-alert>
     <el-alert
       v-else
-      title="登录过程由服务端直接与 Telegram MTProto 交互完成。生成后约 2 秒会被系统自动探测拉起为活跃 Worker，无需重启进程。"
+      :title="t('session.hint')"
       type="info"
       show-icon
       :closable="false"
@@ -349,12 +350,12 @@ onUnmounted(() => {
     <!-- 已有 Session 标签一览 -->
     <div class="account-lists" v-if="accounts.length || existing.length">
       <div>
-        <div class="list-label">用户号</div>
+        <div class="list-label">{{ t("session.users") }}</div>
         <div class="existing">
           <el-tag v-for="item in userAccounts" :key="item.name" class="tag" effect="plain">
             {{ item.username ? `@${item.username}` : item.name }}
           </el-tag>
-          <span v-if="!userAccounts.length" class="muted">还没有</span>
+          <span v-if="!userAccounts.length" class="muted">{{ t("session.none") }}</span>
         </div>
       </div>
       <div>
@@ -363,11 +364,11 @@ onUnmounted(() => {
           <el-tag v-for="item in botAccounts" :key="item.name" class="tag" type="info" effect="plain">
             {{ item.username ? `@${item.username}` : item.name }}
           </el-tag>
-          <span v-if="!botAccounts.length" class="muted">还没有</span>
+          <span v-if="!botAccounts.length" class="muted">{{ t("session.none") }}</span>
         </div>
       </div>
       <div v-if="unknownAccounts.length">
-        <div class="list-label">未标记</div>
+        <div class="list-label">{{ t("session.unmarked") }}</div>
         <div class="existing">
           <el-tag v-for="item in unknownAccounts" :key="item.name" class="tag" effect="plain">{{ item.name }}</el-tag>
         </div>
@@ -376,75 +377,75 @@ onUnmounted(() => {
 
     <!-- 步骤 1：初始输入表单 -->
     <el-form v-if="step === 'form'" label-position="top" class="form">
-      <el-form-item label="登录模式">
+      <el-form-item :label="t('session.mode')">
         <el-radio-group v-model="form.mode">
           <el-radio-button value="bot">Bot Token</el-radio-button>
-          <el-radio-button value="user">手机号</el-radio-button>
-          <el-radio-button value="qr">二维码</el-radio-button>
+          <el-radio-button value="user">{{ t("session.phoneMode") }}</el-radio-button>
+          <el-radio-button value="qr">{{ t("session.qrMode") }}</el-radio-button>
         </el-radio-group>
       </el-form-item>
 
       <el-form-item v-if="form.mode === 'bot'" label="Bot Token">
-        <el-input v-model="form.bot_token" placeholder="形如 123456:AAH..." show-password />
+        <el-input v-model="form.bot_token" :placeholder="t('session.botPlaceholder')" show-password />
       </el-form-item>
-      <el-form-item v-else-if="form.mode === 'user'" label="手机号">
-        <el-input v-model="form.phone" placeholder="含国际区号，如 +86138..." />
+      <el-form-item v-else-if="form.mode === 'user'" :label="t('session.phone')">
+        <el-input v-model="form.phone" :placeholder="t('session.phonePlaceholder')" />
       </el-form-item>
-      <p v-else class="qr-hint">正在向 Telegram 申请二维码…</p>
+      <p v-else class="qr-hint">{{ t("session.qrWait") }}</p>
 
       <el-form-item>
-        <el-switch v-model="form.bind_group" active-text="立即向目标群组发送探针以验证权限" />
+        <el-switch v-model="form.bind_group" :active-text="t('session.bind')" />
       </el-form-item>
-      <el-form-item v-if="form.bind_group" label="群组 chat_id">
+      <el-form-item v-if="form.bind_group" :label="t('session.chatId')">
         <el-input-number v-model="form.group_id" :controls="false" class="grow" />
       </el-form-item>
       <el-form-item>
-        <el-checkbox v-model="form.force">允许覆盖已存在的同名 Session</el-checkbox>
+        <el-checkbox v-model="form.force">{{ t("session.force") }}</el-checkbox>
       </el-form-item>
 
-      <el-button type="primary" :loading="loading" :disabled="apiConfigured === false" @click="start">开始创建登录</el-button>
+      <el-button type="primary" :loading="loading" :disabled="apiConfigured === false" @click="start">{{ t("session.start") }}</el-button>
     </el-form>
 
     <div v-else-if="step === 'qr'" class="qr-box">
       <div v-if="loading" class="qr-loading" role="status" aria-live="polite">
         <span class="spinner" aria-hidden="true"></span>
-        <p class="qr-hint">正在连接 Telegram，二维码即将生成…</p>
+        <p class="qr-hint">{{ t("session.qrConnecting") }}</p>
       </div>
       <template v-else>
-        <img v-if="qrImage" class="qr-image" :src="qrImage" alt="Telegram 登录二维码" />
-        <p v-else class="qr-hint">正在生成二维码…</p>
+        <img v-if="qrImage" class="qr-image" :src="qrImage" :alt="t('session.qrAlt')" />
+        <p v-else class="qr-hint">{{ t("session.qrGenerating") }}</p>
       </template>
-      <p class="qr-hint">打开 Telegram，进入 设置 → 设备 → 关联桌面设备，扫描这个二维码。</p>
-      <p v-if="qrSecondsLeft > 0" class="qr-hint">这张二维码将在 {{ qrSecondsLeft }} 秒后更换。</p>
-      <p v-else class="qr-hint">过期后会自动换一张。</p>
-      <el-button @click="close">取消</el-button>
+      <p class="qr-hint">{{ t("session.qrHelp") }}</p>
+      <p v-if="qrSecondsLeft > 0" class="qr-hint">{{ t("session.qrExpires", { n: qrSecondsLeft }) }}</p>
+      <p v-else class="qr-hint">{{ t("session.qrExpired") }}</p>
+      <el-button @click="close">{{ t("session.cancel") }}</el-button>
     </div>
 
     <!-- 步骤 2：提交手机验证码 -->
     <el-form v-else-if="step === 'code'" label-position="top">
       <el-alert
-        title="🔔 Telegram 验证码已发送至您其他已登录客户端的服务通知（非手机短信），请打开 Telegram 查收。"
+        :title="t('session.codeAlert')"
         type="info"
         show-icon
         :closable="false"
         class="banner"
       />
-      <el-form-item label="Telegram 验证码">
-        <el-input v-model="code" maxlength="8" placeholder="输入 5~8 位验证码" />
+      <el-form-item :label="t('session.code')">
+        <el-input v-model="code" maxlength="8" :placeholder="t('session.codePlaceholder')" />
       </el-form-item>
-      <el-button type="primary" :loading="loading" @click="sendCode">提交验证码</el-button>
-      <el-button @click="backToPhone">返回修改手机号</el-button>
-      <el-button @click="close">取消</el-button>
+      <el-button type="primary" :loading="loading" @click="sendCode">{{ t("session.submitCode") }}</el-button>
+      <el-button @click="backToPhone">{{ t("session.backPhone") }}</el-button>
+      <el-button @click="close">{{ t("session.cancel") }}</el-button>
     </el-form>
 
     <!-- 步骤 3：提交两步验证密码 -->
     <el-form v-else label-position="top">
-      <el-form-item label="账号两步验证密码 (2FA Cloud Password)">
-        <el-input v-model="password" show-password placeholder="输入两步验证密码" />
+      <el-form-item :label="t('session.password')">
+        <el-input v-model="password" show-password :placeholder="t('session.passwordPlaceholder')" />
       </el-form-item>
-      <el-button type="primary" :loading="loading" @click="sendPassword">提交密码</el-button>
-      <el-button @click="backToPhone">返回修改手机号</el-button>
-      <el-button @click="close">取消</el-button>
+      <el-button type="primary" :loading="loading" @click="sendPassword">{{ t("session.submitPassword") }}</el-button>
+      <el-button @click="backToPhone">{{ t("session.backPhone") }}</el-button>
+      <el-button @click="close">{{ t("session.cancel") }}</el-button>
     </el-form>
   </el-card>
 </template>

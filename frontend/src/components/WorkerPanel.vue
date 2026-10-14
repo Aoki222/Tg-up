@@ -16,6 +16,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { deleteWorker, disableWorker, enableWorker, fetchWorkers } from "../api";
 import { refreshSessionAccounts, reloadSessionAccounts, useSessionAccounts } from "../composables/useSessionAccounts";
 import type { WorkerSnapshot } from "../types";
+import { t } from "../i18n";
 
 // ── 事件派发 ───────────────────────────────────────────────────
 
@@ -54,7 +55,7 @@ function fetchWorkerSnapshot(): Promise<void> {
       emit("updateWorkers", workers.value);
       error.value = "";
     } catch {
-      error.value = "无法读取 Worker 节点列表";
+      error.value = t("workers.loadFailed");
     } finally {
       workerFlight = null;
     }
@@ -111,28 +112,32 @@ function accountKind(name: string): string {
   // 从 session 元数据中查找 Worker 是个人号、Bot 还是未知类型。
   const kind = accounts.value.find((item) => item.name === name)?.kind;
   if (kind === "bot") return "Bot";
-  if (kind === "user") return "用户";
+  if (kind === "user") return t("workers.user");
   return "";
 }
 
 function statusLabel(worker: WorkerSnapshot): string {
   if (!worker.enabled) {
-    return "已禁用";
+    return t("workers.disabled");
   }
   if (worker.reconnecting) {
     const wait = worker.reconnect_wait_seconds > 0 ? ` ${worker.reconnect_wait_seconds}s` : "";
-    return `重连 ${worker.reconnect_attempt}/${worker.reconnect_max}${wait}`;
+    return t("workers.reconnect", {
+      attempt: worker.reconnect_attempt,
+      max: worker.reconnect_max,
+      wait,
+    });
   }
   if (worker.flood_wait_seconds > 0) {
-    return `限流 ${worker.flood_wait_seconds}s`;
+    return t("workers.flood", { seconds: worker.flood_wait_seconds });
   }
   if (!worker.running || !worker.accepting) {
-    return "停接";
+    return t("workers.hold");
   }
   if (worker.in_flight > 0) {
-    return "上传中";
+    return t("workers.uploading");
   }
-  return "空闲";
+  return t("workers.idle");
 }
 
 /**
@@ -154,10 +159,10 @@ async function onDisable(name: string): Promise<void> {
   busyName.value = name;
   try {
     await disableWorker(name);
-    ElMessage.success(`已禁用 ${name}`);
+    ElMessage.success(t("workers.disabledToast", { name }));
     await reloadWorkers();
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "禁用失败");
+    ElMessage.error(error instanceof Error ? error.message : t("workers.disableFailed"));
   } finally {
     busyName.value = "";
   }
@@ -168,10 +173,10 @@ async function onEnable(name: string): Promise<void> {
   busyName.value = name;
   try {
     await enableWorker(name);
-    ElMessage.success(`已启用 ${name}`);
+    ElMessage.success(t("workers.enabledToast", { name }));
     await reloadWorkers();
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "启用失败");
+    ElMessage.error(error instanceof Error ? error.message : t("workers.enableFailed"));
   } finally {
     busyName.value = "";
   }
@@ -181,12 +186,12 @@ async function onEnable(name: string): Promise<void> {
 async function onDelete(name: string): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `将永久删除 sessions/${name}.session 授权凭据，该操作不可撤回。正在处理的任务将自动释放回待发队列。`,
-      `确定删除 ${name}？`,
+      t("workers.deleteBody", { name }),
+      t("workers.deleteTitle", { name }),
       {
         type: "warning",
-        confirmButtonText: "确认删除",
-        cancelButtonText: "取消",
+        confirmButtonText: t("workers.confirmDelete"),
+        cancelButtonText: t("common.cancel"),
         confirmButtonClass: "el-button--danger",
       },
     );
@@ -197,11 +202,11 @@ async function onDelete(name: string): Promise<void> {
   busyName.value = name;
   try {
     await deleteWorker(name);
-    ElMessage.success(`已删除 ${name}`);
+    ElMessage.success(t("workers.deleted", { name }));
     await reloadWorkers();
     await reloadSessionAccounts().catch(() => undefined);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "删除失败");
+    ElMessage.error(error instanceof Error ? error.message : t("workers.deleteFailed"));
   } finally {
     busyName.value = "";
   }
@@ -213,7 +218,7 @@ async function onDelete(name: string): Promise<void> {
     <template #header>
       <div class="head">
         <div class="title-wrap">
-          <span>Worker 节点</span>
+          <span>{{ t("workers.title") }}</span>
           <span v-if="workers.length" class="count-badge">{{ workers.length }}</span>
         </div>
         <el-button type="primary" size="small" @click="emit('add')">
@@ -221,7 +226,7 @@ async function onDelete(name: string): Promise<void> {
             <line x1="12" y1="5" x2="12" y2="19"></line>
             <line x1="5" y1="12" x2="19" y2="12"></line>
           </svg>
-          添加 Session
+          {{ t("workers.addShort") }}
         </el-button>
       </div>
     </template>
@@ -237,8 +242,8 @@ async function onDelete(name: string): Promise<void> {
           <path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/>
         </svg>
       </div>
-      <p class="empty-title">暂无已挂载 Worker</p>
-      <p class="empty-desc">点击上方按钮添加 Telegram Session 授权账号</p>
+      <p class="empty-title">{{ t("workers.emptyTitle") }}</p>
+      <p class="empty-desc">{{ t("workers.emptyDesc") }}</p>
     </div>
 
     <!-- Worker 节点卡片列表 -->
@@ -261,12 +266,12 @@ async function onDelete(name: string): Promise<void> {
         <!-- 队列与并发在传数据格 -->
         <div class="metrics-grid">
           <div class="metric-cell">
-            <span class="m-label">队列积压</span>
+            <span class="m-label">{{ t("workers.queue") }}</span>
             <span class="m-val">{{ worker.queue_size }}</span>
           </div>
           <div class="metric-divider"></div>
           <div class="metric-cell">
-            <span class="m-label">并发在传</span>
+            <span class="m-label">{{ t("workers.inflight") }}</span>
             <span class="m-val" :class="{ 'm-active': worker.in_flight > 0 }">{{ worker.in_flight }}</span>
           </div>
         </div>
@@ -284,7 +289,7 @@ async function onDelete(name: string): Promise<void> {
             :loading="busyName === worker.name"
             @click="onDisable(worker.name)"
           >
-            禁用
+            {{ t("workers.disable") }}
           </el-button>
           <el-button
             v-else
@@ -294,7 +299,7 @@ async function onDelete(name: string): Promise<void> {
             :loading="busyName === worker.name"
             @click="onEnable(worker.name)"
           >
-            启用
+            {{ t("workers.enable") }}
           </el-button>
           <el-button
             size="small"
@@ -303,7 +308,7 @@ async function onDelete(name: string): Promise<void> {
             :loading="busyName === worker.name"
             @click="onDelete(worker.name)"
           >
-            删除
+            {{ t("workers.delete") }}
           </el-button>
         </div>
       </div>

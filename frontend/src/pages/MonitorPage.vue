@@ -21,6 +21,7 @@ import { useSuccessHistory } from "../composables/useSuccessHistory";
 import { useTelegramIdentity } from "../composables/useTelegramIdentity";
 import { useUnmatchedPolling } from "../composables/useUnmatched";
 import { formatBytes, formatSpeed } from "../format";
+import { t } from "../i18n";
 import type { ManualDispatchResult, SystemVersionInfo, WorkerSnapshot } from "../types";
 
 defineOptions({ name: "MonitorPage" });
@@ -185,26 +186,26 @@ const liveSpeed = computed(() => {
   if (activeTasks.length === 0) return "—";
   const totalSpeed = activeTasks.reduce((sum, item) => sum + (item.speed_bps || 0), 0);
   if (totalSpeed > 0) return formatSpeed(totalSpeed);
-  return "测算中";
+  return t("version.measuring");
 });
 
 const versionLabel = computed(() => {
   const info = versionInfo.value;
-  if (!info) return "v2.4.1 最新";
+  if (!info) return t("version.latestFallback");
   const rev = shortRevision(info.current_version);
-  if (info.status === "update") return "有更新";
-  if (info.status === "dev") return "开发版";
-  if (info.status === "staging") return rev ? `测试版 ${rev}` : "测试版";
-  return rev ? `v${rev}` : (info.current_version || "最新版");
+  if (info.status === "update") return t("version.update");
+  if (info.status === "dev") return t("version.dev");
+  if (info.status === "staging") return rev ? t("version.stagingRev", { rev }) : t("version.staging");
+  return rev ? t("version.rev", { rev }) : (info.current_version || t("version.latest"));
 });
 
-const versionTitle = computed(() => versionInfo.value?.commit_message || "点击查看系统版本状态");
+const versionTitle = computed(() => versionInfo.value?.commit_message || t("version.click"));
 
 function onVersionClick(): void {
   const info = versionInfo.value;
   if (!info) {
-    ElMessageBox.alert("当前客户端运行正常，FastAPI 与 Telethon 引擎活跃运作中。", "版本检查", {
-      confirmButtonText: "确定",
+    ElMessageBox.alert(t("version.healthy"), t("version.title"), {
+      confirmButtonText: t("common.ok"),
       type: "info",
     });
     return;
@@ -212,16 +213,21 @@ function onVersionClick(): void {
   const rev = shortRevision(info.current_version);
   const statusMsg =
     info.status === "update"
-      ? "发现有新版本可用！请关注 release 更新。"
+      ? t("version.updateBody")
       : info.status === "staging"
-      ? "当前运行测试版分支 (Staging)"
-      : "当前安装版本运行健康，无可用更新。";
-  const commitMsg = info.commit_message ? `\n提交信息: ${info.commit_message}` : "";
+      ? t("version.stagingBody")
+      : t("version.currentBody");
+  const commitMsg = info.commit_message ? `\n${t("version.commit", { message: info.commit_message })}` : "";
   ElMessageBox.alert(
-    `安装版本: ${info.current_version} (${rev ? `rev ${rev}` : info.status})\n${statusMsg}${commitMsg}`,
-    "版本检查与状态",
+    t("version.summary", {
+      version: info.current_version,
+      rev: rev ? `rev ${rev}` : info.status,
+      status: statusMsg,
+      commit: commitMsg,
+    }),
+    t("version.title"),
     {
-      confirmButtonText: "确定",
+      confirmButtonText: t("common.ok"),
       type: info.status === "update" ? "warning" : "info",
     },
   );
@@ -364,15 +370,15 @@ watch(
     />
 
     <p v-if="authRequired" class="setup-banner auth-banner">
-      <span>⚠️ API 鉴权失败：后端已开启 API_TOKEN 访问控制，但前端未配置或 Token 无效。</span>
-      <button type="button" @click="openSettings('account')">前往设置配置 Token</button>
+      <span>{{ t("banner.auth") }}</span>
+      <button type="button" @click="openSettings('account')">{{ t("banner.authAction") }}</button>
     </p>
     <p v-else-if="configured === false" class="setup-banner">
-      请先配置 API_ID / API_HASH，保存后当前进程即可使用。
-      <button type="button" @click="openSettings('account')">去配置</button>
+      {{ t("banner.credentials") }}
+      <button type="button" @click="openSettings('account')">{{ t("banner.credentialsAction") }}</button>
     </p>
     <p v-if="unmatchedCount > 0" class="unmatched-banner">
-      {{ unmatchedCount }} 个文件未命中路由，未进入上传队列。在左侧目录的「策略」里指定群。
+      {{ t("banner.unmatched", { n: unmatchedCount }) }}
     </p>
 
     <div class="work-body">
@@ -380,7 +386,7 @@ watch(
         v-if="dockOpen"
         type="button"
         class="dock-scrim"
-        aria-label="关闭目录"
+        :aria-label="t('banner.closeDock')"
         @click="dockOpen = false"
       ></button>
 
@@ -398,7 +404,7 @@ watch(
         v-if="dockOpen"
         class="dock-resizer"
         :class="{ 'is-dragging': isResizing }"
-        title="按住鼠标拖拽调整目录栏宽度"
+        :title="t('banner.resizeDock')"
         @mousedown="onResizeStart"
       >
         <div class="dock-resizer-line"></div>
@@ -421,24 +427,24 @@ watch(
          系统配置模态弹窗 (In-Place Modal)
     ══════════════════════════════════════════════════════════ -->
     <div v-show="settingsOpen" class="settings-layer" @click.self="closeSettings">
-      <div class="settings-modal" role="dialog" aria-label="系统配置" @click.stop>
+      <div class="settings-modal" role="dialog" :aria-label="t('settings.dialog')" @click.stop>
         <header class="settings-head">
           <div class="settings-head-left">
-            <h2>系统配置 (Settings)</h2>
-            <span v-if="settingsDirty" class="unsaved-badge">有未保存更改</span>
+            <h2>{{ t("settings.heading") }}</h2>
+            <span v-if="settingsDirty" class="unsaved-badge">{{ t("settings.unsaved") }}</span>
           </div>
           <div class="settings-head-right">
             <button
               type="button"
               class="save-toml-btn"
               :disabled="!settingsDirty || tomlSaving"
-              title="保存全部改动至 upload.toml"
+              :title="t('settings.saveTitle')"
               @click="handleSaveToml"
             >
               <span v-if="tomlSaving" class="btn-spinner"></span>
-              <span>保存到 upload.toml</span>
+              <span>{{ t("settings.save") }}</span>
             </button>
-            <button type="button" class="modal-close-btn" title="关闭设置 (Esc)" @click="closeSettings">✕</button>
+            <button type="button" class="modal-close-btn" :title="t('settings.close')" @click="closeSettings">✕</button>
           </div>
         </header>
         <SettingsPage
@@ -464,23 +470,23 @@ watch(
     ══════════════════════════════════════════════════════════ -->
     <Teleport to="body">
       <div v-if="successOpen" class="session-overlay" @click.self="closeSuccess">
-        <div class="session-modal success-modal" role="dialog" aria-label="传输历史记录" @click.stop>
+        <div class="session-modal success-modal" role="dialog" :aria-label="t('history.dialog')" @click.stop>
           <header class="success-head">
             <div class="success-head-left">
               <span class="success-badge-dot"></span>
               <div>
-                <h2>传输历史记录 (Transfer Stream)</h2>
+                <h2>{{ t("history.heading") }}</h2>
                 <p class="success-sub">
-                  {{ successScope === 'today' ? '今日已送达' : '累计已送达' }} {{ successTotalRows }} 个文件 · 本地数据库驱动
+                  {{ t("history.sub", { scope: successScope === "today" ? t("history.today") : t("history.all"), n: successTotalRows }) }}
                 </p>
               </div>
             </div>
             <div class="success-head-right">
               <div class="success-switch">
-                <button type="button" :class="{ on: successScope === 'today' }" @click="onSuccessScopeChange('today')">今日</button>
-                <button type="button" :class="{ on: successScope === 'all' }" @click="onSuccessScopeChange('all')">累计</button>
+                <button type="button" :class="{ on: successScope === 'today' }" @click="onSuccessScopeChange('today')">{{ t("history.todayBtn") }}</button>
+                <button type="button" :class="{ on: successScope === 'all' }" @click="onSuccessScopeChange('all')">{{ t("history.allBtn") }}</button>
               </div>
-              <button type="button" class="modal-close-btn" title="关闭 (Esc)" @click="closeSuccess">✕</button>
+              <button type="button" class="modal-close-btn" :title="t('history.close')" @click="closeSuccess">✕</button>
             </div>
           </header>
 
@@ -488,22 +494,22 @@ watch(
             <input
               v-model="successSearchText"
               type="text"
-              placeholder="按文件名或目录过滤历史..."
+              :placeholder="t('history.search')"
               class="success-search-input"
             />
           </div>
 
           <div class="success-body">
-            <p v-if="successLoading" class="success-empty">正在读取历史流水...</p>
-            <p v-else-if="filteredSuccessItems.length === 0" class="success-empty">没有匹配的成功记录</p>
+            <p v-if="successLoading" class="success-empty">{{ t("history.loading") }}</p>
+            <p v-else-if="filteredSuccessItems.length === 0" class="success-empty">{{ t("history.empty") }}</p>
             <table v-else class="success-table">
               <thead>
                 <tr>
-                  <th>文件名</th>
-                  <th>源监控路径</th>
-                  <th>文件大小</th>
-                  <th>传输状态</th>
-                  <th>完成时间</th>
+                  <th>{{ t("history.file") }}</th>
+                  <th>{{ t("history.source") }}</th>
+                  <th>{{ t("history.size") }}</th>
+                  <th>{{ t("history.status") }}</th>
+                  <th>{{ t("history.finished") }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -512,9 +518,9 @@ watch(
                     <span class="file-name">{{ item.file_name }}</span>
                     <span v-if="item.part_label" class="part-chip">{{ item.part_label }}</span>
                   </td>
-                  <td class="col-folder font-mono" :title="item.folder_name || '根目录'">{{ item.folder_name || "—" }}</td>
+                  <td class="col-folder font-mono" :title="item.folder_name || t('history.root')">{{ item.folder_name || "—" }}</td>
                   <td class="col-size font-mono">{{ item.file_size > 0 ? formatBytes(item.file_size) : "—" }}</td>
-                  <td class="col-status"><span class="status-pill ok">已送达</span></td>
+                  <td class="col-status"><span class="status-pill ok">{{ t("history.delivered") }}</span></td>
                   <td class="col-time font-mono">{{ item.finished_at || "—" }}</td>
                 </tr>
               </tbody>
@@ -522,11 +528,11 @@ watch(
           </div>
 
           <footer class="success-pager">
-            <span class="pager-stat">显示第 {{ successPage }} / {{ successPages }} 页 · 共 {{ successTotalRows }} 条记录</span>
+            <span class="pager-stat">{{ t("history.pager", { page: successPage, pages: successPages, total: successTotalRows }) }}</span>
             <div class="pager-actions">
-              <button type="button" :disabled="successPage <= 1 || successLoading" @click="shiftSuccessPage(-1)">上一页</button>
+              <button type="button" :disabled="successPage <= 1 || successLoading" @click="shiftSuccessPage(-1)">{{ t("history.prev") }}</button>
               <span class="page-current font-mono">{{ successPage }}</span>
-              <button type="button" :disabled="successPage >= successPages || successLoading" @click="shiftSuccessPage(1)">下一页</button>
+              <button type="button" :disabled="successPage >= successPages || successLoading" @click="shiftSuccessPage(1)">{{ t("history.next") }}</button>
             </div>
           </footer>
         </div>
@@ -538,20 +544,20 @@ watch(
     ══════════════════════════════════════════════════════════ -->
     <Teleport to="body">
       <div v-if="workerModalOpen" class="settings-layer" @click.self="workerModalOpen = false">
-        <div class="worker-modal panel-card" role="dialog" aria-label="Worker 节点调度管理" @click.stop>
+        <div class="worker-modal panel-card" role="dialog" :aria-label="t('workers.dialog')" @click.stop>
           <header class="worker-modal-head">
             <div class="worker-modal-head-left">
               <span class="worker-badge-dot"></span>
               <div>
-                <h2>Worker 节点调度管理</h2>
-                <p class="worker-sub">当前在线 {{ activeWorkersCount }} / {{ totalWorkersCount }} · 负责并发分块与个人号直传</p>
+                <h2>{{ t("workers.heading") }}</h2>
+                <p class="worker-sub">{{ t("workers.sub", { active: activeWorkersCount, total: totalWorkersCount }) }}</p>
               </div>
             </div>
             <div class="worker-modal-head-right">
               <button type="button" class="add-session-btn" @click="openSessionForm">
-                + 添加 Session
+                {{ t("workers.add") }}
               </button>
-              <button type="button" class="modal-close-btn" title="关闭 (Esc)" @click="workerModalOpen = false">✕</button>
+              <button type="button" class="modal-close-btn" :title="t('workers.close')" @click="workerModalOpen = false">✕</button>
             </div>
           </header>
           <div class="worker-modal-body">

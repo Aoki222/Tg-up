@@ -17,6 +17,7 @@ import ConfigPanel from "../components/ConfigPanel.vue";
 import { useTelegramIdentity } from "../composables/useTelegramIdentity";
 import { useUnmatchedPolling } from "../composables/useUnmatched";
 import { ENABLE_GOOGLE_DRIVE } from "../features";
+import { t } from "../i18n";
 
 defineOptions({ name: "SettingsPage" });
 
@@ -30,13 +31,13 @@ const panelRef = ref<InstanceType<typeof ConfigPanel> | null>(null);
 const localSection = ref("account");
 useUnmatchedPolling();
 
-const allSections = [
-  { id: "account", label: "账号与凭据" },
-  { id: "telegram", label: "Telegram 目标" },
+const allSections = computed(() => [
+  { id: "account", label: t("settings.nav.account") },
+  { id: "telegram", label: t("settings.nav.telegram") },
   ...(ENABLE_GOOGLE_DRIVE ? [{ id: "drive", label: "Google Drive" }] : []),
-  { id: "watch", label: "监听目录" },
-  { id: "process", label: "处理与收尾" },
-] as const;
+  { id: "watch", label: t("settings.nav.watch") },
+  { id: "process", label: t("settings.nav.process") },
+]);
 
 type PanelId = "telegram" | "drive" | "watch" | "process";
 
@@ -46,7 +47,7 @@ const tomlDirty = ref(false);
 const section = computed(() => {
   if (props.embedded) return localSection.value;
   const value = String(route.params.section || "account");
-  return allSections.some((item) => item.id === value) ? value : "account";
+  return allSections.value.some((item) => item.id === value) ? value : "account";
 });
 
 const configPanelId = computed<PanelId>(() => {
@@ -61,17 +62,17 @@ const configPanelId = computed<PanelId>(() => {
 const searchQuery = ref("");
 
 const sectionKeywords: Record<string, string[]> = {
-  account: ["账号", "凭据", "api_id", "api_hash", "token", "鉴权", "密码", "credential", "account"],
+  account: ["账号", "凭据", "api_id", "api_hash", "token", "鉴权", "密码", "credential", "account", "accounts"],
   telegram: ["telegram", "目标", "chat", "chat_id", "群组", "频道", "话题", "topic"],
   drive: ["drive", "google", "云端硬盘", "folder"],
-  watch: ["监听", "目录", "observer", "path", "格式", "扩展名", "extension", "超时", "stable", "watch"],
-  process: ["处理", "收尾", "封面", "缩略图", "preview", "说明", "caption", "归档", "archive", "切片", "slice", "并发", "concurrency", "重试", "retry", "超时", "timeout", "process"],
+  watch: ["监听", "目录", "observer", "path", "格式", "扩展名", "extension", "超时", "stable", "watch", "folder", "folders"],
+  process: ["处理", "收尾", "封面", "缩略图", "preview", "说明", "caption", "归档", "archive", "切片", "slice", "并发", "concurrency", "重试", "retry", "超时", "timeout", "process", "order", "schedule", "processing"],
 };
 
 const visibleSections = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
-  if (!q) return allSections;
-  return allSections.filter((item) => {
+  if (!q) return allSections.value;
+  return allSections.value.filter((item) => {
     if (item.label.toLowerCase().includes(q) || item.id.toLowerCase().includes(q)) return true;
     const kw = sectionKeywords[item.id] || [];
     return kw.some((k) => k.toLowerCase().includes(q));
@@ -96,7 +97,7 @@ onMounted(() => {
   tokenInput.value = getApiToken();
   void refreshIdentity().then((info) => {
     if (!info) {
-      ElMessage.error("读取 Telegram 凭据失败");
+      ElMessage.error(t("settings.credentials.readFailed"));
       return;
     }
     apiId.value = info.api_id;
@@ -106,7 +107,7 @@ onMounted(() => {
 
 async function saveCredentials(): Promise<void> {
   if (!apiId.value || apiId.value < 1) {
-    ElMessage.error("API_ID 必须是正整数");
+    ElMessage.error(t("settings.credentials.badId"));
     return;
   }
   identitySaving.value = true;
@@ -118,9 +119,9 @@ async function saveCredentials(): Promise<void> {
       apiId.value = info.api_id;
       apiHashMasked.value = info.api_hash_masked;
     }
-    ElMessage.success("凭据已保存，当前进程已立即生效");
+    ElMessage.success(t("settings.credentials.saved"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "保存凭据失败");
+    ElMessage.error(error instanceof Error ? error.message : t("settings.credentials.saveFailed"));
   } finally {
     identitySaving.value = false;
   }
@@ -129,7 +130,7 @@ async function saveCredentials(): Promise<void> {
 function saveToken(): void {
   setApiToken(tokenInput.value);
   saved.value = true;
-  ElMessage.success(tokenInput.value ? "Token 已保存，后续请求将自动携带" : "Token 已清除");
+  ElMessage.success(tokenInput.value ? t("settings.token.saved") : t("settings.token.cleared"));
   setTimeout(() => {
     saved.value = false;
   }, 2000);
@@ -139,7 +140,7 @@ function clearToken(): void {
   tokenInput.value = "";
   setApiToken("");
   saved.value = true;
-  ElMessage.success("Token 已清除");
+  ElMessage.success(t("settings.token.cleared"));
   setTimeout(() => {
     saved.value = false;
   }, 2000);
@@ -175,11 +176,11 @@ defineExpose({
           <input
             v-model="searchQuery"
             type="text"
-            placeholder="搜索配置项..."
+            :placeholder="t('settings.search')"
             class="sidebar-search-input"
           />
 
-          <nav class="sidebar-nav-list" aria-label="配置导航">
+          <nav class="sidebar-nav-list" :aria-label="t('settings.nav')">
             <button
               v-for="item in visibleSections"
               :key="item.id"
@@ -210,7 +211,7 @@ defineExpose({
         <div class="sidebar-hub-footer">
           <div class="hub-line">
             <span class="hub-name">SettingsHub:</span>
-            <span class="hub-tag">热加载生效</span>
+            <span class="hub-tag">{{ t("settings.hub") }}</span>
           </div>
           <div class="hub-file-names">upload.toml · telegram.json</div>
         </div>
@@ -223,9 +224,10 @@ defineExpose({
           <!-- 1. Telegram 凭据 -->
           <div class="inset-card">
             <div class="card-head">
-              <h3 class="card-title">Telegram 凭据</h3>
+              <h3 class="card-title">{{ t("settings.credentials.title") }}</h3>
               <p class="card-hint">
-                来自 <a href="https://my.telegram.org" target="_blank" rel="noreferrer" class="link-url">my.telegram.org</a>。保存后写入 <code>data/telegram.json</code>，当前进程立即生效，不必重启。
+                {{ t("settings.credentials.hintBefore") }}
+                <a href="https://my.telegram.org" target="_blank" rel="noreferrer" class="link-url">my.telegram.org</a>{{ t("settings.credentials.hintAfter") }}
               </p>
             </div>
 
@@ -236,7 +238,7 @@ defineExpose({
                   <input
                     v-model.number="apiId"
                     type="number"
-                    placeholder="纯数字应用 ID"
+                    :placeholder="t('settings.credentials.apiId')"
                     class="field-input mono"
                   />
                 </div>
@@ -245,14 +247,14 @@ defineExpose({
                   <input
                     v-model="apiHash"
                     type="password"
-                    :placeholder="apiHashMasked || '留空则不修改'"
+                    :placeholder="apiHashMasked || t('settings.credentials.apiHash')"
                     class="field-input mono"
                   />
                 </div>
               </div>
 
               <div class="card-foot-flex">
-                <span class="foot-note">凭据仅存储于本地保护目录</span>
+                <span class="foot-note">{{ t("settings.credentials.note") }}</span>
                 <button
                   type="button"
                   class="save-pill-btn"
@@ -260,7 +262,7 @@ defineExpose({
                   @click="saveCredentials"
                 >
                   <span v-if="identitySaving" class="mini-spinner"></span>
-                  <span>保存凭据</span>
+                  <span>{{ t("settings.credentials.save") }}</span>
                 </button>
               </div>
             </div>
@@ -269,9 +271,11 @@ defineExpose({
           <!-- 2. 控制台鉴权 -->
           <div class="inset-card">
             <div class="card-head">
-              <h3 class="card-title">控制台鉴权</h3>
+              <h3 class="card-title">{{ t("settings.token.title") }}</h3>
               <p class="card-hint">
-                用于访问受保护的 API 端点。与后端 <code>API_TOKEN</code> 环境变量保持一致，存储在浏览器 localStorage 中，留空表示不鉴权。
+                {{ t("settings.token.hintBefore") }}
+                <code>API_TOKEN</code>
+                {{ t("settings.token.hintAfter") }}
               </p>
             </div>
 
@@ -281,15 +285,15 @@ defineExpose({
                 <input
                   v-model="tokenInput"
                   type="password"
-                  placeholder="输入 API Token"
+                  :placeholder="t('settings.token.placeholder')"
                   class="field-input mono"
                 />
               </div>
 
               <div class="token-btn-row">
-                <button type="button" class="save-pill-btn" @click="saveToken">保存 Token</button>
-                <button type="button" class="cancel-pill-btn" @click="clearToken">清除</button>
-                <span v-if="saved" class="saved-feedback-tag">✓ Token 已保存</span>
+                <button type="button" class="save-pill-btn" @click="saveToken">{{ t("settings.token.save") }}</button>
+                <button type="button" class="cancel-pill-btn" @click="clearToken">{{ t("settings.token.clear") }}</button>
+                <span v-if="saved" class="saved-feedback-tag">{{ t("settings.token.savedMark") }}</span>
               </div>
             </div>
           </div>

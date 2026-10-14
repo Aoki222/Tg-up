@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { SystemVersionInfo } from "../types";
+import { locale, setLocale, t } from "../i18n";
 
 defineProps<{
   dockOpen: boolean;
@@ -32,7 +33,7 @@ const emit = defineEmits<{
         type="button"
         class="sidebar-toggle-btn"
         :aria-expanded="dockOpen"
-        title="展开/收起目录侧栏 (Ctrl+B)"
+        :title="t('header.toggleDock')"
         @click="emit('toggle-dock')"
       >
         <svg class="toggle-icon" :class="{ rotated: !dockOpen }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -47,7 +48,7 @@ const emit = defineEmits<{
         type="button"
         class="version-pill"
         :class="versionInfo ? `tag-${versionInfo.status}` : 'tag-latest'"
-        :title="versionTitle || '点击查看版本状态'"
+        :title="versionTitle || t('header.versionFallback')"
         @click="emit('open-version')"
       >
         <span class="version-dot"></span>
@@ -56,11 +57,11 @@ const emit = defineEmits<{
     </div>
 
     <div class="telemetry-island">
-      <div class="telemetry-badge" title="当前所有 Worker 的瞬时上传汇总速度">
+      <div class="telemetry-badge" :title="t('header.liveTitle')">
         <svg class="telemetry-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
           <path d="M8.5 1.5L2.5 9h5l-1 5.5 6-7.5h-5l1-5.5z" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        <span class="telemetry-label">实时传输:</span>
+        <span class="telemetry-label">{{ t("header.live") }}</span>
         <b class="telemetry-val font-mono">{{ liveSpeed }}</b>
       </div>
     </div>
@@ -70,7 +71,7 @@ const emit = defineEmits<{
         type="button"
         class="worker-chip-btn"
         :class="{ 'has-offline': activeWorkers < totalWorkers }"
-        title="点击打开 Worker 节点调度管理面板"
+        :title="t('header.workersTitle')"
         @click="emit('open-workers')"
       >
         <span class="worker-chip-icon">
@@ -81,32 +82,37 @@ const emit = defineEmits<{
           </svg>
         </span>
         <span class="worker-chip-status-dot"></span>
-        <span class="worker-chip-label">Worker 在线</span>
+        <span class="worker-chip-label">{{ t("header.workers") }}</span>
         <b class="worker-chip-count font-mono">{{ activeWorkers }}/{{ totalWorkers }}</b>
-        <span class="worker-chip-action-pill">管理</span>
+        <span class="worker-chip-action-pill">{{ t("header.manage") }}</span>
       </button>
 
       <div class="scope-island-pill">
-        <button type="button" class="scope-island-view-btn" title="查看传输历史记录 (Ctrl+H)" @click="emit('open-success')">
+        <button type="button" class="scope-island-view-btn" :title="t('header.historyTitle')" @click="emit('open-success')">
           <svg class="scope-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
             <path d="M2.5 4.5h11M2.5 8h7M2.5 11.5h5" stroke-linecap="round"/>
           </svg>
-          <span class="scope-island-label">{{ successScope === "today" ? "今日已传:" : "累计已传:" }}</span>
+          <span class="scope-island-label">{{ successScope === "today" ? t("header.todaySent") : t("header.allSent") }}</span>
           <b class="scope-island-count font-mono">{{ successScope === "today" ? successCount : (successAllTotal || successCount) }}</b>
         </button>
         <span class="scope-island-divider"></span>
-        <button type="button" class="scope-island-toggle-btn" title="切换今日 / 累计总数" @click.stop="emit('toggle-scope')">
-          {{ successScope === "today" ? "切总数 ▾" : "切今日 ▾" }}
+        <button type="button" class="scope-island-toggle-btn" :title="t('header.scopeTitle')" @click.stop="emit('toggle-scope')">
+          {{ successScope === "today" ? t("header.scopeAll") : t("header.scopeToday") }}
         </button>
       </div>
 
-      <button type="button" class="settings-pill-btn" title="系统偏好设置 (Ctrl+,)" @click="emit('open-settings')">
+      <div class="lang-switch" role="group" :aria-label="t('header.language')">
+        <button type="button" :class="{ on: locale === 'en' }" :aria-pressed="locale === 'en'" @click="setLocale('en')">EN</button>
+        <button type="button" :class="{ on: locale === 'zh' }" :aria-pressed="locale === 'zh'" @click="setLocale('zh')">中文</button>
+      </div>
+
+      <button type="button" class="settings-pill-btn" :title="t('header.settingsTitle')" @click="emit('open-settings')">
         <svg class="settings-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
           <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
           <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319z"/>
         </svg>
-        <span>设置</span>
-        <span v-if="settingsDirty" class="dirty-dot" aria-label="有未保存的修改"></span>
+        <span>{{ t("header.settings") }}</span>
+        <span v-if="settingsDirty" class="dirty-dot" :aria-label="t('header.dirty')"></span>
       </button>
     </div>
   </header>

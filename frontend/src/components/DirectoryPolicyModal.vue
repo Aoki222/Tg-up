@@ -22,6 +22,7 @@ import type {
   PreviewMode,
   UploadConfig,
 } from "../types";
+import { t } from "../i18n";
 
 const props = defineProps<{
   /** 弹窗是否可见 */
@@ -67,7 +68,7 @@ function samePath(a: string, b: string): boolean {
 }
 
 const folderName = computed(() => {
-  if (!props.path) return "目录";
+  if (!props.path) return t("policy.folder");
   const parts = props.path.replace(/\\/g, "/").split("/").filter(Boolean);
   return parts[parts.length - 1] || props.path;
 });
@@ -124,7 +125,7 @@ async function loadPolicyData(): Promise<void> {
 
     await loadTopicsForActiveChat();
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : "无法加载目录策略配置");
+    ElMessage.error(err instanceof Error ? err.message : t("policy.loadFailed"));
   } finally {
     loading.value = false;
   }
@@ -164,7 +165,7 @@ function onDestChange(): void {
 const parsedGridInfo = computed(() => {
   const val = gridLayout.value.trim();
   if (!val) {
-    return { valid: true, text: "未指定专属规格，将自动跟随全局网格设置", empty: true };
+    return { valid: true, text: t("policy.gridEmpty"), empty: true };
   }
   const clean = val.toLowerCase().replace(/[*×,]/g, "x");
   const parts = clean.split("x");
@@ -174,14 +175,14 @@ const parsedGridInfo = computed(() => {
     if (!isNaN(c) && !isNaN(r) && c >= 1 && c <= 20 && r >= 1 && r <= 20) {
       return {
         valid: true,
-        text: `解析成功：${c} 列 × ${r} 行（共 ${c * r} 帧预览画面）`,
+        text: t("policy.gridOk", { cols: c, rows: r, frames: c * r }),
         empty: false,
       };
     }
   }
   return {
     valid: false,
-    text: "格式需为 列x行（如 3x5、4x3，1~20 范围）",
+    text: t("policy.gridBad"),
     empty: false,
   };
 });
@@ -237,7 +238,7 @@ const previewHtml = computed(() => {
   const folder = folderName.value || "download";
   let template = caption.value;
   if (!template || !template.trim()) {
-    return `<span class="preview-empty">未设置说明（将使用文件名或默认说明）</span>`;
+    return `<span class="preview-empty">${escapeHtml(t("policy.previewEmpty"))}</span>`;
   }
 
   template = template
@@ -322,11 +323,11 @@ async function onSave(): Promise<void> {
     };
 
     await saveSettings(payload);
-    ElMessage.success(`已保存「${folderName.value}」交付策略，即时写入 upload.toml`);
+    ElMessage.success(t("policy.saved", { name: folderName.value }));
     emit("saved");
     emit("update:modelValue", false);
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : "保存策略失败");
+    ElMessage.error(err instanceof Error ? err.message : t("policy.saveFailed"));
   } finally {
     saving.value = false;
   }
@@ -353,14 +354,14 @@ function onClose(): void {
       <div
         class="policy-modal"
         role="dialog"
-        :aria-label="`路径交付策略 · ${folderName}`"
+        :aria-label="t('policy.dialog', { name: folderName })"
         @click.stop
       >
         <!-- 弹窗顶栏 -->
         <header class="policy-head">
           <div class="head-info">
             <h3 class="head-title">
-              <span>路径交付策略 · </span>
+              <span>{{ t("policy.heading") }} </span>
               <span class="head-name">{{ folderName }}</span>
             </h3>
             <p class="head-path font-mono" :title="path">{{ path }}</p>
@@ -368,7 +369,7 @@ function onClose(): void {
           <button
             type="button"
             class="close-btn"
-            title="关闭策略设置 (Esc)"
+            :title="t('policy.close')"
             @click="onClose"
           >
             ✕
@@ -379,14 +380,14 @@ function onClose(): void {
         <div v-loading="loading" class="policy-body">
           <!-- 1. 投递目标 (群组 / 频道) -->
           <div class="form-section">
-            <label class="section-label">1. 投递目标 (群组 / 频道)</label>
+            <label class="section-label">{{ t("policy.dest") }}</label>
             <select
               v-model="destKey"
               class="target-select"
               @change="onDestChange"
             >
-              <option value="">跟随父级 (继承上一级目标 / 默认群)</option>
-              <optgroup v-if="chats.length" label="Telegram 群组 / 频道">
+              <option value="">{{ t("policy.inherit") }}</option>
+              <optgroup v-if="chats.length" :label="t('policy.chats')">
                 <option
                   v-for="c in chats"
                   :key="c.chat_id"
@@ -397,10 +398,10 @@ function onClose(): void {
               </optgroup>
               <optgroup
                 v-if="globalChatId != null && !chats.some((c) => c.chat_id === globalChatId)"
-                label="Telegram 默认"
+                :label="t('policy.defaultGroup')"
               >
                 <option :value="`tg:${globalChatId}`">
-                  Telegram: 全局默认目标 ({{ globalChatId }})
+                  {{ t("policy.defaultChat", { id: globalChatId }) }}
                 </option>
               </optgroup>
               <optgroup v-if="driveFolders.length" label="Google Drive">
@@ -414,12 +415,12 @@ function onClose(): void {
               </optgroup>
             </select>
             <p v-if="!destKey" class="field-hint">
-              跟随父级会继承上级目录或默认目标，并去掉这个目录自己的专属策略。
+              {{ t("policy.inheritHint") }}
             </p>
 
             <!-- 话题归属模式 -->
             <div v-if="isTelegramDest" class="topic-box">
-              <span class="topic-sub-label">话题归属模式:</span>
+              <span class="topic-sub-label">{{ t("policy.topicMode") }}</span>
               <div class="segmented-grid">
                 <button
                   type="button"
@@ -427,7 +428,7 @@ function onClose(): void {
                   :class="{ on: topicMode === 'fixed' }"
                   @click="topicMode = 'fixed'"
                 >
-                  固定话题
+                  {{ t("policy.topicFixed") }}
                 </button>
                 <button
                   type="button"
@@ -435,7 +436,7 @@ function onClose(): void {
                   :class="{ on: topicMode === 'auto' }"
                   @click="topicMode = 'auto'"
                 >
-                  按目录新建
+                  {{ t("policy.topicAuto") }}
                 </button>
                 <button
                   type="button"
@@ -443,7 +444,7 @@ function onClose(): void {
                   :class="{ on: topicMode === 'off' }"
                   @click="topicMode = 'off'"
                 >
-                  不使用
+                  {{ t("policy.topicOff") }}
                 </button>
                 <button
                   type="button"
@@ -451,7 +452,7 @@ function onClose(): void {
                   :class="{ on: topicMode === 'inherit' }"
                   @click="topicMode = 'inherit'"
                 >
-                  跟随全局
+                  {{ t("policy.topicGlobal") }}
                 </button>
               </div>
 
@@ -462,20 +463,20 @@ function onClose(): void {
                   v-model="topicId"
                   class="topic-dropdown"
                 >
-                  <option :value="null">-- 请选择对应话题 --</option>
+                  <option :value="null">{{ t("policy.pickTopic") }}</option>
                   <option
-                    v-for="t in topics"
-                    :key="t.topic_id"
-                    :value="t.topic_id"
+                    v-for="topic in topics"
+                    :key="topic.topic_id"
+                    :value="topic.topic_id"
                   >
-                    #{{ t.title }} (Topic ID: {{ t.topic_id }})
+                    #{{ topic.title }} (Topic ID: {{ topic.topic_id }})
                   </option>
                 </select>
                 <p v-else-if="topicsLoading" class="topic-warn">
-                  正在拉取群组话题列表...
+                  {{ t("policy.topicsLoading") }}
                 </p>
                 <p v-else class="topic-warn">
-                  目标群组未开启论坛话题模式，或未能检索到可用话题。
+                  {{ t("policy.topicsEmpty") }}
                 </p>
               </div>
             </div>
@@ -485,7 +486,7 @@ function onClose(): void {
 
           <!-- 2. 视频封面 / 缩略图生成 -->
           <div class="form-section">
-            <label class="section-label">2. 视频封面 / 缩略图生成</label>
+            <label class="section-label">{{ t("policy.cover") }}</label>
             <div class="segmented-grid">
               <button
                 type="button"
@@ -493,7 +494,7 @@ function onClose(): void {
                 :class="{ 'on-accent': preview === 'inherit' }"
                 @click="preview = 'inherit'"
               >
-                跟随全局
+                {{ t("policy.coverGlobal") }}
               </button>
               <button
                 type="button"
@@ -501,7 +502,7 @@ function onClose(): void {
                 :class="{ 'on-accent': preview === 'first_frame' }"
                 @click="preview = 'first_frame'"
               >
-                首帧截图
+                {{ t("policy.coverFrame") }}
               </button>
               <button
                 type="button"
@@ -509,7 +510,7 @@ function onClose(): void {
                 :class="{ 'on-accent': preview === 'grid' }"
                 @click="preview = 'grid'"
               >
-                自定义网格图
+                {{ t("policy.coverGrid") }}
               </button>
               <button
                 type="button"
@@ -517,34 +518,34 @@ function onClose(): void {
                 :class="{ 'on-accent': preview === 'off' }"
                 @click="preview = 'off'"
               >
-                关闭封面
+                {{ t("policy.coverOff") }}
               </button>
             </div>
 
             <!-- 当选择自定义网格图时展开规格配置 -->
             <div v-if="preview === 'grid'" class="grid-sub-setting">
               <div class="grid-sub-row">
-                <span class="grid-sub-label">网格规格</span>
+                <span class="grid-sub-label">{{ t("policy.gridLabel") }}</span>
                 <input
                   v-model="gridLayout"
                   type="text"
-                  placeholder="留空跟随全局，或输入如 3x5、4x3"
+                  :placeholder="t('policy.gridPlaceholder')"
                   class="target-select grid-input font-mono"
                 />
                 <button
                   v-if="gridLayout"
                   type="button"
                   class="btn-clear-grid"
-                  title="清空后跟随全局配置"
+                  :title="t('policy.gridClearTitle')"
                   @click="gridLayout = ''"
                 >
-                  跟随全局
+                  {{ t("policy.gridFollow") }}
                 </button>
               </div>
 
               <!-- 快捷预设按钮 -->
               <div class="grid-presets-row">
-                <span class="grid-presets-label">常用预设:</span>
+                <span class="grid-presets-label">{{ t("policy.gridPresets") }}</span>
                 <div class="grid-presets-chips">
                   <button
                     v-for="p in ['3x5', '4x3', '3x3', '4x4', '2x4', '5x2']"
@@ -566,7 +567,7 @@ function onClose(): void {
               </div>
 
               <p class="field-hint">
-                格式：[列数]x[行数]（例如 <code>3x5</code> 为 3 列 5 行，共 15 帧）。自适应原视频真实比例（16:9 / 9:16），绝不拉伸、绝不裁切画面。
+                {{ t("policy.gridHelp") }}
               </p>
             </div>
           </div>
@@ -575,7 +576,7 @@ function onClose(): void {
 
           <!-- 3. 落稳等待 -->
           <div class="form-section">
-            <label class="section-label" for="settle-delay">3. 落稳等待（秒）</label>
+            <label class="section-label" for="settle-delay">{{ t("policy.settle") }}</label>
             <input
               id="settle-delay"
               v-model.number="settleDelay"
@@ -586,7 +587,7 @@ function onClose(): void {
               class="target-select settle-input"
             />
             <p class="field-hint">
-              0 表示不额外等待。正在录制的目录可以填 180：文件大小连续安静这么多秒后才入库。需要先选定这个目录自己的投递目标，秒数才会写进策略。子目录单独设了策略时，用子目录的秒数。
+              {{ t("policy.settleHint") }}
             </p>
           </div>
 
@@ -595,8 +596,8 @@ function onClose(): void {
           <!-- 4. 消息 Caption 说明模板 -->
           <div class="form-section">
             <div class="caption-head">
-              <label class="section-label">4. 消息 Caption 说明模板</label>
-              <span class="caption-sub">支持 Telegram HTML</span>
+              <label class="section-label">{{ t("policy.caption") }}</label>
+              <span class="caption-sub">{{ t("policy.captionHtml") }}</span>
             </div>
 
             <!-- 快捷标签插入芯片 (Toggle 模式) -->
@@ -608,7 +609,7 @@ function onClose(): void {
                 @click="toggleChip('{file_name}')"
               >
                 <span v-if="hasChip('{file_name}')" class="chip-check">✓</span>
-                <span>文件名</span>
+                <span>{{ t("policy.chipFile") }}</span>
               </button>
               <button
                 type="button"
@@ -617,7 +618,7 @@ function onClose(): void {
                 @click="toggleChip('{size}')"
               >
                 <span v-if="hasChip('{size}')" class="chip-check">✓</span>
-                <span>大小</span>
+                <span>{{ t("policy.chipSize") }}</span>
               </button>
               <button
                 type="button"
@@ -626,7 +627,7 @@ function onClose(): void {
                 @click="toggleChip('{folder}')"
               >
                 <span v-if="hasChip('{folder}')" class="chip-check">✓</span>
-                <span>目录名</span>
+                <span>{{ t("policy.chipFolder") }}</span>
               </button>
               <button
                 type="button"
@@ -635,7 +636,7 @@ function onClose(): void {
                 @click="toggleChip('{stem}')"
               >
                 <span v-if="hasChip('{stem}')" class="chip-check">✓</span>
-                <span>纯主名</span>
+                <span>{{ t("policy.chipStem") }}</span>
               </button>
               <button
                 type="button"
@@ -644,7 +645,7 @@ function onClose(): void {
                 @click="toggleChip('{date}')"
               >
                 <span v-if="hasChip('{date}')" class="chip-check">✓</span>
-                <span>日期</span>
+                <span>{{ t("policy.chipDate") }}</span>
               </button>
               <button
                 type="button"
@@ -653,7 +654,7 @@ function onClose(): void {
                 @click="toggleChip('#自动化归档')"
               >
                 <span v-if="hasChip('#自动化归档')" class="chip-check">✓</span>
-                <span>标签</span>
+                <span>{{ t("policy.chipTag") }}</span>
               </button>
             </div>
 
@@ -662,13 +663,13 @@ function onClose(): void {
               ref="captionInputRef"
               v-model="caption"
               rows="3"
-              placeholder="<b>{file_name}</b> | 规格: {size} #视频存档"
+              :placeholder="t('policy.captionPlaceholder')"
               class="caption-textarea"
             ></textarea>
 
             <!-- 实时 Telegram 消息预览卡 -->
             <div class="preview-card">
-              <div class="preview-title">Telegram 消息预览：</div>
+              <div class="preview-title">{{ t("policy.previewTitle") }}</div>
               <div class="preview-content" v-html="previewHtml"></div>
             </div>
           </div>
@@ -676,10 +677,10 @@ function onClose(): void {
 
         <!-- 弹窗底栏 -->
         <footer class="policy-foot">
-          <span class="foot-hint font-mono">保存即时写入 upload.toml</span>
+          <span class="foot-hint font-mono">{{ t("policy.foot") }}</span>
           <div class="foot-actions">
             <button type="button" class="cancel-btn" @click="onClose">
-              取消
+              {{ t("policy.cancel") }}
             </button>
             <button
               type="button"
@@ -688,7 +689,7 @@ function onClose(): void {
               @click="onSave"
             >
               <span v-if="saving" class="spinner"></span>
-              <span>保存此策略</span>
+              <span>{{ t("policy.save") }}</span>
             </button>
           </div>
         </footer>

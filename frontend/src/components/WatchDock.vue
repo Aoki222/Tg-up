@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { formatBytes } from "../format";
+import { t } from "../i18n";
 import type { FsNode } from "../types";
 import { useWatchDock } from "../composables/useWatchDock";
 
@@ -53,9 +54,9 @@ defineExpose({ loadWatchPaths, bumpTrees });
   >
     <div class="dock-head">
       <div class="dock-head-left">
-        <h2>监控目录</h2>
+        <h2>{{ t("dock.heading") }}</h2>
         <span class="dock-count-badge" :class="{ 'is-paused': !watchEnabled }">
-          {{ !watchEnabled ? "全局已暂停" : `${activeRootsCount} 处活跃` }}
+          {{ !watchEnabled ? t("dock.paused") : t("dock.active", { n: activeRootsCount }) }}
         </span>
       </div>
 
@@ -64,20 +65,20 @@ defineExpose({ loadWatchPaths, bumpTrees });
           v-if="expandedPaths.size > 0"
           type="button"
           class="dock-collapse-all-btn font-mono"
-          title="收起所有展开的子目录树"
+          :title="t('dock.collapseAllTitle')"
           @click="expandedPaths.clear()"
         >
-          全部收起
+          {{ t("dock.collapseAll") }}
         </button>
-        <button type="button" class="dock-toggle-btn" title="收起目录 (Ctrl+B)" @click="emit('close')">
-          收起
+        <button type="button" class="dock-toggle-btn" :title="t('dock.collapseTitle')" @click="emit('close')">
+          {{ t("dock.collapse") }}
         </button>
       </div>
     </div>
 
     <div class="dock-list">
       <p v-if="dockItems.length === 0" class="dock-empty">
-        还没有监听目录，请点击下方添加
+        {{ t("dock.empty") }}
       </p>
 
       <article
@@ -91,19 +92,19 @@ defineExpose({ loadWatchPaths, bumpTrees });
       >
         <div
           class="dock-row"
-          :title="isCardExpanded(item.path) ? '点击折叠此目录文件树' : '点击展开此目录文件树'"
+          :title="isCardExpanded(item.path) ? t('dock.collapseCard') : t('dock.expandCard')"
           @click="toggleCardExpand(item.path)"
         >
           <button
             type="button"
             class="dock-fold-arrow"
             :class="{ expanded: isCardExpanded(item.path) }"
-            :title="isCardExpanded(item.path) ? '点击折叠此目录树' : '点击展开子文件树'"
+            :title="isCardExpanded(item.path) ? t('dock.collapseCard') : t('dock.expandCard')"
             @click.stop="toggleCardExpand(item.path)"
           >
             {{ isCardExpanded(item.path) ? "▼" : "▶" }}
           </button>
-          <span class="dock-dot" :class="{ bad: !item.ok }" :title="item.error || '可读取'"></span>
+          <span class="dock-dot" :class="{ bad: !item.ok }" :title="item.error || t('dock.readable')"></span>
           <strong :title="item.path" class="dock-title-name">{{ item.name }}</strong>
 
           <div class="dock-actions" @click.stop>
@@ -112,24 +113,24 @@ defineExpose({ loadWatchPaths, bumpTrees });
               size="small"
               class="dock-root-switch"
               :disabled="togglingRoots.has(normPath(item.path))"
-              :title="item.enabled ? '点击暂停此根目录监控' : '点击开启此根目录监控并执行补扫'"
+              :title="item.enabled ? t('dock.pauseRoot') : t('dock.resumeRoot')"
               @change="handleToggleRoot(item.path)"
             />
             <button
               type="button"
               class="dock-policy-btn"
-              title="配置此目录整体交付规则"
+              :title="t('dock.policyTitle')"
               @click="emit('open-policy', item.path)"
             >
-              策略
+              {{ t("dock.policy") }}
             </button>
             <button
               type="button"
               class="dock-delete-btn"
-              title="停止监听并从列表中移除此目录"
+              :title="t('dock.deleteTitle')"
               @click="removeWatchPath(item.path)"
             >
-              删除
+              {{ t("dock.delete") }}
             </button>
           </div>
         </div>
@@ -146,20 +147,20 @@ defineExpose({ loadWatchPaths, bumpTrees });
             :title="child.path"
             @click="emit('open-policy', child.path)"
           >
-            {{ child.label }}{{ !child.enabled ? " (已阻断)" : "" }}
+            {{ child.label }}{{ !child.enabled ? t("dock.blockedSuffix") : "" }}
           </button>
         </div>
 
         <div v-if="isCardExpanded(item.path)" class="card-inline-tree-container" @click.stop>
           <div class="inline-tree-toolbar">
-            <span class="inline-tree-hint font-mono">子目录与文件穿透</span>
+            <span class="inline-tree-hint font-mono">{{ t("dock.passthrough") }}</span>
             <button
               type="button"
               class="inline-refresh-btn font-mono"
-              title="重新扫描并刷新此目录结构"
+              :title="t('dock.refreshTitle')"
               @click="refreshCardRoot(item.path)"
             >
-              🔄 刷新
+              {{ t("dock.refresh") }}
             </button>
           </div>
 
@@ -187,9 +188,9 @@ defineExpose({ loadWatchPaths, bumpTrees });
                   <span
                     v-if="data.is_dir && !isSubfolderEnabled(data)"
                     class="node-route-badge blocked-rule"
-                    title="此子目录监控已阻断，不会上传"
+                    :title="t('dock.blockedTitle')"
                   >
-                    已阻断
+                    {{ t("dock.blocked") }}
                   </span>
                   <span
                     v-else-if="data.is_dir && data.current_route?.matched"
@@ -200,16 +201,16 @@ defineExpose({ loadWatchPaths, bumpTrees });
                     }"
                     :title="data.current_route?.dest_name || ''"
                   >
-                    {{ data.current_route?.is_inherited ? '继承' : '专属' }}: {{ data.current_route?.dest_name }}
+                    {{ data.current_route?.is_inherited ? t('dock.inherited') : t('dock.own') }}: {{ data.current_route?.dest_name }}
                   </span>
                   <template v-if="!data.is_dir">
                     <span class="file-size font-mono">{{ formatBytes(data.size || 0) }}</span>
-                    <span v-if="!data.supported_ext" class="file-status status-gray">未监听</span>
-                    <span v-else-if="data.task_status === 'uploading'" class="file-status status-uploading">上传中</span>
-                    <span v-else-if="data.task_status === 'success'" class="file-status status-success">已上传</span>
-                    <span v-else-if="data.task_status === 'pending' || data.task_status === 'preparing'" class="file-status status-pending">排队中</span>
-                    <span v-else-if="data.task_status === 'failed'" class="file-status status-failed" :title="data.task_error || '失败'">失败</span>
-                    <span v-else-if="data.task_status === 'unmatched'" class="file-status status-unmatched">未命中</span>
+                    <span v-if="!data.supported_ext" class="file-status status-gray">{{ t("dock.unwatched") }}</span>
+                    <span v-else-if="data.task_status === 'uploading'" class="file-status status-uploading">{{ t("dock.uploading") }}</span>
+                    <span v-else-if="data.task_status === 'success'" class="file-status status-success">{{ t("dock.uploaded") }}</span>
+                    <span v-else-if="data.task_status === 'pending' || data.task_status === 'preparing'" class="file-status status-pending">{{ t("dock.queued") }}</span>
+                    <span v-else-if="data.task_status === 'failed'" class="file-status status-failed" :title="data.task_error || t('dock.failed')">{{ t("dock.failed") }}</span>
+                    <span v-else-if="data.task_status === 'unmatched'" class="file-status status-unmatched">{{ t("dock.unmatched") }}</span>
                   </template>
                 </div>
 
@@ -219,31 +220,31 @@ defineExpose({ loadWatchPaths, bumpTrees });
                     size="small"
                     class="tree-dir-switch"
                     :disabled="togglingRoutes.has(normPath(data.path))"
-                    :title="isSubfolderEnabled(data) ? '点击阻断此子目录监控' : '点击恢复此子目录监控并补扫'"
+                    :title="isSubfolderEnabled(data) ? t('dock.blockChild') : t('dock.unblockChild')"
                     @change="handleToggleSubfolder(data.path, node, data)"
                   />
 
                   <button
                     type="button"
                     class="tree-policy-btn"
-                    title="为此子目录单独配置交付规则"
+                    :title="t('dock.childPolicy')"
                     @click="emit('open-policy', data.path)"
                   >
-                    策略
+                    {{ t("dock.policy") }}
                   </button>
                   <button
                     v-if="data.current_route?.matched && !data.current_route?.is_inherited && !data.current_route?.auto_blocked && isSubfolderEnabled(data)"
                     type="button"
                     class="tree-inherit-btn"
-                    title="清除专属规则，恢复跟随父级"
+                    :title="t('dock.restoreTitle')"
                     @click="restoreSubfolderInheritance(data.path)"
                   >
-                    恢复继承
+                    {{ t("dock.restore") }}
                   </button>
                   <button
                     type="button"
                     class="tree-refresh-icon-btn"
-                    title="刷新此子目录"
+                    :title="t('dock.refreshChild')"
                     @click="refreshCardFsNode(node, data)"
                   >
                     🔄
@@ -260,25 +261,25 @@ defineExpose({ loadWatchPaths, bumpTrees });
       <button
         type="button"
         class="dock-bottom-btn manual-dispatch-btn"
-        title="打开手动投递窗口，勾选文件立即投递上传"
+        :title="t('dock.manualTitle')"
         @click="emit('open-manual')"
       >
-        🚀 手动投递任务
+        {{ t("dock.manual") }}
       </button>
       <div class="dock-bottom-sub-row">
         <button type="button" class="dock-bottom-btn add-path-btn" @click="promptAddWatchPath">
-          + 添加监控路径
+          {{ t("dock.add") }}
         </button>
         <button
           type="button"
           class="dock-bottom-btn global-toggle-btn"
           :class="{ 'is-running': watchEnabled, 'is-paused': !watchEnabled }"
           :disabled="togglingGlobalWatch"
-          :title="watchEnabled ? '点击一键暂停全局自动监控' : '点击一键开启全局自动监控并全量补扫'"
+          :title="watchEnabled ? t('dock.globalOnTitle') : t('dock.globalOffTitle')"
           @click="handleToggleGlobalWatch"
         >
           <span class="global-watch-dot" :class="{ on: watchEnabled }"></span>
-          <span>{{ watchEnabled ? "全局监控中" : "监控已暂停" }}</span>
+          <span>{{ watchEnabled ? t("dock.globalOn") : t("dock.globalOff") }}</span>
         </button>
       </div>
     </div>

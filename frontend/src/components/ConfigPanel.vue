@@ -27,6 +27,7 @@ import type { DialogChat, ForumTopic } from "../api";
 import type { UploadConfig } from "../types";
 import { pausedObserverRoot } from "../watchPath";
 import { ENABLE_GOOGLE_DRIVE } from "../features";
+import { t } from "../i18n";
 
 const { panel } = defineProps<{
   panel: "routes" | "telegram" | "drive" | "watch" | "process";
@@ -76,16 +77,16 @@ const form = reactive<UploadConfig>({
 });
 
 const scheduleOrderHint = computed(() => {
-  if (form.schedule_order === "natural") return "按路径和文件名的自然顺序上传，EP2 排在 EP10 前面。";
-  if (form.schedule_order === "created") return "文件创建时间早的先传。时间相同则小文件先传。";
-  if (form.schedule_order === "smallest") return "小文件先传。体积相同则创建时间早的先传。";
-  return "按任务写入队列的先后上传。";
+  if (form.schedule_order === "natural") return t("config.order.natural");
+  if (form.schedule_order === "created") return t("config.order.created");
+  if (form.schedule_order === "smallest") return t("config.order.smallest");
+  return t("config.order.oldest");
 });
 
 const globalGridParsed = computed(() => {
   const layout = form.grid_layout;
   if (!layout || !layout.trim()) {
-    return { valid: false, text: "未设置网格规格（默认为 3x5）" };
+    return { valid: false, text: t("config.gridEmpty") };
   }
   const clean = layout.toLowerCase().replace(/[*×,]/g, "x").trim();
   const parts = clean.split("x");
@@ -95,13 +96,13 @@ const globalGridParsed = computed(() => {
     if (!isNaN(c) && !isNaN(r) && c >= 1 && c <= 20 && r >= 1 && r <= 20) {
       return {
         valid: true,
-        text: `${c} 列 × ${r} 行（共 ${c * r} 帧预览）`,
+        text: t("config.gridOk", { cols: c, rows: r, frames: c * r }),
       };
     }
   }
   return {
     valid: false,
-    text: "格式需为 列x行（如 3x5，1~20 范围）",
+    text: t("config.gridBad"),
   };
 });
 
@@ -203,7 +204,7 @@ async function reloadTopics(refresh: boolean): Promise<void> {
   } catch (error) {
     topicItems.value = [];
     topicForum.value = false;
-    topicReason.value = error instanceof Error ? error.message : "读取话题失败";
+    topicReason.value = error instanceof Error ? error.message : t("config.topicReadFailed");
   } finally {
     topicLoading.value = false;
   }
@@ -216,7 +217,7 @@ async function onCreateTopic(): Promise<void> {
     topicTitle.value = "";
     await reloadTopics(false);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法新建话题");
+    ElMessage.error(error instanceof Error ? error.message : t("config.topicCreateFailed"));
   }
 }
 
@@ -227,7 +228,7 @@ async function onRenameTopic(topicId: number): Promise<void> {
     topicRenameId.value = null;
     await reloadTopics(false);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法改名");
+    ElMessage.error(error instanceof Error ? error.message : t("config.topicRenameFailed"));
   }
 }
 
@@ -237,7 +238,7 @@ async function onDeleteTopic(topicId: number): Promise<void> {
     await deleteChatTopic(topicChatId.value, topicId);
     await reloadTopics(false);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "无法删除话题");
+    ElMessage.error(error instanceof Error ? error.message : t("config.topicDeleteFailed"));
   }
 }
 
@@ -251,11 +252,11 @@ function confirmAddDrive(): void {
   // 校验并追加 Drive 文件夹，供目录路由选择器使用。
   const folderId = newDriveId.value.trim();
   if (!folderId) {
-    ElMessage.error("请填写 folder id");
+    ElMessage.error(t("config.driveId"));
     return;
   }
   if (form.drive_folders.some((item) => item.folder_id === folderId)) {
-    ElMessage.error("该文件夹已在列表中");
+    ElMessage.error(t("config.driveExists"));
     return;
   }
   form.drive_folders.push({ folder_id: folderId, name: newDriveName.value.trim() });
@@ -283,10 +284,10 @@ async function openAddChat(): Promise<void> {
   try {
     const data = await fetchDialogChats();
     dialogChats.value = data.items;
-    dialogReason.value = data.online ? "" : data.reason || "请先在监控页用个人账号登录";
+    dialogReason.value = data.online ? "" : data.reason || t("config.dialogsOffline");
   } catch (error) {
     dialogChats.value = [];
-    dialogReason.value = error instanceof Error ? error.message : "无法读取群列表";
+    dialogReason.value = error instanceof Error ? error.message : t("config.dialogsFailed");
   } finally {
     addingChat.value = false;
   }
@@ -298,9 +299,9 @@ async function syncChats(): Promise<void> {
   try {
     const data = await syncDialogChats();
     dialogChats.value = data.items;
-    dialogReason.value = data.online ? "" : data.reason || "请先在监控页用个人账号登录";
+    dialogReason.value = data.online ? "" : data.reason || t("config.dialogsOffline");
   } catch (error) {
-    dialogReason.value = error instanceof Error ? error.message : "同步群列表失败";
+    dialogReason.value = error instanceof Error ? error.message : t("config.syncFailed");
   } finally {
     addingChat.value = false;
   }
@@ -313,11 +314,11 @@ async function persistChatConfig(
   saving.value = true;
   try {
     applyServer(await saveSettings({ ...form }));
-    ElMessage.success("已保存群组配置");
+    ElMessage.success(t("config.chatsSaved"));
   } catch (error) {
     form.chats = previousChats;
     form.routes = previousRoutes;
-    ElMessage.error(error instanceof Error ? error.message : "保存群组配置失败");
+    ElMessage.error(error instanceof Error ? error.message : t("config.chatsSaveFailed"));
   } finally {
     saving.value = false;
   }
@@ -354,7 +355,7 @@ async function load(): Promise<void> {
   try {
     applyServer(await fetchSettings());
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "读取配置失败");
+    ElMessage.error(error instanceof Error ? error.message : t("config.loadFailed"));
   } finally {
     loading.value = false;
   }
@@ -368,9 +369,9 @@ async function submit(): Promise<void> {
   saving.value = true;
   try {
     applyServer(await saveSettings({ ...form }));
-    ElMessage.success("已写入 upload.toml，配置立即生效");
+    ElMessage.success(t("config.saved"));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "保存失败");
+    ElMessage.error(error instanceof Error ? error.message : t("config.saveFailed"));
   } finally {
     saving.value = false;
   }
@@ -379,15 +380,15 @@ async function submit(): Promise<void> {
 async function promptAddObserverPath(): Promise<void> {
   try {
     const { value } = await ElMessageBox.prompt(
-      "请输入本地监听目录的绝对或相对路径。新路径默认暂停，打开开关并保存后才会扫描。",
-      "添加监听路径",
+      t("config.addBody"),
+      t("config.addTitle"),
       {
-        confirmButtonText: "添加",
-        cancelButtonText: "取消",
-        inputPlaceholder: "例如 D:\\Downloads\\Telegram 或 download",
+        confirmButtonText: t("common.add"),
+        cancelButtonText: t("common.cancel"),
+        inputPlaceholder: t("config.addPlaceholder"),
         inputValidator: (val) => {
-          if (!val || !val.trim()) return "路径不能为空";
-          if (form.observer_roots.some((p) => samePath(p.path, val.trim()))) return "该路径已在监听列表中";
+          if (!val || !val.trim()) return t("config.pathRequired");
+          if (form.observer_roots.some((p) => samePath(p.path, val.trim()))) return t("config.pathExists");
           return true;
         },
       },
@@ -396,7 +397,7 @@ async function promptAddObserverPath(): Promise<void> {
       const trimmed = value.trim();
       form.observer_roots.push(pausedObserverRoot(trimmed));
       form.observer_paths = form.observer_roots.map((r) => r.path);
-      ElMessage.success("已加入列表且默认暂停。打开这一行的开关并保存后才会扫描。");
+      ElMessage.success(t("config.added"));
     }
   } catch {
     // 用户取消输入
@@ -412,14 +413,17 @@ function getPathStatus(path: string): { ok: boolean; text: string } {
   const root = form.observer_roots.find((item) => samePath(item.path, path));
   if (root) {
     if (!root.enabled) {
-      return { ok: false, text: "状态: 监控已暂停（可在此处重新开启）" };
+      return { ok: false, text: t("config.statusOff") };
     }
     if (root.ok) {
-      return { ok: true, text: "状态: 正常监听中 · 读写权限正常" };
+      return { ok: true, text: t("config.statusOk") };
     }
-    return { ok: false, text: `状态: 异常 · ${root.error || "目录不可读或不存在"}` };
+    return {
+      ok: false,
+      text: t("config.statusBad", { error: root.error || t("config.statusBadFallback") }),
+    };
   }
-  return { ok: true, text: "状态: 监听配置已就绪" };
+  return { ok: true, text: t("config.statusReady") };
 }
 
 const newExtInput = ref("");
@@ -475,12 +479,12 @@ defineExpose({
       <!-- 默认目标群组 / 频道 -->
       <div class="inset-card">
         <div class="card-head">
-          <h3 class="card-title">默认投递目标 (chat_id)</h3>
-          <p class="card-hint">全局默认上传的 Telegram 群组或频道 ID (纯数字，不可为 0)。目录规则未命中时使用此默认目标。</p>
+          <h3 class="card-title">{{ t("config.defaultTitle") }}</h3>
+          <p class="card-hint">{{ t("config.defaultHint") }}</p>
         </div>
 
         <div class="form-field-sm">
-          <label class="form-label">默认 chat_id</label>
+          <label class="form-label">{{ t("config.defaultLabel") }}</label>
           <input
             v-model.number="form.chat_id"
             type="number"
@@ -494,17 +498,17 @@ defineExpose({
       <div class="inset-card">
         <div class="card-head-row">
           <div>
-            <h3 class="card-title">已配置的目标列表 (chats)</h3>
-            <p class="card-hint">供各监控目录分配路由的目标列表，支持自定义别名与话题。</p>
+            <h3 class="card-title">{{ t("config.chatsTitle") }}</h3>
+            <p class="card-hint">{{ t("config.chatsHint") }}</p>
           </div>
           <button type="button" class="btn-light-green" @click="openAddChat">
-            + 添加群组 / 频道
+            {{ t("config.addChat") }}
           </button>
         </div>
 
         <div class="chats-list-wrap">
           <div v-if="form.chats.length === 0" class="empty-list-notice">
-            还没有配置群组或频道。点击右上角添加。
+            {{ t("config.chatsEmpty") }}
           </div>
           <div
             v-for="item in form.chats"
@@ -513,11 +517,11 @@ defineExpose({
           >
             <div class="chat-row-main">
               <div class="chat-title-line">
-                <span class="chat-main-name">{{ item.alias.trim() || item.title.trim() || "未命名目标" }}</span>
+                <span class="chat-main-name">{{ item.alias.trim() || item.title.trim() || t("config.unnamed") }}</span>
                 <span class="chat-mono-id">({{ item.chat_id }})</span>
               </div>
               <div v-if="item.alias.trim() && item.title.trim()" class="chat-sub-line">
-                别名: {{ item.alias }} · 官方名: {{ item.title }}
+                {{ t("config.chatMeta", { alias: item.alias, title: item.title }) }}
               </div>
             </div>
             <div class="chat-row-actions">
@@ -526,14 +530,14 @@ defineExpose({
                 class="btn-outline-sm"
                 @click="openTopicManager(item.chat_id)"
               >
-                管理话题
+                {{ t("config.topics") }}
               </button>
               <button
                 type="button"
                 class="btn-danger-text"
                 @click="removeChat(item.chat_id)"
               >
-                删除
+                {{ t("common.delete") }}
               </button>
             </div>
           </div>
@@ -544,8 +548,8 @@ defineExpose({
       <div class="inset-card">
         <div class="card-switch-row">
           <div>
-            <h3 class="card-title">全局话题新建开关 (topic_creation_enabled)</h3>
-            <p class="card-hint">当目标群组开启论坛话题模式且目录策略未指定固定话题时，是否允许自动创建新话题（如按文件夹名）。</p>
+            <h3 class="card-title">{{ t("config.topicSwitch") }}</h3>
+            <p class="card-hint">{{ t("config.topicSwitchHint") }}</p>
           </div>
           <el-switch v-model="form.topic_creation_enabled" />
         </div>
@@ -558,17 +562,17 @@ defineExpose({
       <div class="inset-card">
         <div class="card-head-row">
           <div>
-            <h3 class="card-title">已挂载的监听根路径 (observer_roots)</h3>
-            <p class="card-hint">系统 watchdog 实时监听的物理根目录，支持独立启停。保存后热重载生效。</p>
+            <h3 class="card-title">{{ t("config.rootsTitle") }}</h3>
+            <p class="card-hint">{{ t("config.rootsHint") }}</p>
           </div>
           <button type="button" class="btn-light-green" @click="promptAddObserverPath">
-            + 添加监听路径
+            {{ t("config.addRoot") }}
           </button>
         </div>
 
         <div class="paths-list-wrap">
           <div v-if="form.observer_roots.length === 0" class="empty-list-notice">
-            暂无监听路径。点击右上角添加。
+            {{ t("config.rootsEmpty") }}
           </div>
           <div
             v-for="root in form.observer_roots"
@@ -586,8 +590,8 @@ defineExpose({
               <el-switch
                 v-model="root.enabled"
                 size="small"
-                active-text="开启"
-                inactive-text="暂停"
+                :active-text="t('config.enable')"
+                :inactive-text="t('config.pause')"
                 inline-prompt
               />
               <button
@@ -595,7 +599,7 @@ defineExpose({
                 class="btn-danger-text"
                 @click="removeObserverPath(root.path)"
               >
-                删除
+                {{ t("common.delete") }}
               </button>
             </div>
           </div>
@@ -605,8 +609,8 @@ defineExpose({
       <!-- 文件格式过滤白名单 -->
       <div class="inset-card">
         <div class="card-head">
-          <h3 class="card-title">文件格式白名单 (watch_extensions)</h3>
-          <p class="card-hint">仅监听匹配此后缀的文件。若列表为空则处理所有文件。</p>
+          <h3 class="card-title">{{ t("config.extTitle") }}</h3>
+          <p class="card-hint">{{ t("config.extHint") }}</p>
         </div>
 
         <div class="ext-chips-box">
@@ -622,11 +626,11 @@ defineExpose({
             <input
               v-model="newExtInput"
               type="text"
-              placeholder="如 mkv"
+              :placeholder="t('config.extPlaceholder')"
               class="ext-inline-input"
               @keyup.enter="addExtension"
             />
-            <button type="button" class="ext-inline-btn" @click="addExtension">+ 添加格式</button>
+            <button type="button" class="ext-inline-btn" @click="addExtension">{{ t("config.extAdd") }}</button>
           </div>
         </div>
       </div>
@@ -635,8 +639,8 @@ defineExpose({
       <div class="inset-card">
         <div class="card-split-row">
           <div>
-            <h3 class="card-title">文件稳定超时 (stable_timeout_seconds)</h3>
-            <p class="card-hint">文件最后修改后需静默等待的秒数，确保大文件下载或复制完全写盘后再触发上传。</p>
+            <h3 class="card-title">{{ t("config.stableTitle") }}</h3>
+            <p class="card-hint">{{ t("config.stableHint") }}</p>
           </div>
           <div class="input-with-unit-box">
             <input
@@ -645,7 +649,7 @@ defineExpose({
               min="1"
               class="app-input mono w-32"
             />
-            <span class="unit-label">秒</span>
+            <span class="unit-label">{{ t("common.seconds") }}</span>
           </div>
         </div>
       </div>
@@ -656,21 +660,21 @@ defineExpose({
       <!-- 视频封面与说明模板 -->
       <div class="inset-card">
         <div class="card-head">
-          <h3 class="card-title">视频封面与说明模板</h3>
-          <p class="card-hint">未配置单独目录策略时继承的默认全局设定。</p>
+          <h3 class="card-title">{{ t("config.coverTitle") }}</h3>
+          <p class="card-hint">{{ t("config.coverHint") }}</p>
         </div>
 
         <div class="table-list-divide">
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">视频缩略图策略 (preview)</div>
-              <div class="row-info-sub">自动为 MKV/MP4 生成预览封面</div>
+              <div class="row-info-title">{{ t("config.previewTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.previewSub") }}</div>
             </div>
             <div class="row-ctrl-col w-56">
               <select v-model="form.preview" class="app-select">
-                <option value="first_frame">首帧截图 (first_frame)</option>
-                <option value="grid">自定义网格图 (grid)</option>
-                <option value="off">关闭缩略图 (off)</option>
+                <option value="first_frame">{{ t("config.previewFrame") }}</option>
+                <option value="grid">{{ t("config.previewGrid") }}</option>
+                <option value="off">{{ t("config.previewOff") }}</option>
               </select>
             </div>
           </div>
@@ -679,9 +683,9 @@ defineExpose({
           <div v-if="form.preview === 'grid'" class="table-row-item vertical">
             <div class="row-top-flex">
               <div>
-                <div class="row-info-title">网格规格 (grid_layout)</div>
+                <div class="row-info-title">{{ t("config.gridTitle") }}</div>
                 <div class="row-info-sub">
-                  设定剧情网格排布格式（列 × 行），自适应原视频真实比例（绝不拉伸、绝不裁切画面）
+                  {{ t("config.gridSub") }}
                 </div>
               </div>
               <div class="grid-status-tip-inline" :class="{ 'is-err': !globalGridParsed.valid }">
@@ -694,10 +698,10 @@ defineExpose({
                 v-model="form.grid_layout"
                 type="text"
                 class="app-input mono grid-spec-input"
-                placeholder="例如 3x5 或 4x3"
+                :placeholder="t('config.gridPlaceholder')"
               />
               <div class="token-chips-group">
-                <span class="grid-presets-inline-title">快捷预设:</span>
+                <span class="grid-presets-inline-title">{{ t("config.gridPresets") }}</span>
                 <button
                   v-for="p in ['3x5', '4x3', '3x3', '4x4', '2x4', '5x2']"
                   :key="p"
@@ -714,8 +718,8 @@ defineExpose({
 
           <div v-if="form.preview === 'grid'" class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">小图时间戳 (grid_timestamp)</div>
-              <div class="row-info-sub">在每张截图右下角打印视频时间进度</div>
+              <div class="row-info-title">{{ t("config.stampTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.stampSub") }}</div>
             </div>
             <div class="row-ctrl-col">
               <el-switch v-model="form.grid_timestamp" />
@@ -724,8 +728,8 @@ defineExpose({
 
           <div v-if="form.preview === 'grid'" class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">顶部信息横幅 (grid_metadata)</div>
-              <div class="row-info-sub">在大图顶部打印文件名、体积、时长、分辨率等元数据卡片</div>
+              <div class="row-info-title">{{ t("config.metaTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.metaSub") }}</div>
             </div>
             <div class="row-ctrl-col">
               <el-switch v-model="form.grid_metadata" />
@@ -734,8 +738,8 @@ defineExpose({
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">缩略图目录 (page_dir)</div>
-              <div class="row-info-sub">临时生成缩略图的本地存放路径</div>
+              <div class="row-info-title">{{ t("config.pageTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.pageSub") }}</div>
             </div>
             <div class="row-ctrl-col w-48">
               <input v-model="form.page_dir" type="text" class="app-input mono" />
@@ -745,8 +749,8 @@ defineExpose({
           <div class="table-row-item vertical">
             <div class="row-top-flex">
               <div>
-                <div class="row-info-title">全局说明模板 (caption_template)</div>
-                <div class="row-info-sub">未设模板时默认采用此模板，留空则不写说明</div>
+                <div class="row-info-title">{{ t("config.captionTitle") }}</div>
+                <div class="row-info-sub">{{ t("config.captionSub") }}</div>
               </div>
               <div class="token-chips-group">
                 <button
@@ -778,7 +782,7 @@ defineExpose({
             <input
               v-model="form.caption_template"
               type="text"
-              placeholder="<b>{file_name}</b> | 规格: {size}"
+              :placeholder="t('config.captionPlaceholder')"
               class="app-input mono"
             />
           </div>
@@ -788,29 +792,29 @@ defineExpose({
       <!-- 上传完成与超限处理 -->
       <div class="inset-card">
         <div class="card-head">
-          <h3 class="card-title">上传完成与超限处理</h3>
-          <p class="card-hint">本地源文件处置与超过 2GB 大文件的自动化处理动作。</p>
+          <h3 class="card-title">{{ t("config.doneTitle") }}</h3>
+          <p class="card-hint">{{ t("config.doneHint") }}</p>
         </div>
 
         <div class="table-list-divide">
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">上传成功后处理 (after_success)</div>
-              <div class="row-info-sub">文件完整送达 Telegram 后的动作</div>
+              <div class="row-info-title">{{ t("config.afterTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.afterSub") }}</div>
             </div>
             <div class="row-ctrl-col w-56">
               <select v-model="form.after_success" class="app-select">
-                <option value="keep">保留本地源文件 (keep)</option>
-                <option value="delete">直接删除本地源文件 (delete)</option>
-                <option value="move_to_archive">移入归档目录 (move_to_archive)</option>
+                <option value="keep">{{ t("config.afterKeep") }}</option>
+                <option value="delete">{{ t("config.afterDelete") }}</option>
+                <option value="move_to_archive">{{ t("config.afterMove") }}</option>
               </select>
             </div>
           </div>
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">归档目录 (archive_dir)</div>
-              <div class="row-info-sub">选择移入归档时移动的目标子目录</div>
+              <div class="row-info-title">{{ t("config.archiveTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.archiveSub") }}</div>
             </div>
             <div class="row-ctrl-col w-48">
               <input v-model="form.archive_dir" type="text" class="app-input mono" />
@@ -819,8 +823,8 @@ defineExpose({
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">超限自动切片 (auto_slice)</div>
-              <div class="row-info-sub">新发现超过 2GB 的视频按最少段数自动切片</div>
+              <div class="row-info-title">{{ t("config.autoSliceTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.autoSliceSub") }}</div>
             </div>
             <div class="row-ctrl-col">
               <el-switch v-model="form.auto_slice" />
@@ -832,15 +836,15 @@ defineExpose({
       <!-- 并发与超时控制 -->
       <div class="inset-card">
         <div class="card-head">
-          <h3 class="card-title">并发与超时控制</h3>
-          <p class="card-hint">账号级任务并发与底层网络超时容错参数。</p>
+          <h3 class="card-title">{{ t("config.limitsTitle") }}</h3>
+          <p class="card-hint">{{ t("config.limitsHint") }}</p>
         </div>
 
         <div class="table-list-divide">
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">账号级上传并发 (concurrency)</div>
-              <div class="row-info-sub">默认 1，文件内部由 FastTelethon 负责分块并发</div>
+              <div class="row-info-title">{{ t("config.concurrencyTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.concurrencySub") }}</div>
             </div>
             <div class="row-ctrl-col w-28">
               <input
@@ -855,8 +859,8 @@ defineExpose({
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">最大重试次数 (max_retries)</div>
-              <div class="row-info-sub">失败后自动重新排队的最大尝试次数 (默认 3)</div>
+              <div class="row-info-title">{{ t("config.retriesTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.retriesSub") }}</div>
             </div>
             <div class="row-ctrl-col w-28">
               <input
@@ -871,23 +875,23 @@ defineExpose({
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">上传顺序 (schedule_order)</div>
+              <div class="row-info-title">{{ t("config.scheduleTitle") }}</div>
               <div class="row-info-sub">{{ scheduleOrderHint }}</div>
             </div>
             <div class="row-ctrl-col w-36">
               <select v-model="form.schedule_order" class="app-select">
-                <option value="oldest">入库顺序</option>
-                <option value="natural">自然排序</option>
-                <option value="created">创建时间</option>
-                <option value="smallest">文件大小</option>
+                <option value="oldest">{{ t("config.order.oldestOpt") }}</option>
+                <option value="natural">{{ t("config.order.naturalOpt") }}</option>
+                <option value="created">{{ t("config.order.createdOpt") }}</option>
+                <option value="smallest">{{ t("config.order.smallestOpt") }}</option>
               </select>
             </div>
           </div>
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">上传超时时间 (upload_timeout_seconds)</div>
-              <div class="row-info-sub">单个文件传输的最长超时限制 (默认 1200 秒)</div>
+              <div class="row-info-title">{{ t("config.timeoutTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.timeoutSub") }}</div>
             </div>
             <div class="row-ctrl-col w-36 input-with-unit-box">
               <input
@@ -896,14 +900,14 @@ defineExpose({
                 min="30"
                 class="app-input mono"
               />
-              <span class="unit-label">秒</span>
+              <span class="unit-label">{{ t("common.seconds") }}</span>
             </div>
           </div>
 
           <div class="table-row-item">
             <div class="row-info-col">
-              <div class="row-info-title">Worker 分配超时 (assigned_timeout_seconds)</div>
-              <div class="row-info-sub">已指派 Worker 但未进入传输的最大等待时间 (默认 600 秒)</div>
+              <div class="row-info-title">{{ t("config.assignedTitle") }}</div>
+              <div class="row-info-sub">{{ t("config.assignedSub") }}</div>
             </div>
             <div class="row-ctrl-col w-36 input-with-unit-box">
               <input
@@ -912,7 +916,7 @@ defineExpose({
                 min="30"
                 class="app-input mono"
               />
-              <span class="unit-label">秒</span>
+              <span class="unit-label">{{ t("common.seconds") }}</span>
             </div>
           </div>
         </div>
@@ -924,17 +928,17 @@ defineExpose({
       <div class="inset-card">
         <div class="card-head-row">
           <div>
-            <h3 class="card-title">Google Drive 文件夹</h3>
-            <p class="card-hint">手动添加要投递的 Drive 文件夹。上传客户端接入前，这里的目标可以先选，文件会停在等待。</p>
+            <h3 class="card-title">{{ t("config.driveTitle") }}</h3>
+            <p class="card-hint">{{ t("config.driveHint") }}</p>
           </div>
           <button type="button" class="btn-light-green" @click="showAddDrive = true; newDriveName = ''; newDriveId = ''">
-            + 添加文件夹
+            {{ t("config.driveAdd") }}
           </button>
         </div>
 
         <div class="chats-list-wrap">
           <div v-if="form.drive_folders.length === 0" class="empty-list-notice">
-            还没有文件夹。点击右上角添加。
+            {{ t("config.driveEmpty") }}
           </div>
           <div
             v-for="item in form.drive_folders"
@@ -953,7 +957,7 @@ defineExpose({
                 class="btn-danger-text"
                 @click="removeDrive(item.folder_id)"
               >
-                删除
+                {{ t("common.delete") }}
               </button>
             </div>
           </div>
@@ -965,31 +969,31 @@ defineExpose({
 
     <el-dialog
       :model-value="topicChatId != null"
-      title="话题"
+      :title="t('config.topicDialog')"
       width="480px"
       append-to-body
       @close="topicChatId = null"
     >
-      <p v-if="topicLoading" class="route-hint">正在读取</p>
-      <p v-else-if="!topicForum" class="route-hint">{{ topicReason || "这个群或频道没有话题。" }}</p>
+      <p v-if="topicLoading" class="route-hint">{{ t("config.topicLoading") }}</p>
+      <p v-else-if="!topicForum" class="route-hint">{{ topicReason || t("config.topicNone") }}</p>
       <template v-else>
         <div class="topic-create">
-          <el-input v-model="topicTitle" placeholder="新话题名称" @keyup.enter="onCreateTopic" />
-          <el-button @click="onCreateTopic">新建</el-button>
-          <el-button @click="reloadTopics(true)">刷新</el-button>
+          <el-input v-model="topicTitle" :placeholder="t('config.topicName')" @keyup.enter="onCreateTopic" />
+          <el-button @click="onCreateTopic">{{ t("config.topicCreate") }}</el-button>
+          <el-button @click="reloadTopics(true)">{{ t("common.refresh") }}</el-button>
         </div>
-        <div v-if="topicItems.length === 0" class="route-hint">还没有话题。可以新建，或点刷新从 Telegram 读取。</div>
+        <div v-if="topicItems.length === 0" class="route-hint">{{ t("config.topicEmpty") }}</div>
         <div v-for="topic in topicItems" :key="topic.topic_id" class="map-card fallback">
           <template v-if="topicRenameId === topic.topic_id">
             <el-input v-model="topicRenameTitle" />
-            <el-button size="small" @click="onRenameTopic(topic.topic_id)">保存</el-button>
+            <el-button size="small" @click="onRenameTopic(topic.topic_id)">{{ t("common.save") }}</el-button>
           </template>
           <template v-else>
-            <div class="map-name">{{ topic.title || "未命名" }}</div>
+            <div class="map-name">{{ topic.title || t("config.topicUntitled") }}</div>
             <div class="map-dest">
               <span class="map-id">{{ topic.topic_id }}</span>
-              <el-button size="small" text @click="topicRenameId = topic.topic_id; topicRenameTitle = topic.title">改名</el-button>
-              <el-button size="small" text type="danger" @click="onDeleteTopic(topic.topic_id)">删除</el-button>
+              <el-button size="small" text @click="topicRenameId = topic.topic_id; topicRenameTitle = topic.title">{{ t("config.topicRename") }}</el-button>
+              <el-button size="small" text type="danger" @click="onDeleteTopic(topic.topic_id)">{{ t("common.delete") }}</el-button>
             </div>
           </template>
         </div>
@@ -1003,12 +1007,12 @@ defineExpose({
       @saved="load"
     />
 
-    <el-dialog v-model="showAddChat" title="选择群或频道" width="440px" append-to-body>
+    <el-dialog v-model="showAddChat" :title="t('config.chatDialog')" width="440px" append-to-body>
       <p v-if="dialogReason" class="route-hint">{{ dialogReason }}</p>
       <template v-else>
         <div class="dialog-tools">
-          <el-input v-model="chatQuery" placeholder="搜索名称" clearable />
-          <el-button :loading="addingChat" @click="syncChats">刷新</el-button>
+          <el-input v-model="chatQuery" :placeholder="t('config.chatSearch')" clearable />
+          <el-button :loading="addingChat" @click="syncChats">{{ t("common.refresh") }}</el-button>
         </div>
         <div v-loading="addingChat" class="dialog-list">
           <button
@@ -1020,29 +1024,29 @@ defineExpose({
             @click="pickChat(chat)"
           >
             <span class="map-name">{{ chat.title || chat.id }}</span>
-            <span class="map-chip">{{ chat.type === "channel" ? "频道" : "群" }}</span>
-            <span v-if="form.chats.some((item) => item.chat_id === chat.id)" class="map-chip">已添加</span>
+            <span class="map-chip">{{ chat.type === "channel" ? t("config.channel") : t("config.group") }}</span>
+            <span v-if="form.chats.some((item) => item.chat_id === chat.id)" class="map-chip">{{ t("config.addedChip") }}</span>
           </button>
-          <p v-if="!addingChat && filteredDialogs.length === 0" class="route-empty">没有匹配的群或频道。</p>
+          <p v-if="!addingChat && filteredDialogs.length === 0" class="route-empty">{{ t("config.chatEmpty") }}</p>
         </div>
       </template>
       <template #footer>
-        <el-button @click="showAddChat = false">关闭</el-button>
+        <el-button @click="showAddChat = false">{{ t("common.close") }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showAddDrive" title="添加 Drive 文件夹" width="420px" append-to-body>
+    <el-dialog v-model="showAddDrive" :title="t('config.driveDialog')" width="420px" append-to-body>
       <el-form label-position="top">
-        <el-form-item label="名称">
-          <el-input v-model="newDriveName" placeholder="例如 备份" />
+        <el-form-item :label="t('config.driveName')">
+          <el-input v-model="newDriveName" :placeholder="t('config.driveNamePlaceholder')" />
         </el-form-item>
         <el-form-item label="folder id">
-          <el-input v-model="newDriveId" placeholder="Drive 文件夹 id" />
+          <el-input v-model="newDriveId" :placeholder="t('config.driveIdPlaceholder')" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAddDrive = false">取消</el-button>
-        <el-button type="primary" @click="confirmAddDrive">添加</el-button>
+        <el-button @click="showAddDrive = false">{{ t("common.cancel") }}</el-button>
+        <el-button type="primary" @click="confirmAddDrive">{{ t("common.add") }}</el-button>
       </template>
     </el-dialog>
   </div>

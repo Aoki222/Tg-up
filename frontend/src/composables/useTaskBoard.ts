@@ -7,6 +7,7 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } fro
 import { authRequired, fetchBoardTasks, fetchStatusPage, openProgressStream } from "../api";
 import { mergeLiveBytes } from "../boardProgress";
 import type { BoardCounts, BoardTask, UploadProgress } from "../types";
+import { t } from "../i18n";
 
 const EMPTY_COUNTS: BoardCounts = {
   preparing: 0,
@@ -128,7 +129,7 @@ export function useTaskBoard() {
         percent: 100,
         speed_bps: 0,
         eta_seconds: -1,
-        message: progress.message || "上传成功",
+        message: progress.message || t("card.uploaded"),
       };
       ghosts.set(progress.task_id, { task: ghost, hideAt: Date.now() + 4000 });
       upsert(ghost);
