@@ -19,12 +19,14 @@ from .. import config
 from ..domain.settings_hub import SettingsHub
 from ..domain.telegram_credentials import load_telegram_credentials
 from ..logger import get_logger
-from .app_auth import api_token_ok, require_token
+from .app_auth import is_public_api, password_change_required, require_token
+from ..adapters.admin_auth import cookie_from, load_session
 from .stream_ticket import StreamTickets
 from .models import ChatIdBody, FailedIdsBody, IdentityPayload, OversizedIdsBody, SliceBody
 from .present import _board_item, _part_number, _resolve_dest_name, _sse
 from .routes import (
     register_account,
+    register_auth,
     register_chats,
     register_settings,
     register_system,
@@ -53,8 +55,8 @@ __all__ = [
     "_resolve_dest_name",
     "_sse",
     "_version_cache",
-    "api_token_ok",
     "create_api",
+    "is_public_api",
     "require_token",
 ]
 
@@ -107,29 +109,26 @@ def create_api(
 
     @app.middleware("http")
     async def protect_api(request: Request, call_next):
-        """除探活和版本外，/api/* 在配置了 API_TOKEN 时都要令牌。
+        """除探活、版本和登录外，/api/* 都要有效的控制台 session。
 
-        进度流可以用短时票据。长期令牌只放在 Authorization 头里。
+        还没改掉初始密码时，只放行改密、退出和状态。
         """
         path = request.url.path
         if request.method == "OPTIONS" or not path.startswith("/api/"):
             return await call_next(request)
-        if path in ("/api/health", "/api/system/version"):
+        if is_public_api(request.method, path):
             return await call_next(request)
-        if api_token_ok(request.headers.get("authorization")):
-            return await call_next(request)
-        tickets = getattr(request.app.state, "stream_tickets", None)
-        if (
-            path == "/api/progress/stream"
-            and tickets is not None
-            and tickets.valid(request.query_params.get("ticket"))
-        ):
-            return await call_next(request)
-        return JSONResponse(
-            {"detail": "需要 Authorization: Bearer <API_TOKEN>"},
-            status_code=401,
-        )
+        session = await load_session(cookie_from(request))
+        if session is None:
+            return JSONResponse({"detail": "需要登录"}, status_code=401)
+        if password_change_required(session, request.method, path):
+            return JSONResponse({"detail": "请先修改初始密码"}, status_code=403)
+        request.state.admin_id = session.user_id
+        request.state.admin_username = session.username
+        request.state.must_change_password = session.must_change_password
+        return await call_next(request)
 
+    register_auth(app)
     register_system(app)
     register_workers(app)
     register_account(app)

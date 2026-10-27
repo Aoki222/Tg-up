@@ -24,7 +24,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Edit `.env` and set `API_ID` and `API_HASH` from [my.telegram.org](https://my.telegram.org). `API_TOKEN` is the password for the API. When it is set, every `/api` request except the health and version checks must carry it. The page itself still opens; enter the same value in Settings and the browser remembers it. Docker listens on every network interface, so the token is required or the service will not start. Leave it empty only when the console listens on localhost.
+Edit `.env` and set `API_ID` and `API_HASH` from [my.telegram.org](https://my.telegram.org). The page asks you to sign in. A new install starts with the account `admin` / `admin`. The first sign-in can change the username and must replace the password before the workbench opens.
 
 Open `http://<host>:8421`. On the first visit, add a watch folder, turn it on, and choose a destination chat. Put a session file in the `sessions/` directory next to `compose.yml`, or sign in from the page.
 
@@ -48,6 +48,6 @@ These directories sit next to `compose.yml`. The container creates any that are 
 
 ## Where settings live
 
-`.env` holds process identity: `API_ID`, `API_HASH`, `API_TOKEN`, optional `TELEGRAM_PROXY`, and `TARGET_CHAT_ID`, the default chat used when a folder rule does not name one.
+`.env` holds process identity: `API_ID`, `API_HASH`, optional `TELEGRAM_PROXY`, and `TARGET_CHAT_ID`, the default chat used when a folder rule does not name one. The console account lives in the database, not in `.env`.
 
 Watch folders, folder rules, previews, the action after a successful upload, and queue order are edited in the web page. They are stored in `data/upload.toml` and apply without a restart.

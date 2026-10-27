@@ -53,20 +53,18 @@ async def _call(app, method: str, path: str, query: bytes = b"") -> tuple[int, d
     return status["code"], json.loads(body.decode())
 
 
-async def test_unknown_api_is_json_404(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.app_auth.API_TOKEN", None)
+async def test_unknown_api_without_login_is_401() -> None:
     app = create_api(ProgressHub())
     status, payload = await _call(app, "GET", "/api/does-not-exist")
-    assert status == 404
-    assert payload == {"detail": "未找到接口"}
-
-
-async def test_progress_ticket_opens_the_stream_gate(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.app_auth.API_TOKEN", "secret")
-    app = create_api(ProgressHub())
-    status, _payload = await _call(app, "GET", "/api/tasks")
     assert status == 401
-    endpoint = next(r.endpoint for r in app.routes if getattr(r, "path", None) == "/api/progress/ticket")
-    issued = await endpoint()
-    assert app.state.stream_tickets.valid(issued["ticket"])
-    assert not app.state.stream_tickets.valid("secret")
+    assert payload == {"detail": "需要登录"}
+
+
+async def test_tasks_and_stream_require_login() -> None:
+    app = create_api(ProgressHub())
+    status, payload = await _call(app, "GET", "/api/tasks")
+    assert status == 401
+    assert payload == {"detail": "需要登录"}
+    status, payload = await _call(app, "GET", "/api/progress/stream")
+    assert status == 401
+    assert payload == {"detail": "需要登录"}

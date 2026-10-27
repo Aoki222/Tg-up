@@ -10,9 +10,9 @@
  */
 
 import { computed, ref, onMounted, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { getApiToken, saveIdentity, setApiToken } from "../api";
+import { authRequired, changeAdminPassword, changeAdminUsername, fetchAuthStatus, logoutAdmin, saveIdentity } from "../api";
 import ConfigPanel from "../components/ConfigPanel.vue";
 import { useTelegramIdentity } from "../composables/useTelegramIdentity";
 import { useUnmatchedPolling } from "../composables/useUnmatched";
@@ -20,6 +20,8 @@ import { ENABLE_GOOGLE_DRIVE } from "../features";
 import { t } from "../i18n";
 
 defineOptions({ name: "SettingsPage" });
+
+const router = useRouter();
 
 const props = defineProps<{ embedded?: boolean }>();
 const emit = defineEmits<{
@@ -90,11 +92,17 @@ const apiHashMasked = ref("");
 const identitySaving = ref(false);
 const { refresh: refreshIdentity } = useTelegramIdentity();
 
-const tokenInput = ref("");
-const saved = ref(false);
+const consoleUsername = ref("");
+const currentPassword = ref("");
+const newPassword = ref("");
+const newPasswordAgain = ref("");
+const passwordSaving = ref(false);
+const usernameSaving = ref(false);
 
 onMounted(() => {
-  tokenInput.value = getApiToken();
+  void fetchAuthStatus().then((status) => {
+    consoleUsername.value = status.username || "";
+  }).catch(() => undefined);
   void refreshIdentity().then((info) => {
     if (!info) {
       ElMessage.error(t("settings.credentials.readFailed"));
@@ -127,23 +135,57 @@ async function saveCredentials(): Promise<void> {
   }
 }
 
-function saveToken(): void {
-  setApiToken(tokenInput.value);
-  saved.value = true;
-  ElMessage.success(tokenInput.value ? t("settings.token.saved") : t("settings.token.cleared"));
-  setTimeout(() => {
-    saved.value = false;
-  }, 2000);
+async function onChangeUsername(): Promise<void> {
+  if (!currentPassword.value) {
+    ElMessage.error(t("auth.needPassword"));
+    return;
+  }
+  usernameSaving.value = true;
+  try {
+    consoleUsername.value = await changeAdminUsername({
+      current_password: currentPassword.value,
+      username: consoleUsername.value,
+    });
+    currentPassword.value = "";
+    ElMessage.success(t("auth.usernameSaved"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t("auth.failed"));
+  } finally {
+    usernameSaving.value = false;
+  }
 }
 
-function clearToken(): void {
-  tokenInput.value = "";
-  setApiToken("");
-  saved.value = true;
-  ElMessage.success(t("settings.token.cleared"));
-  setTimeout(() => {
-    saved.value = false;
-  }, 2000);
+async function onChangePassword(): Promise<void> {
+  if (newPassword.value !== newPasswordAgain.value) {
+    ElMessage.error(t("auth.passwordMismatch"));
+    return;
+  }
+  passwordSaving.value = true;
+  try {
+    await changeAdminPassword({
+      current_password: currentPassword.value,
+      new_password: newPassword.value,
+      new_password_again: newPasswordAgain.value,
+    });
+    currentPassword.value = "";
+    newPassword.value = "";
+    newPasswordAgain.value = "";
+    ElMessage.success(t("auth.passwordSaved"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t("auth.failed"));
+  } finally {
+    passwordSaving.value = false;
+  }
+}
+
+async function onLogout(): Promise<void> {
+  try {
+    await logoutAdmin();
+  } catch {
+    // 退出失败也回到登录页，下一次请求会再要登录。
+  }
+  authRequired.value = true;
+  await router.replace({ name: "login" });
 }
 
 function openRouteSettings(path: string): void {
@@ -268,32 +310,44 @@ defineExpose({
             </div>
           </div>
 
-          <!-- 2. 控制台鉴权 -->
           <div class="inset-card">
             <div class="card-head">
-              <h3 class="card-title">{{ t("settings.token.title") }}</h3>
-              <p class="card-hint">
-                {{ t("settings.token.hintBefore") }}
-                <code>API_TOKEN</code>
-                {{ t("settings.token.hintAfter") }}
-              </p>
+              <h3 class="card-title">{{ t("settings.account.console") }}</h3>
+              <p class="card-hint">{{ t("settings.account.consoleHint") }}</p>
             </div>
-
             <div class="card-body">
               <div class="form-group max-w-md">
-                <label class="form-label">API Token</label>
-                <input
-                  v-model="tokenInput"
-                  type="password"
-                  :placeholder="t('settings.token.placeholder')"
-                  class="field-input mono"
-                />
+                <label class="form-label">{{ t("auth.username") }}</label>
+                <div class="token-btn-row">
+                  <input
+                    v-model="consoleUsername"
+                    type="text"
+                    class="field-input"
+                    autocomplete="username"
+                    maxlength="32"
+                  />
+                  <button type="button" class="save-pill-btn" :disabled="usernameSaving" @click="onChangeUsername">
+                    {{ t("auth.saveUsername") }}
+                  </button>
+                </div>
               </div>
-
+              <div class="form-group max-w-md">
+                <label class="form-label">{{ t("auth.currentPassword") }}</label>
+                <input v-model="currentPassword" type="password" class="field-input" autocomplete="current-password" />
+              </div>
+              <div class="form-group max-w-md">
+                <label class="form-label">{{ t("auth.passwordNew") }}</label>
+                <input v-model="newPassword" type="password" class="field-input" autocomplete="new-password" />
+              </div>
+              <div class="form-group max-w-md">
+                <label class="form-label">{{ t("auth.passwordAgain") }}</label>
+                <input v-model="newPasswordAgain" type="password" class="field-input" autocomplete="new-password" />
+              </div>
               <div class="token-btn-row">
-                <button type="button" class="save-pill-btn" @click="saveToken">{{ t("settings.token.save") }}</button>
-                <button type="button" class="cancel-pill-btn" @click="clearToken">{{ t("settings.token.clear") }}</button>
-                <span v-if="saved" class="saved-feedback-tag">{{ t("settings.token.savedMark") }}</span>
+                <button type="button" class="save-pill-btn" :disabled="passwordSaving" @click="onChangePassword">
+                  {{ t("auth.changePassword") }}
+                </button>
+                <button type="button" class="cancel-pill-btn" @click="onLogout">{{ t("auth.logout") }}</button>
               </div>
             </div>
           </div>
@@ -603,6 +657,11 @@ defineExpose({
   align-items: center;
   gap: 8px;
   padding-top: 2px;
+}
+
+.token-btn-row .field-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .cancel-pill-btn {

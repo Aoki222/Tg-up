@@ -90,7 +90,7 @@ preparing → pending → assigned → uploading → success
 
 | 文件 | 生命周期 | 内容 |
 |---|---|---|
-| `.env` | 启动读一次。监听地址、令牌、代理改完要重启 | 可选 `API_TOKEN`、`TELEGRAM_PROXY`（仅 http/https）、`API_HOST` / `API_PORT`。`API_ID` / `API_HASH` 只是没有 json 时的回落 |
+| `.env` | 启动读一次。监听地址、代理改完要重启 | 可选 `TELEGRAM_PROXY`（仅 http/https）、`API_HOST` / `API_PORT`。`API_ID` / `API_HASH` 只是没有 json 时的回落。控制台账号在 `admin_users` |
 | `data/telegram.json` | 控制台保存后热注入，不必重启 | 只存 `api_id`、`api_hash` |
 | `data/upload.toml` | 热更新（约 2 秒，或 API 保存时立刻换内存） | 目标群、监听路径、`[[routes]]`、封面、删文件、超时。`concurrency` 固定写成 1 |
 
@@ -196,7 +196,7 @@ release：`pending`，清空 `assigned_bot` / `assigned_at` / `started_at`，**�
 
 已删除：`POST /api/tasks`（投喂/wait）、演示进度 `/api/debug/fake-progress`。
 
-`API_TOKEN` 为空则 `/api/*` 全放行（本机单用）。设置后除 `GET /api/health` 外都要令牌：Axios 走 `Authorization: Bearer`；SSE 的 `EventSource` 不能自定义头，用 `?access_token=`。查询参数勿写入应用日志。静态页 `/`、`/assets` 不鉴权。
+控制台登录用 Cookie `tgup_sid`。空库启动时写入 `admin` / `admin`，`must_change_password=1` 时除改密和退出外接口返回 403。首次改密可以同时改用户名。探活和版本仍公开。静态页 `/`、`/assets` 不鉴权。SSE 同源带 Cookie。
 
 ---
 

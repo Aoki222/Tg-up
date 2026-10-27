@@ -3,7 +3,7 @@
  * 字节、百分比、速度只跟 SSE。轮询带回的更旧进度不覆盖界面。
  * 切片换段看 part_index，不解析中文说明。
  */
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from "vue";
 import { authRequired, fetchBoardTasks, fetchStatusPage, openProgressStream } from "../api";
 import { mergeLiveBytes } from "../boardProgress";
 import type { BoardCounts, BoardTask, UploadProgress } from "../types";
@@ -238,9 +238,7 @@ export function useTaskBoard() {
     }
   }
 
-  function start(): void {
-    if (live) return;
-    live = true;
+  function beginLive(): void {
     void refresh();
     void openProgressStream(applyProgress).then((opened) => {
       if (!live) {
@@ -249,10 +247,24 @@ export function useTaskBoard() {
       }
       source = opened;
     });
+  }
+
+  function start(): void {
+    if (live) return;
+    live = true;
     pollTimer = window.setInterval(() => {
       void refresh();
     }, 4000);
     if (ghosts.size > 0) scheduleGhostSweep();
+    if (authRequired.value) {
+      const stop = watch(authRequired, (blocked) => {
+        if (blocked || !live) return;
+        stop();
+        beginLive();
+      });
+      return;
+    }
+    beginLive();
   }
 
   function stop(): void {

@@ -1,7 +1,7 @@
 /**
  * 未命中文件：监控和设置共用一份结果。只有当前可见的页面每 5 秒拉一次。
  */
-import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
+import { onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from "vue";
 import { authRequired, fetchUnmatched } from "../api";
 import type { UnmatchedFile } from "../types";
 
@@ -40,7 +40,15 @@ export function useUnmatchedPolling() {
     running = true;
     activeCount++;
     if (activeCount === 1) {
-      void refresh();
+      if (authRequired.value) {
+        const stop = watch(authRequired, (blocked) => {
+          if (blocked) return;
+          stop();
+          void refresh();
+        });
+      } else {
+        void refresh();
+      }
       timer = window.setInterval(() => {
         void refresh();
       }, 5000);

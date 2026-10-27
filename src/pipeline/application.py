@@ -49,7 +49,7 @@ from ..adapters.task_store import TaskRepository
 from ..adapters.telegram_transport import TelegramTransport
 from ..api.app import create_api
 from ..api.workers import snapshot_workers
-from ..config import API_HOST, API_PORT, API_TOKEN, PROJECT_DIR, SESSION_DIR
+from ..config import API_HOST, API_PORT, PROJECT_DIR, SESSION_DIR
 from ..database.connection import close_pool
 from ..database.init import init_db
 from ..domain.settings_hub import SettingsHub, ensure_upload_config
@@ -108,12 +108,10 @@ class UploaderApplication:
         不把 TaskGroup 取消当作第一退出路径，避免把在途 send_file 直接掐掉。
         """
         logger.info("正在启动")
-        if not API_TOKEN and API_HOST.strip().lower() not in {"127.0.0.1", "localhost", "::1"}:
-            raise RuntimeError(
-                "API_TOKEN 为空时只能监听本机。请设置 API_TOKEN，或把 API_HOST 改为 127.0.0.1"
-            )
         self._install_stop_signals()
         await init_db()
+        from ..adapters.admin_auth import ensure_initial_admin
+        await ensure_initial_admin()
         await self._channel_cache.load_from_db()
         settings_hub = SettingsHub(ensure_upload_config(PROJECT_DIR), PROJECT_DIR)
         self._settings_hub = settings_hub

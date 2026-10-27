@@ -91,9 +91,6 @@ test("设置搜索、入口和凭据", async ({ page, world }) => {
   await dialog.getByRole("button", { name: "Save credentials" }).click();
   await expect(page.locator(".el-message--success")).toContainText("Credentials saved. This process is using them now.");
   expect(world.identityPuts.at(-1)).toEqual({ api_id: 99, api_hash: "abcdef" });
-
-  await dialog.getByPlaceholder("API token").fill("secret-token");
-  await dialog.getByRole("button", { name: "Save token" }).click();
-  await expect(page.locator(".el-message--success").last()).toContainText("Token saved. Later requests will send it.");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("uploader_api_token"))).toBe("secret-token");
+  await expect(dialog.getByRole("button", { name: "Change password" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Sign out" })).toBeVisible();
 });

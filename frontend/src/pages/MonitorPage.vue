@@ -99,6 +99,9 @@ const policyPath = ref("");
 const settingsRef = ref<InstanceType<typeof SettingsPage> | null>(null);
 const watchDockRef = ref<InstanceType<typeof WatchDock> | null>(null);
 const tomlSaving = computed(() => settingsRef.value?.saving ?? false);
+watch(authRequired, (blocked) => {
+  if (blocked) void router.replace({ name: "login" });
+});
 const versionInfo = ref<SystemVersionInfo | null>(null);
 const workers = ref<WorkerSnapshot[]>([]);
 let workerTimer = 0;
@@ -369,11 +372,7 @@ watch(
       @open-settings="openSettings('telegram')"
     />
 
-    <p v-if="authRequired" class="setup-banner auth-banner">
-      <span>{{ t("banner.auth") }}</span>
-      <button type="button" @click="openSettings('account')">{{ t("banner.authAction") }}</button>
-    </p>
-    <p v-else-if="configured === false" class="setup-banner">
+    <p v-if="configured === false" class="setup-banner">
       {{ t("banner.credentials") }}
       <button type="button" @click="openSettings('account')">{{ t("banner.credentialsAction") }}</button>
     </p>

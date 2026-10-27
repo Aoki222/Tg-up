@@ -24,7 +24,7 @@ docker compose pull
 docker compose up -d
 ```
 
-编辑 `.env`，至少填入从 [my.telegram.org](https://my.telegram.org) 取得的 `API_ID` 和 `API_HASH`。`API_TOKEN` 是访问接口的口令。填上以后，除探活和版本号外，所有 `/api` 请求都要带它。网页仍可直接打开，在设置里填入同一串，浏览器会记住。Docker 默认对所有网卡开放 8421，这时必须填写，否则服务不会启动。留空只适用于只监听本机。
+编辑 `.env`，至少填入从 [my.telegram.org](https://my.telegram.org) 取得的 `API_ID` 和 `API_HASH`。打开页面需要登录。新安装的初始账号是 `admin` / `admin`。第一次登录可以改用户名，并且必须先改掉这个密码，工作台才会出现。
 
 打开 `http://<主机>:8421`。第一次使用时，加上一个监听目录并打开它，再为它指定目标群。把 Session 放到旁边的 `sessions/` 目录，或在网页里登录。
 
@@ -48,6 +48,6 @@ docker compose up -d
 
 ## 配置放在哪
 
-`.env` 里是进程身份：`API_ID`、`API_HASH`、`API_TOKEN`、可选的 `TELEGRAM_PROXY`，以及目录策略没有指定目标群时使用的 `TARGET_CHAT_ID`。
+`.env` 里是进程身份：`API_ID`、`API_HASH`、可选的 `TELEGRAM_PROXY`，以及目录策略没有指定目标群时使用的 `TARGET_CHAT_ID`。控制台账号存在数据库里，不写在 `.env`。
 
 监听目录、目录策略、封面、上传成功后的处理、上传顺序在网页里修改，写入 `data/upload.toml`，保存后生效，不用重启。

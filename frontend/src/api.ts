@@ -33,58 +33,61 @@ import type {
 
 // ── Token 本地存储与持久化 ──────────────────────────────────────
 
-const TOKEN_KEY = "uploader_api_token";
+/** 未登录或仍须修改初始密码时为 true，看板和轮询先停住。 */
+export const authRequired = ref(true);
 
-/** 全局响应式状态：标记当前是否因 API_TOKEN 未配置或无效而导致 401 鉴权失败 */
-export const authRequired = ref(false);
+export type AuthStatus = {
+  owner_exists: boolean;
+  authenticated: boolean;
+  username: string | null;
+  must_change_password: boolean;
+};
 
-/**
- * 从浏览器 localStorage 中获取当前配置的 API 鉴权令牌
- * @returns 存储的 token 字符串，未配置时返回空串
- */
-export function getApiToken(): string {
-  return localStorage.getItem(TOKEN_KEY) ?? "";
+export async function fetchAuthStatus(): Promise<AuthStatus> {
+  const res = await apiClient.get<AuthStatus>("/api/auth/status");
+  return res.data;
 }
 
-/**
- * 更新或清空本地存储的 API Token
- * @param token 新的鉴权 Token，若为空串则从 localStorage 中清除
- */
-export function setApiToken(token: string): void {
-  if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
-  } else {
-    localStorage.removeItem(TOKEN_KEY);
-  }
-  authRequired.value = false;
+export async function loginAdmin(payload: { username: string; password: string }): Promise<AuthStatus> {
+  const res = await apiClient.post<AuthStatus & { ok: boolean }>("/api/auth/login", payload);
+  return res.data;
+}
+
+export async function logoutAdmin(): Promise<void> {
+  await apiClient.post("/api/auth/logout");
+}
+
+export async function changeAdminUsername(payload: {
+  current_password: string;
+  username: string;
+}): Promise<string> {
+  const res = await apiClient.post<{ username: string }>("/api/auth/username", payload);
+  return res.data.username;
+}
+
+export async function changeAdminPassword(payload: {
+  current_password: string;
+  new_password: string;
+  new_password_again: string;
+  username?: string;
+}): Promise<void> {
+  await apiClient.post("/api/auth/password", payload);
 }
 
 // ── Axios 客户端实例与全局拦截器 ─────────────────────────────────
 
 export const apiClient = axios.create({
   timeout: 15000,
+  withCredentials: true,
   headers: {
     "Content-Type": "application/json",
   },
 });
 
 /**
- * 【请求拦截器】
- * 在发起任何网络请求前，动态读取当前 Token 并追加至请求头，
- * 避免在各个业务函数中重复手写传递 headers。
- */
-apiClient.interceptors.request.use((config) => {
-  const token = getApiToken();
-  if (token) {
-    config.headers.set("Authorization", `Bearer ${token}`);
-  }
-  return config;
-});
-
-/**
  * 【响应拦截器】
  * 集中接管服务端异常响应：
- * 1. 遇到 401 鉴权失效时标记 authRequired 状态，由页面常驻横幅接管，避免 Toast 刷屏；
+ * 1. 遇到 401 时标记 authRequired，页面改回登录卡；
  * 2. 自动抽取后端 FastAPI 异常模型中的 `detail` 字段，解包为标准 Error 对象便于上层 catch。
  */
 apiClient.interceptors.response.use(
@@ -568,12 +571,7 @@ export async function openProgressStream(
   onEvent: (progress: UploadProgress) => void,
   onError?: () => void,
 ): Promise<EventSource> {
-  let url = "/api/progress/stream";
-  if (getApiToken()) {
-    const ticket = await apiClient.post<{ ticket: string }>("/api/progress/ticket");
-    url = `/api/progress/stream?ticket=${encodeURIComponent(ticket.data.ticket)}`;
-  }
-  const source = new EventSource(url);
+  const source = new EventSource("/api/progress/stream");
 
   source.addEventListener("progress", (event: Event) => {
     const message = event as MessageEvent<string>;

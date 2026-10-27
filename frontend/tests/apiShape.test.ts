@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { apiClient, normalizeSettings, openProgressStream, setApiToken } from "../src/api";
+import { normalizeSettings, openProgressStream } from "../src/api";
 import type { UploadConfig } from "../src/types";
 import { pausedObserverRoot } from "../src/watchPath";
 
@@ -36,7 +36,6 @@ function config(over: Partial<UploadConfig> = {}): UploadConfig {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  setApiToken("");
 });
 
 test("normalizeSettings keeps revision and only smallest or oldest", () => {
@@ -88,15 +87,7 @@ test("a new watch path is added paused", () => {
   expect(root.path).toBe("D:/incoming");
 });
 
-test("a token opens the progress stream with a short ticket", async () => {
-  setApiToken("long-lived-api-token-value");
-  const post = vi.spyOn(apiClient, "post").mockResolvedValue({
-    data: { ticket: "short-ticket" },
-    status: 200,
-    statusText: "OK",
-    headers: {},
-    config: { headers: {} },
-  } as never);
+test("the progress stream uses the session cookie, not a ticket", async () => {
   const urls: string[] = [];
   vi.stubGlobal(
     "EventSource",
@@ -111,7 +102,5 @@ test("a token opens the progress stream with a short ticket", async () => {
 
   await openProgressStream(() => undefined);
 
-  expect(post).toHaveBeenCalledWith("/api/progress/ticket");
-  expect(urls).toEqual(["/api/progress/stream?ticket=short-ticket"]);
-  expect(urls[0]).not.toContain("long-lived-api-token-value");
+  expect(urls).toEqual(["/api/progress/stream"]);
 });

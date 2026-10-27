@@ -140,6 +140,28 @@ CREATE TABLE IF NOT EXISTS telegram_topics (
 
 CREATE INDEX IF NOT EXISTS idx_telegram_topics_chat
     ON telegram_topics(chat_id, is_active);
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    username             TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash        TEXT    NOT NULL,
+    must_change_password INTEGER NOT NULL DEFAULT 1,
+    created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at           DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES admin_users(id),
+    token_hash   TEXT    NOT NULL UNIQUE,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at   DATETIME NOT NULL,
+    last_seen_at DATETIME,
+    ip           TEXT,
+    user_agent   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);
 """
 
 _UPLOAD_TASK_INDEXES = (

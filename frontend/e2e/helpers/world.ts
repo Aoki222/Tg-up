@@ -320,6 +320,28 @@ async function dispatch(route: Route, world: World): Promise<void> {
   const path = decodeURIComponent(url.pathname);
   const method = request.method();
 
+  if (path === "/api/auth/status" && method === "GET") {
+    await json(route, {
+      owner_exists: true,
+      authenticated: true,
+      username: "admin",
+      must_change_password: false,
+    });
+    return;
+  }
+  if (path === "/api/auth/logout" && method === "POST") {
+    await json(route, { ok: true });
+    return;
+  }
+  if (path === "/api/auth/password" && method === "POST") {
+    await json(route, { ok: true, must_change_password: false });
+    return;
+  }
+  if (path === "/api/auth/username" && method === "POST") {
+    await json(route, { ok: true, username: "admin" });
+    return;
+  }
+
   if (path === "/api/progress/stream" && method === "GET") {
     world.streamOpens += 1;
     const frame = world.pendingFrames.shift() ?? "retry: 200\n: keep\n\n";
