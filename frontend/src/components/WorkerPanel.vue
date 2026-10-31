@@ -11,9 +11,18 @@
  * 4. 【生命周期控制】：支持单节点热禁用、热恢复、以及物理销毁 Session 文件（带安全警示确认窗）。
  */
 
-import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { deleteWorker, disableWorker, enableWorker, fetchWorkers } from "../api";
+import {
+  closeUserAccount,
+  deleteWorker,
+  disableWorker,
+  enableWorker,
+  fetchWorkers,
+  joinUserUpload,
+  leaveUserUpload,
+  openUserAccount,
+} from "../api";
 import { refreshSessionAccounts, reloadSessionAccounts, useSessionAccounts } from "../composables/useSessionAccounts";
 import type { WorkerSnapshot } from "../types";
 import { t } from "../i18n";
@@ -31,6 +40,15 @@ const emit = defineEmits<{
 
 /** 当前加载的 Worker 节点状态快照列表 */
 const workers = ref<WorkerSnapshot[]>([]);
+
+function kindOf(worker: WorkerSnapshot): string {
+  return worker.kind || accounts.value.find((item) => item.name === worker.name)?.kind || "";
+}
+
+const userAccounts = computed(() => workers.value.filter((worker) => kindOf(worker) === "user"));
+const uploadWorkers = computed(() =>
+  workers.value.filter((worker) => kindOf(worker) !== "user" || worker.upload),
+);
 const { accounts } = useSessionAccounts();
 
 /** 轮询异常错误提示 */
@@ -108,6 +126,12 @@ onUnmounted(stop);
 /**
  * 计算 Worker 当前状态的人类可读中文说明
  */
+function userStatus(worker: WorkerSnapshot): string {
+  if (worker.closed) return t("workers.closed");
+  if (worker.upload) return statusLabel(worker);
+  return t("workers.resident");
+}
+
 function accountKind(name: string): string {
   // 从 session 元数据中查找 Worker 是个人号、Bot 还是未知类型。
   const kind = accounts.value.find((item) => item.name === name)?.kind;
@@ -183,6 +207,42 @@ async function onEnable(name: string): Promise<void> {
 }
 
 /** 永久删除指定 Worker 凭证文件 */
+async function onUserToggle(name: string, closed: boolean): Promise<void> {
+  busyName.value = name;
+  try {
+    if (closed) {
+      await openUserAccount(name);
+      ElMessage.success(t("workers.openedToast", { name }));
+    } else {
+      await closeUserAccount(name);
+      ElMessage.success(t("workers.closedToast", { name }));
+    }
+    await reloadWorkers();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t("workers.disableFailed"));
+  } finally {
+    busyName.value = "";
+  }
+}
+
+async function onUploadToggle(name: string, upload: boolean): Promise<void> {
+  busyName.value = name;
+  try {
+    if (upload) {
+      await leaveUserUpload(name);
+      ElMessage.success(t("workers.leftToast", { name }));
+    } else {
+      await joinUserUpload(name);
+      ElMessage.success(t("workers.joinedToast", { name }));
+    }
+    await reloadWorkers();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t("workers.enableFailed"));
+  } finally {
+    busyName.value = "";
+  }
+}
+
 async function onDelete(name: string): Promise<void> {
   try {
     await ElMessageBox.confirm(
@@ -247,8 +307,56 @@ async function onDelete(name: string): Promise<void> {
     </div>
 
     <!-- Worker 节点卡片列表 -->
-    <div v-else class="list">
-      <div v-for="worker in workers" :key="worker.name" class="item">
+    <div v-else class="split">
+      <section class="group">
+        <h3 class="group-title">{{ t("workers.usersTitle") }}</h3>
+        <p class="group-hint">{{ t("workers.usersHint") }}</p>
+        <p v-if="!userAccounts.length" class="group-empty">{{ t("workers.usersEmpty") }}</p>
+        <div v-else class="list">
+          <div v-for="worker in userAccounts" :key="worker.name" class="item">
+            <div class="row">
+              <div class="worker-info">
+                <strong class="worker-name">{{ worker.name }}</strong>
+                <span class="kind">{{ t("workers.user") }}</span>
+                <span v-if="worker.username" class="user">@{{ worker.username }}</span>
+              </div>
+              <div class="status-badge" :class="worker.closed ? 'disabled' : 'idle'">
+                <span class="status-dot" :class="worker.closed ? 'disabled' : 'idle'"></span>
+                <span class="status-label">{{ userStatus(worker) }}</span>
+              </div>
+            </div>
+            <div class="actions">
+              <el-button
+                size="small"
+                :loading="busyName === worker.name"
+                @click="onUserToggle(worker.name, Boolean(worker.closed))"
+              >
+                {{ worker.closed ? t("workers.open") : t("workers.closeAccount") }}
+              </el-button>
+              <el-button
+                v-if="!worker.closed"
+                size="small"
+                type="primary"
+                plain
+                :loading="busyName === worker.name"
+                @click="onUploadToggle(worker.name, Boolean(worker.upload))"
+              >
+                {{ worker.upload ? t("workers.leave") : t("workers.join") }}
+              </el-button>
+              <el-button size="small" type="danger" plain :loading="busyName === worker.name" @click="onDelete(worker.name)">
+                {{ t("workers.delete") }}
+              </el-button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="group">
+        <h3 class="group-title">{{ t("workers.botsTitle") }}</h3>
+        <p class="group-hint">{{ t("workers.botsHint") }}</p>
+        <p v-if="!uploadWorkers.length" class="group-empty">{{ t("workers.emptyTitle") }}</p>
+        <div v-else class="list">
+      <div v-for="worker in uploadWorkers" :key="worker.name" class="item">
         <div class="row">
           <div class="worker-info">
             <strong class="worker-name">{{ worker.name }}</strong>
@@ -312,11 +420,40 @@ async function onDelete(name: string): Promise<void> {
           </el-button>
         </div>
       </div>
+        </div>
+      </section>
     </div>
   </el-card>
 </template>
 
 <style scoped>
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group + .group {
+  margin-top: 18px;
+}
+
+.group-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.group-hint,
+.group-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.split {
+  display: flex;
+  flex-direction: column;
+}
+
 .head {
   display: flex;
   justify-content: space-between;

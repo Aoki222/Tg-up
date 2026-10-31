@@ -23,6 +23,7 @@ from pathlib import Path
 
 from ..adapters.after_upload import ConfigurableAfterUpload
 from ..adapters.disabled_workers import DisabledWorkers
+from ..adapters.user_accounts import UserAccountPrefs
 from ..adapters.progress import FanoutReporter, LogProgressBar, ProgressHub
 from ..adapters.session_login import unlink_session
 from ..adapters.telegram_channel_cache import TelegramChannelCache
@@ -84,6 +85,7 @@ class UploaderApplication:
         self._repository = None
         self._after_upload = None
         self._disabled = DisabledWorkers(PROJECT_DIR / "data" / "disabled_workers.json")
+        self._user_accounts = UserAccountPrefs(PROJECT_DIR / "data" / "user_accounts.json")
         self._stop = asyncio.Event()
         self._watcher = None
         self._file_queue = None
@@ -348,6 +350,12 @@ class UploaderApplication:
         """调用方已持有 _session_lock。"""
         discovered = session_pool.list_files()
         for name, session_path in discovered.items():
+            kind = self._known_kind(session_pool, name)
+            if kind == "user":
+                await self._sync_user_locked(
+                    name, session_path, session_pool, scheduler, repository, after_upload, settings_hub
+                )
+                continue
             if name in self._disabled:
                 if name in scheduler.worker_map:
                     await self._unload_worker(name, reason="worker disabled", in_flight_timeout=0)
@@ -357,49 +365,34 @@ class UploaderApplication:
             client = await session_pool.ensure_client(name, session_path)
             if client is None:
                 continue
-            kind = _session_kind(session_pool.session_dir, name)
-            if kind == "unknown":
-                try:
-                    me = await client.get_me()
-                    kind = "bot" if me is not None and getattr(me, "bot", False) else "user"
-                except Exception:
-                    kind = "unknown"
-            if kind == "user" and not self._channel_cache.has_account(name):
-                try:
-                    await self._channel_cache.full_sync(name, client)
-                except Exception:
-                    logger.exception("首次同步 Telegram 群组失败: %s", name)
+            kind = session_pool.kinds.get(name) or kind
             if kind == "user":
-                try:
-                    await self._channel_cache.attach_client(name, client)
-                except Exception:
-                    logger.exception("注册 Telegram 群组事件失败: %s", name)
-            sender_pool = SenderPool(client, max_senders=6, idle_timeout=120.0)
-            worker = UploadWorker(
-                worker_name=name,
-                task_repository=repository,
-                transport=TelegramTransport(client, sender_pool=sender_pool),
-                after_upload=after_upload,
-                settings_hub=settings_hub,
-                on_task_finished=scheduler.request_reschedule,
-                progress_reporter=self.progress_reporter,
-                session_pool=session_pool,
-                session_path=session_path,
-                account_kind=kind,
-                on_slice_child=self._on_slice_child,
+                await self._sync_user_locked(
+                    name, session_path, session_pool, scheduler, repository, after_upload, settings_hub
+                )
+                continue
+            await self._register_worker(
+                name, session_path, client, kind or "bot", session_pool, scheduler, repository, after_upload, settings_hub
             )
-            scheduler.register_worker(worker)
-            if self._task_group is not None:
-                self._task_group.create_task(worker.serve_forever())
-            logger.info("已加载 worker: %s (%s)", name, kind)
-            scheduler.request_reschedule()
 
         for name in list(scheduler.worker_map):
-            if name in discovered and name not in self._disabled:
+            if name not in discovered:
+                await self._unload_worker(name, reason="session file removed", in_flight_timeout=0)
+                logger.info("已卸载 worker: %s", name)
                 continue
-            reason = "worker disabled" if name in self._disabled else "session file removed"
-            await self._unload_worker(name, reason=reason, in_flight_timeout=0)
-            logger.info("已卸载 worker: %s", name)
+            kind = self._known_kind(session_pool, name)
+            if kind == "user":
+                if self._user_accounts.closed(name) or not self._user_accounts.uploads(name):
+                    await self._stop_upload(name, reason="user left upload")
+                continue
+            if name in self._disabled:
+                await self._unload_worker(name, reason="worker disabled", in_flight_timeout=0)
+                logger.info("已卸载 worker: %s", name)
+
+        for name in list(session_pool.clients):
+            if name in discovered:
+                continue
+            await self._disconnect_resident(name)
 
     async def dispatch_oversized_to_user(self, task_id: int) -> str:
         """把 oversized 交给当前最空闲的个人号。
@@ -561,7 +554,9 @@ class UploaderApplication:
         def workers_provider() -> list[dict]:
             if self._scheduler is None or self._session_pool is None:
                 return []
-            return snapshot_workers(self._scheduler, self._session_pool, self._disabled)
+            return snapshot_workers(
+                self._scheduler, self._session_pool, self._disabled, self._user_accounts
+            )
 
         api = create_api(
             self.progress_hub,
@@ -570,6 +565,10 @@ class UploaderApplication:
             disable_worker=self.disable_worker,
             enable_worker=self.enable_worker,
             delete_worker=self.delete_worker,
+            close_user=self.close_user,
+            open_user=self.open_user,
+            join_upload=self.join_upload,
+            leave_upload=self.leave_upload,
             task_repository=self._repository,
             reschedule=self._scheduler.request_reschedule if self._scheduler is not None else None,
             dispatch_oversized=self.dispatch_oversized_to_user,
@@ -683,6 +682,92 @@ class UploaderApplication:
         await close_pool()
         logger.info("资源已释放")
 
+    def _known_kind(self, session_pool, name: str) -> str:
+        kind = _session_kind(session_pool.session_dir, name)
+        if kind == "unknown":
+            kind = session_pool.kinds.get(name, "unknown")
+        return kind
+
+    async def _sync_user_locked(
+        self, name, session_path, session_pool, scheduler, repository, after_upload, settings_hub
+    ) -> None:
+        """个人号默认只保持连接。upload 为真才注册成 Worker。"""
+        if name in self._disabled:
+            self._user_accounts.set_closed(name, True)
+            self._disabled.discard(name)
+        if self._user_accounts.closed(name):
+            if name in scheduler.worker_map:
+                await self._stop_upload(name, reason="user closed")
+            await self._disconnect_resident(name)
+            return
+        client = await session_pool.ensure_client(name, session_path)
+        if client is None:
+            return
+        if not self._channel_cache.has_account(name):
+            try:
+                await self._channel_cache.full_sync(name, client)
+            except Exception:
+                logger.exception("首次同步 Telegram 群组失败: %s", name)
+        try:
+            await self._channel_cache.attach_client(name, client)
+        except Exception:
+            logger.exception("注册 Telegram 群组事件失败: %s", name)
+        if self._user_accounts.uploads(name):
+            if name not in scheduler.worker_map:
+                await self._register_worker(
+                    name, session_path, client, "user", session_pool, scheduler, repository, after_upload, settings_hub
+                )
+            return
+        if name in scheduler.worker_map:
+            await self._stop_upload(name, reason="user left upload")
+
+    async def _register_worker(
+        self, name, session_path, client, kind, session_pool, scheduler, repository, after_upload, settings_hub
+    ) -> None:
+        if name in scheduler.worker_map:
+            return
+        sender_pool = SenderPool(client, max_senders=6, idle_timeout=120.0)
+        worker = UploadWorker(
+            worker_name=name,
+            task_repository=repository,
+            transport=TelegramTransport(client, sender_pool=sender_pool),
+            after_upload=after_upload,
+            settings_hub=settings_hub,
+            on_task_finished=scheduler.request_reschedule,
+            progress_reporter=self.progress_reporter,
+            session_pool=session_pool,
+            session_path=session_path,
+            account_kind=kind,
+            on_slice_child=self._on_slice_child,
+        )
+        scheduler.register_worker(worker)
+        if self._task_group is not None:
+            self._task_group.create_task(worker.serve_forever())
+        logger.info("已加载 worker: %s (%s)", name, kind)
+        scheduler.request_reschedule()
+
+    async def _stop_upload(self, name: str, *, reason: str) -> None:
+        """退出上传队列，不断开个人号连接。"""
+        scheduler = self._scheduler
+        repository = self._repository
+        if scheduler is None or repository is None:
+            return
+        worker = scheduler.worker_map.get(name)
+        if worker is None:
+            return
+        scheduler.unregister_worker(name)
+        await worker.abort_and_release(reason, in_flight_timeout=0)
+        released = await repository.release_tasks_for_worker(name, reason)
+        if released:
+            self.progress_hub.forget(released)
+        scheduler.request_reschedule()
+
+    async def _disconnect_resident(self, name: str) -> None:
+        session_pool = self._session_pool
+        self._channel_cache.detach_client(name)
+        if session_pool is not None:
+            await session_pool.remove_client(name)
+
     async def _unload_worker(self, name: str, *, reason: str, in_flight_timeout: float) -> None:
         """从调度器移除 Worker，释放其排队/在途任务，再断开 Telegram 客户端。"""
         scheduler = self._scheduler
@@ -702,12 +787,62 @@ class UploaderApplication:
         await session_pool.remove_client(name)
         scheduler.request_reschedule()
 
+    def _require_session(self, name: str):
+        pool = self._session_pool
+        if pool is None or name not in pool.list_files():
+            raise KeyError(name)
+        return pool
+
+    async def _apply_user_change(self, pool) -> None:
+        after_upload = self._after_upload
+        repository = self._repository
+        settings_hub = self._settings_hub
+        scheduler = self._scheduler
+        if after_upload is None or repository is None or settings_hub is None or scheduler is None:
+            return
+        await self._sync_sessions(pool, scheduler, repository, after_upload, settings_hub)
+
+    async def close_user(self, name: str) -> None:
+        if name.startswith("_tmp_"):
+            raise ValueError("不能操作临时登录 session")
+        pool = self._require_session(name)
+        self._user_accounts.set_closed(name, True)
+        await self._apply_user_change(pool)
+        logger.info("已关闭个人号: %s", name)
+
+    async def open_user(self, name: str) -> None:
+        if name.startswith("_tmp_"):
+            raise ValueError("不能操作临时登录 session")
+        pool = self._require_session(name)
+        self._user_accounts.set_closed(name, False)
+        await self._apply_user_change(pool)
+        logger.info("已打开个人号: %s", name)
+
+    async def join_upload(self, name: str) -> None:
+        if name.startswith("_tmp_"):
+            raise ValueError("不能操作临时登录 session")
+        pool = self._require_session(name)
+        self._user_accounts.set_upload(name, True)
+        await self._apply_user_change(pool)
+        logger.info("个人号加入上传: %s", name)
+
+    async def leave_upload(self, name: str) -> None:
+        if name.startswith("_tmp_"):
+            raise ValueError("不能操作临时登录 session")
+        pool = self._require_session(name)
+        self._user_accounts.set_upload(name, False)
+        await self._apply_user_change(pool)
+        logger.info("个人号移出上传: %s", name)
+
     async def disable_worker(self, name: str) -> None:
         if name.startswith("_tmp_"):
             raise ValueError("不能操作临时登录 session")
         pool = self._session_pool
         if pool is None or (name not in pool.list_files() and (self._scheduler is None or name not in self._scheduler.worker_map)):
             raise KeyError(name)
+        if self._known_kind(pool, name) == "user":
+            await self.close_user(name)
+            return
         async with self._session_lock:
             self._disabled.add(name)
             await self._unload_worker(name, reason="worker disabled", in_flight_timeout=20)
@@ -719,14 +854,11 @@ class UploaderApplication:
         pool = self._session_pool
         if pool is None or name not in pool.list_files():
             raise KeyError(name)
-        self._disabled.discard(name)
-        after_upload = self._after_upload
-        repository = self._repository
-        settings_hub = self._settings_hub
-        scheduler = self._scheduler
-        if after_upload is None or repository is None or settings_hub is None or scheduler is None:
+        if self._known_kind(pool, name) == "user":
+            await self.open_user(name)
             return
-        await self._sync_sessions(pool, scheduler, repository, after_upload, settings_hub)
+        self._disabled.discard(name)
+        await self._apply_user_change(pool)
         logger.info("已启用 worker: %s", name)
 
     async def delete_worker(self, name: str) -> None:
@@ -741,6 +873,7 @@ class UploaderApplication:
         async with self._session_lock:
             await self._unload_worker(name, reason="worker deleted", in_flight_timeout=20)
             self._disabled.discard(name)
+            self._user_accounts.discard(name)
             session_path = files.get(name) or (pool.session_dir / name)
             unlink_session(session_path)
             meta_path = pool.session_dir / f"{name}.json"

@@ -103,6 +103,9 @@ export interface Worker {
   reconnect_max: number;
   reconnect_wait_seconds: number;
   reconnect_error: string;
+  kind?: string;
+  upload?: boolean;
+  closed?: boolean;
 }
 
 export interface SuccessRecord {

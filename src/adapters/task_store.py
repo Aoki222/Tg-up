@@ -458,7 +458,7 @@ class TaskRepository:
                 total = int(row[0] if row else 0)
             async with database.execute(
                 f"""SELECT id, file_name, file_size, folder_name, finished_at,
-                           part_index, part_count
+                           part_index, part_count, platform, dest_id, remote_id
                     FROM upload_tasks
                     WHERE {where}
                     ORDER BY finished_at IS NULL, finished_at DESC, id DESC

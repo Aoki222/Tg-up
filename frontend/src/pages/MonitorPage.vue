@@ -285,6 +285,18 @@ function onSettingsSection(id: string): void {
   void router.replace({ query: { ...route.query, settings: id } });
 }
 
+function parentDir(filePath: string): string {
+  const slash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
+  return slash > 0 ? filePath.slice(0, slash) : filePath;
+}
+
+function historyPart(item: { part_index?: number | null; part_count?: number | null; part_label: string | null }): string {
+  if (item.part_index && item.part_count) {
+    return t("card.part", { index: item.part_index, count: item.part_count });
+  }
+  return item.part_label || "";
+}
+
 function openPolicy(path: string): void {
   policyPath.value = path;
   policyModalOpen.value = true;
@@ -302,11 +314,15 @@ function onUpdateWorkers(list: WorkerSnapshot[]): void {
   workers.value = list;
 }
 
-const activeWorkersCount = computed(() =>
-  workers.value.filter((worker) => worker.enabled && worker.running && worker.accepting).length,
+const uploadWorkers = computed(() =>
+  workers.value.filter((worker) => worker.kind !== "user" || worker.upload),
 );
 
-const totalWorkersCount = computed(() => workers.value.length);
+const activeWorkersCount = computed(() =>
+  uploadWorkers.value.filter((worker) => worker.enabled && worker.running && worker.accepting).length,
+);
+
+const totalWorkersCount = computed(() => uploadWorkers.value.length);
 
 function onKeydown(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
@@ -376,9 +392,16 @@ watch(
       {{ t("banner.credentials") }}
       <button type="button" @click="openSettings('account')">{{ t("banner.credentialsAction") }}</button>
     </p>
-    <p v-if="unmatchedCount > 0" class="unmatched-banner">
-      {{ t("banner.unmatched", { n: unmatchedCount }) }}
-    </p>
+    <div v-if="unmatchedCount > 0" class="unmatched-banner">
+      <p>{{ t("banner.unmatched", { n: unmatchedCount }) }}</p>
+      <ul class="unmatched-list">
+        <li v-for="file in unmatchedFiles.slice(0, 8)" :key="file.id">
+          <span class="font-mono" :title="file.file_path">{{ file.file_name }}</span>
+          <button type="button" @click="openPolicy(parentDir(file.file_path))">{{ t("dock.policy") }}</button>
+        </li>
+      </ul>
+      <p v-if="unmatchedCount > 8" class="unmatched-more">{{ t("banner.unmatchedMore", { n: unmatchedCount - 8 }) }}</p>
+    </div>
 
     <div class="work-body">
       <button
@@ -506,6 +529,7 @@ watch(
                 <tr>
                   <th>{{ t("history.file") }}</th>
                   <th>{{ t("history.source") }}</th>
+                  <th>{{ t("history.dest") }}</th>
                   <th>{{ t("history.size") }}</th>
                   <th>{{ t("history.status") }}</th>
                   <th>{{ t("history.finished") }}</th>
@@ -515,9 +539,13 @@ watch(
                 <tr v-for="item in filteredSuccessItems" :key="item.id">
                   <td class="col-file" :title="item.file_name">
                     <span class="file-name">{{ item.file_name }}</span>
-                    <span v-if="item.part_label" class="part-chip">{{ item.part_label }}</span>
+                    <span v-if="historyPart(item)" class="part-chip">{{ historyPart(item) }}</span>
                   </td>
                   <td class="col-folder font-mono" :title="item.folder_name || t('history.root')">{{ item.folder_name || "—" }}</td>
+                  <td class="col-dest">
+                    <a v-if="item.message_url" :href="item.message_url" target="_blank" rel="noopener">{{ item.dest_name || t("history.openMessage") }}</a>
+                    <span v-else>{{ item.dest_name || "—" }}</span>
+                  </td>
                   <td class="col-size font-mono">{{ item.file_size > 0 ? formatBytes(item.file_size) : "—" }}</td>
                   <td class="col-status"><span class="status-pill ok">{{ t("history.delivered") }}</span></td>
                   <td class="col-time font-mono">{{ item.finished_at || "—" }}</td>

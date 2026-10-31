@@ -29,8 +29,8 @@ test("版本药丸打开测试版说明", async ({ page }) => {
 
 test("Worker 计数和禁用", async ({ page, world }) => {
   world.workers = [
-    worker({ name: "worker_1" }),
-    worker({ name: "worker_2", running: false, accepting: false }),
+    worker({ name: "worker_1", kind: "user", upload: false, accepting: false }),
+    worker({ name: "worker_2", kind: "bot", running: false, accepting: false }),
   ];
   world.sessions = {
     items: ["worker_1", "worker_2"],
@@ -43,20 +43,21 @@ test("Worker 计数和禁用", async ({ page, world }) => {
   };
 
   await openApp(page);
-  await expect(page.locator(".worker-chip-count")).toHaveText("1/2");
+  await expect(page.locator(".worker-chip-count")).toHaveText("0/1");
   await page.locator(".worker-chip-btn").click();
 
   const dialog = page.getByRole("dialog", { name: "Workers" });
-  await expect(dialog).toContainText("Online 1 / 2");
-  await expect(dialog.locator(".worker-name", { hasText: "worker_1" })).toBeVisible();
-  await expect(dialog.getByText("Idle", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("Hold", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("User", { exact: true })).toBeVisible();
+  await expect(dialog).toContainText("Uploading 0 / 1");
+  await expect(dialog.getByRole("heading", { name: "User accounts" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Upload workers" })).toBeVisible();
+  await expect(dialog.locator(".item").filter({ hasText: "worker_1" }).getByText("User", { exact: true })).toBeVisible();
+  await expect(dialog.locator(".item").filter({ hasText: "worker_1" }).getByRole("button", { name: "Join upload" })).toBeVisible();
+  await expect(dialog.locator(".item").filter({ hasText: "worker_2" }).getByText("Hold", { exact: true })).toBeVisible();
 
-  await dialog.locator(".item").filter({ hasText: "worker_1" }).getByRole("button", { name: "Disable" }).click();
-  await expect(page.locator(".el-message--success")).toContainText("Disabled worker_1");
-  await expect(dialog.locator(".item").filter({ hasText: "worker_1" }).locator(".status-label")).toHaveText("Disabled");
-  await expect(page.locator(".worker-chip-count")).toHaveText("0/2");
+  await dialog.locator(".item").filter({ hasText: "worker_2" }).getByRole("button", { name: "Disable" }).click();
+  await expect(page.locator(".el-message--success")).toContainText("Disabled worker_2");
+  await expect(dialog.locator(".item").filter({ hasText: "worker_2" }).locator(".status-label")).toHaveText("Disabled");
+  await expect(page.locator(".worker-chip-count")).toHaveText("0/1");
 });
 
 test("未配置凭据时显示引导，未命中文件显示横幅", async ({ page, world }) => {
@@ -83,9 +84,12 @@ test("未配置凭据时显示引导，未命中文件显示横幅", async ({ pa
   await openApp(page);
   const banner = page.locator(".setup-banner");
   await expect(banner).toContainText("API_ID / API_HASH");
-  await expect(page.locator(".unmatched-banner")).toHaveText(
+  const unmatched = page.locator(".unmatched-banner");
+  await expect(unmatched).toContainText(
     "2 files matched no route and were not queued. Set a chat under Route on the folder.",
   );
+  await expect(unmatched).toContainText("a.mp4");
+  await expect(unmatched.getByRole("button", { name: "Route" }).first()).toBeVisible();
   await banner.getByRole("button", { name: "Set up" }).click();
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
   await expect(page).toHaveURL(/settings=account/);
@@ -112,6 +116,9 @@ test("传输历史按今日和累计切换，并能过滤", async ({ page, world
       folder_name: "inbox",
       finished_at: "昨天",
       part_label: "第 1/2 段",
+      part_index: 1,
+      part_count: 2,
+      dest_name: "inbox chat",
     },
   ];
 
@@ -125,7 +132,8 @@ test("传输历史按今日和累计切换，并能过滤", async ({ page, world
   await page.locator(".scope-island-view-btn").click();
   const history = page.getByRole("dialog", { name: "Transfer history" });
   await expect(history).toContainText("older.mkv");
-  await expect(history).toContainText("第 1/2 段");
+  await expect(history).toContainText("Part 1/2");
+  await expect(history).toContainText("inbox chat");
   await expect(history).toContainText("Delivered");
 
   await history.getByRole("button", { name: "Today", exact: true }).click();

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import random
 from datetime import datetime
 
 from telethon import TelegramClient
@@ -20,6 +21,9 @@ from telethon.tl.types import ForumTopicDeleted
 from ...logger import get_logger
 
 logger = get_logger(__name__)
+
+# Telegram 支持的 6 种话题颜色（来自官方颜色选择器，传其他值会报错）
+_TOPIC_COLORS = [0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]
 
 # 安全熔断：最多翻页次数和话题总数上限
 _MAX_PAGES = 50
@@ -124,7 +128,13 @@ async def forum_topics(client: TelegramClient, chat_id: int) -> list[dict] | Non
 
 
 async def create_forum_topic(client: TelegramClient, chat_id: int, title: str) -> dict:
-    result = await client(CreateForumTopicRequest(peer=chat_id, title=title))
+    result = await client(
+        CreateForumTopicRequest(
+            peer=chat_id,
+            title=title,
+            icon_color=random.choice(_TOPIC_COLORS),
+        )
+    )
     topic_id = _topic_id_from_updates(result)
     logger.info("已新建话题 chat=%s topic=%s title=%s", chat_id, topic_id, title)
     return {"topic_id": topic_id, "title": title}

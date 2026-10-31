@@ -6,7 +6,7 @@
  */
 
 import { createRouter, createWebHistory } from "vue-router";
-import { authRequired, fetchAuthStatus } from "./api";
+import { authRequired, fetchAuthStatus, hasTelegramUser } from "./api";
 import LoginPage from "./pages/LoginPage.vue";
 import MonitorPage from "./pages/MonitorPage.vue";
 
@@ -48,11 +48,12 @@ router.beforeEach(async (to) => {
   }
   const ready = consoleReady(status);
   authRequired.value = !ready;
+  const userReady = ready ? await hasTelegramUser() : false;
   if (to.name === "login") {
-    if (ready) return { name: "monitor" };
+    if (ready && userReady) return { name: "monitor" };
     return true;
   }
-  if (!ready) return { name: "login" };
+  if (!ready || !userReady) return { name: "login" };
   return true;
 });
 

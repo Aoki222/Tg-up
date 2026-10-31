@@ -267,3 +267,28 @@ async def test_resume_failure_keeps_parts_and_skips_native(tmp_path: Path, monke
     assert calls["fast"] == 1
     assert client.calls == []
     assert set(transport._partial[str(video)].done) == {0, 1, 2}
+
+
+def test_send_kwargs_includes_video_attributes(tmp_path: Path, monkeypatch) -> None:
+    from telethon.tl.types import DocumentAttributeVideo
+    from src.adapters.telegram_transport import extract_video_attributes
+
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"dummy-video-data")
+    task = _task(video)
+
+    dummy_attr = DocumentAttributeVideo(duration=120, w=1920, h=1080, supports_streaming=True)
+    monkeypatch.setattr(
+        "src.adapters.telegram_transport.extract_video_attributes",
+        lambda _p: [dummy_attr],
+    )
+
+    # 1. 单文件 handle 传参，attributes 应该被正确注入
+    single_kwargs = TelegramTransport._send_kwargs(task, "dummy_handle")
+    assert "attributes" in single_kwargs
+    assert single_kwargs["attributes"] == [dummy_attr]
+    assert single_kwargs["supports_streaming"] is True
+
+    # 2. 列表（相册）传参，不应包含 attributes（避免 Telethon _send_album 崩溃）
+    album_kwargs = TelegramTransport._send_kwargs(task, ["handle1", "handle2"])
+    assert "attributes" not in album_kwargs

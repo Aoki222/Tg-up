@@ -48,6 +48,6 @@ These directories sit next to `compose.yml`. The container creates any that are 
 
 ## Where settings live
 
-`.env` holds process identity: `API_ID`, `API_HASH`, optional `TELEGRAM_PROXY`, and `TARGET_CHAT_ID`, the default chat used when a folder rule does not name one. The console account lives in the database, not in `.env`.
+`.env` holds process identity: `API_ID`, `API_HASH`, optional `TELEGRAM_PROXY`, and `TARGET_CHAT_ID`. `TARGET_CHAT_ID` fills `chat_id` in `upload.toml` when that value is omitted. A file is uploaded only when its folder, or a parent folder, has its own destination. The console account lives in the database, not in `.env`.
 
 Watch folders, folder rules, previews, the action after a successful upload, and queue order are edited in the web page. They are stored in `data/upload.toml` and apply without a restart.

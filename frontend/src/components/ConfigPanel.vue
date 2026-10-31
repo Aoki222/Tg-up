@@ -76,6 +76,24 @@ const form = reactive<UploadConfig>({
   drive_folders: [],
 });
 
+async function onAfterSuccess(event: Event): Promise<void> {
+  const select = event.target as HTMLSelectElement;
+  const next = select.value;
+  if (next === "delete" && form.after_success !== "delete") {
+    try {
+      await ElMessageBox.confirm(t("config.deleteConfirm"), t("config.deleteConfirmTitle"), {
+        confirmButtonText: t("common.ok"),
+        cancelButtonText: t("common.cancel"),
+        type: "warning",
+      });
+    } catch {
+      select.value = form.after_success;
+      return;
+    }
+  }
+  form.after_success = next as UploadConfig["after_success"];
+}
+
 const scheduleOrderHint = computed(() => {
   if (form.schedule_order === "natural") return t("config.order.natural");
   if (form.schedule_order === "created") return t("config.order.created");
@@ -803,7 +821,7 @@ defineExpose({
               <div class="row-info-sub">{{ t("config.afterSub") }}</div>
             </div>
             <div class="row-ctrl-col w-56">
-              <select v-model="form.after_success" class="app-select">
+              <select class="app-select" :value="form.after_success" @change="onAfterSuccess">
                 <option value="keep">{{ t("config.afterKeep") }}</option>
                 <option value="delete">{{ t("config.afterDelete") }}</option>
                 <option value="move_to_archive">{{ t("config.afterMove") }}</option>

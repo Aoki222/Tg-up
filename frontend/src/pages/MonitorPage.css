@@ -68,6 +68,38 @@
   color: var(--warn);
 }
 
+.unmatched-banner p {
+  margin: 0;
+}
+
+.unmatched-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.unmatched-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.unmatched-list button {
+  border: 0;
+  background: transparent;
+  color: var(--warn);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.unmatched-more {
+  margin-top: 6px;
+}
+
 /* ══════════════════════════════════════════════════════════
    目录栏拖拽分割条
 ══════════════════════════════════════════════════════════ */

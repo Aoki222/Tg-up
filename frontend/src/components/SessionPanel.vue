@@ -26,6 +26,7 @@ import { t } from "../i18n";
 import {
   cancelSessionLogin,
   pollSessionLogin,
+  saveIdentity,
   startSessionLogin,
   submitSessionCode,
   submitSessionPassword,
@@ -35,10 +36,20 @@ import type { SessionLoginResult, SessionMode } from "../types";
 
 // ── 事件声明 ───────────────────────────────────────────────────
 
+const props = defineProps<{
+  /** 登录页强制扫个人号二维码，不能关掉，也不能改用 Bot。 */
+  forcedQr?: boolean;
+}>();
+
 const emit = defineEmits<{
   /** 通知父组件关闭当前模态弹窗 */
   close: [];
+  done: [];
 }>();
+
+const apiId = ref<number | undefined>(undefined);
+const apiHash = ref("");
+const savingApi = ref(false);
 
 // ── 响应式状态 ─────────────────────────────────────────────────
 
@@ -107,6 +118,10 @@ function handleResult(result: SessionLoginResult): void {
   if (result.done) {
     ElMessage.success(result.message || t("session.created"));
     void reloadSessionAccounts();
+    if (props.forcedQr) {
+      emit("done");
+      return;
+    }
     close();
     return;
   }
@@ -308,8 +323,32 @@ watch(
   },
 );
 
-onMounted(() => {
-  void loadMeta();
+async function saveApi(): Promise<void> {
+  if (!apiId.value || apiId.value < 1) {
+    ElMessage.error(t("settings.credentials.badId"));
+    return;
+  }
+  savingApi.value = true;
+  try {
+    await saveIdentity({ api_id: apiId.value, api_hash: apiHash.value.trim() });
+    apiHash.value = "";
+    ElMessage.success(t("settings.credentials.saved"));
+    await loadMeta();
+    if (props.forcedQr && apiConfigured.value) {
+      form.mode = "qr";
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t("settings.credentials.saveFailed"));
+  } finally {
+    savingApi.value = false;
+  }
+}
+
+onMounted(async () => {
+  await loadMeta();
+  if (props.forcedQr && apiConfigured.value) {
+    form.mode = "qr";
+  }
 });
 onUnmounted(() => {
   stopQrPoll();
@@ -323,8 +362,8 @@ onUnmounted(() => {
   <el-card shadow="never" class="session-card">
     <template #header>
       <div class="head">
-        <span>{{ t("session.title") }}</span>
-        <el-button size="small" @click="close">{{ t("session.close") }}</el-button>
+        <span>{{ props.forcedQr ? t("session.forceTitle") : t("session.title") }}</span>
+        <el-button v-if="!props.forcedQr" size="small" @click="close">{{ t("session.close") }}</el-button>
       </div>
     </template>
 
@@ -336,8 +375,25 @@ onUnmounted(() => {
       class="banner"
     >
       <template #title>{{ t("session.needApi") }}</template>
-      <router-link to="/settings/account">{{ t("session.goSettings") }}</router-link>
+      <router-link v-if="!props.forcedQr" to="/settings/account">{{ t("session.goSettings") }}</router-link>
     </el-alert>
+    <el-form v-if="props.forcedQr && apiConfigured === false" label-position="top" class="form" @submit.prevent="saveApi">
+      <el-form-item :label="t('settings.credentials.apiId')">
+        <el-input v-model.number="apiId" />
+      </el-form-item>
+      <el-form-item label="API_HASH">
+        <el-input v-model="apiHash" show-password />
+      </el-form-item>
+      <el-button type="primary" native-type="submit" :loading="savingApi">{{ t("settings.credentials.save") }}</el-button>
+    </el-form>
+    <el-alert
+      v-else-if="props.forcedQr"
+      :title="t('session.forceHint')"
+      type="info"
+      show-icon
+      :closable="false"
+      class="banner"
+    />
     <el-alert
       v-else
       :title="t('session.hint')"
@@ -348,7 +404,7 @@ onUnmounted(() => {
     />
 
     <!-- 已有 Session 标签一览 -->
-    <div class="account-lists" v-if="accounts.length || existing.length">
+    <div class="account-lists" v-if="!props.forcedQr && (accounts.length || existing.length)">
       <div>
         <div class="list-label">{{ t("session.users") }}</div>
         <div class="existing">
@@ -376,7 +432,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 步骤 1：初始输入表单 -->
-    <el-form v-if="step === 'form'" label-position="top" class="form">
+    <el-form v-if="step === 'form' && !props.forcedQr" label-position="top" class="form">
       <el-form-item :label="t('session.mode')">
         <el-radio-group v-model="form.mode">
           <el-radio-button value="bot">Bot Token</el-radio-button>
@@ -418,7 +474,7 @@ onUnmounted(() => {
       <p class="qr-hint">{{ t("session.qrHelp") }}</p>
       <p v-if="qrSecondsLeft > 0" class="qr-hint">{{ t("session.qrExpires", { n: qrSecondsLeft }) }}</p>
       <p v-else class="qr-hint">{{ t("session.qrExpired") }}</p>
-      <el-button @click="close">{{ t("session.cancel") }}</el-button>
+      <el-button v-if="!props.forcedQr" @click="close">{{ t("session.cancel") }}</el-button>
     </div>
 
     <!-- 步骤 2：提交手机验证码 -->
@@ -434,8 +490,8 @@ onUnmounted(() => {
         <el-input v-model="code" maxlength="8" :placeholder="t('session.codePlaceholder')" />
       </el-form-item>
       <el-button type="primary" :loading="loading" @click="sendCode">{{ t("session.submitCode") }}</el-button>
-      <el-button @click="backToPhone">{{ t("session.backPhone") }}</el-button>
-      <el-button @click="close">{{ t("session.cancel") }}</el-button>
+      <el-button v-if="!props.forcedQr" @click="backToPhone">{{ t("session.backPhone") }}</el-button>
+      <el-button v-if="!props.forcedQr" @click="close">{{ t("session.cancel") }}</el-button>
     </el-form>
 
     <!-- 步骤 3：提交两步验证密码 -->
@@ -444,8 +500,8 @@ onUnmounted(() => {
         <el-input v-model="password" show-password :placeholder="t('session.passwordPlaceholder')" />
       </el-form-item>
       <el-button type="primary" :loading="loading" @click="sendPassword">{{ t("session.submitPassword") }}</el-button>
-      <el-button @click="backToPhone">{{ t("session.backPhone") }}</el-button>
-      <el-button @click="close">{{ t("session.cancel") }}</el-button>
+      <el-button v-if="!props.forcedQr" @click="backToPhone">{{ t("session.backPhone") }}</el-button>
+      <el-button v-if="!props.forcedQr" @click="close">{{ t("session.cancel") }}</el-button>
     </el-form>
   </el-card>
 </template>

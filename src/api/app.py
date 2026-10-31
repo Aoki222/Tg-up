@@ -71,6 +71,10 @@ def create_api(
     disable_worker=None,
     enable_worker=None,
     delete_worker=None,
+    close_user=None,
+    open_user=None,
+    join_upload=None,
+    leave_upload=None,
     task_repository=None,
     reschedule=None,
     dispatch_oversized=None,
@@ -90,6 +94,10 @@ def create_api(
     app.state.disable_worker = disable_worker
     app.state.enable_worker = enable_worker
     app.state.delete_worker = delete_worker
+    app.state.close_user = close_user
+    app.state.open_user = open_user
+    app.state.join_upload = join_upload
+    app.state.leave_upload = leave_upload
     app.state.task_repository = task_repository
     app.state.reschedule = reschedule
     app.state.dispatch_oversized = dispatch_oversized

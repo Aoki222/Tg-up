@@ -10,6 +10,7 @@ session 被热卸载后不会拿着死连接，因为每次现取。
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -22,6 +23,9 @@ from ..database.connection import pool_is_open
 from ..logger import get_logger
 
 logger = get_logger(__name__)
+
+# Telegram 支持的 6 种话题颜色（来自官方颜色选择器，传其他值会报错）
+_TOPIC_COLORS = [0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]
 
 # 启动时入库和连接 session 同时开始。磁盘上已有 *.session 也不代表客户端已经进池。
 _CLIENT_WAIT_SECONDS = 20.0
@@ -93,6 +97,7 @@ class TopicCreator:
                     CreateForumTopicRequest(
                         peer=chat_id,
                         title=folder_name,
+                        icon_color=random.choice(_TOPIC_COLORS),
                     )
                 )
                 topic_id = self._extract_topic_id(result)

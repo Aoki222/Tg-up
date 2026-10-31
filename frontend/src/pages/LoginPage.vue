@@ -5,13 +5,15 @@
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import ConsoleAuthCard from "../components/ConsoleAuthCard.vue";
-import { fetchAuthStatus, type AuthStatus } from "../api";
+import SessionPanel from "../components/SessionPanel.vue";
+import { fetchAuthStatus, hasTelegramUser, type AuthStatus } from "../api";
 import { locale, setLocale, t } from "../i18n";
 
 defineOptions({ name: "LoginPage" });
 
 const router = useRouter();
 const status = ref<AuthStatus | null>(null);
+const needsTelegram = ref(false);
 
 function signedIn(value: AuthStatus | null): boolean {
   return Boolean(value?.authenticated && !value.must_change_password);
@@ -28,9 +30,16 @@ async function load(): Promise<void> {
       must_change_password: false,
     };
   }
-  if (signedIn(status.value)) {
-    await router.replace({ name: "monitor" });
+  if (!signedIn(status.value)) {
+    needsTelegram.value = false;
+    return;
   }
+  if (await hasTelegramUser()) {
+    needsTelegram.value = false;
+    await router.replace({ name: "monitor" });
+    return;
+  }
+  needsTelegram.value = true;
 }
 
 onMounted(() => {
@@ -52,7 +61,8 @@ async function onDone(): Promise<void> {
       </div>
     </header>
     <main class="login-main">
-      <ConsoleAuthCard v-if="status" :status="status" @done="onDone" />
+      <SessionPanel v-if="needsTelegram" forced-qr @done="onDone" />
+      <ConsoleAuthCard v-else-if="status" :status="status" @done="onDone" />
     </main>
   </div>
 </template>
@@ -114,7 +124,8 @@ async function onDone(): Promise<void> {
   padding: 24px;
 }
 
-.login-main :deep(.auth-card) {
+.login-main :deep(.auth-card),
+.login-main :deep(.session-card) {
   width: min(440px, 100%);
 }
 </style>

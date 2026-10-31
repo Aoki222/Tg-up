@@ -55,3 +55,31 @@ def register(app: FastAPI) -> None:
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"ok": True, "name": name, "deleted": True}
+
+    async def _account_op(name: str, attr: str) -> dict:
+        op = getattr(app.state, attr, None)
+        if op is None:
+            raise HTTPException(status_code=503, detail="个人号控制未就绪")
+        try:
+            await op(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"找不到账号: {name}") from None
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True, "name": name}
+
+    @app.post("/api/accounts/{name}/open", dependencies=[Depends(require_token)])
+    async def open_user(name: str = FastPath(..., pattern=r"^[a-zA-Z0-9_.-]+$")) -> dict:
+        return await _account_op(name, "open_user")
+
+    @app.post("/api/accounts/{name}/close", dependencies=[Depends(require_token)])
+    async def close_user(name: str = FastPath(..., pattern=r"^[a-zA-Z0-9_.-]+$")) -> dict:
+        return await _account_op(name, "close_user")
+
+    @app.post("/api/accounts/{name}/upload", dependencies=[Depends(require_token)])
+    async def join_upload(name: str = FastPath(..., pattern=r"^[a-zA-Z0-9_.-]+$")) -> dict:
+        return await _account_op(name, "join_upload")
+
+    @app.delete("/api/accounts/{name}/upload", dependencies=[Depends(require_token)])
+    async def leave_upload(name: str = FastPath(..., pattern=r"^[a-zA-Z0-9_.-]+$")) -> dict:
+        return await _account_op(name, "leave_upload")

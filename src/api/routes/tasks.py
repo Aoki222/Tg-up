@@ -12,7 +12,7 @@ from ...adapters.progress import ProgressHub
 from ...domain.slices import MSG_TOO_DENSE, minimum_slice_parts
 from ..app_auth import require_token
 from ..models import FailedIdsBody, OversizedIdsBody, SliceBody
-from ..present import _board_item, _sse
+from ..present import _board_item, _resolve_dest_name, _sse, telegram_message_url
 from ..responses import BoardSnapshotModel, StatusPageModel, publish
 
 
@@ -92,6 +92,8 @@ def register(app: FastAPI) -> None:
         if scope not in {"today", "all"}:
             raise HTTPException(status_code=400, detail="scope 只能是 today 或 all")
         rows, total = await repo.list_success_page(scope=scope, page=page, page_size=page_size)
+        hub = app.state.settings_hub
+        settings = hub.get() if hub is not None else None
         items = []
         for row in rows:
             part_index = row.get("part_index")
@@ -99,6 +101,12 @@ def register(app: FastAPI) -> None:
             part_label = None
             if part_index and part_count:
                 part_label = f"第 {int(part_index)}/{int(part_count)} 段"
+            dest_id = str(row.get("dest_id") or "")
+            platform = str(row.get("platform") or "telegram")
+            remote_id = row.get("remote_id")
+            dest_name = dest_id
+            if settings is not None and dest_id:
+                dest_name = _resolve_dest_name(platform, dest_id, settings)
             items.append(
                 {
                     "id": int(row["id"]),
@@ -106,7 +114,12 @@ def register(app: FastAPI) -> None:
                     "file_size": int(row.get("file_size") or 0),
                     "folder_name": row.get("folder_name"),
                     "finished_at": row.get("finished_at"),
+                    "part_index": int(part_index) if part_index else None,
+                    "part_count": int(part_count) if part_count else None,
                     "part_label": part_label,
+                    "dest_id": dest_id,
+                    "dest_name": dest_name,
+                    "message_url": telegram_message_url(dest_id, None if remote_id is None else str(remote_id)),
                 }
             )
         return {"items": items, "total": total, "page": page, "page_size": page_size}

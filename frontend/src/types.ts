@@ -103,6 +103,12 @@ export interface WorkerSnapshot {
   name: string;
   /** Telegram 账号用户名（带 @，若未设置则为 null） */
   username: string | null;
+  /** bot、user 或 unknown。旧快照可能没有这个字段。 */
+  kind?: "bot" | "user" | "unknown" | string;
+  /** 个人号是否已加入上传队列。机器人始终视为在队列里。 */
+  upload?: boolean;
+  /** 个人号是否被关掉。关掉后不连接。 */
+  closed?: boolean;
   /** 管理员手动启用状态：true=启用, false=禁用 */
   enabled: boolean;
   /** 底层 Telethon 客户端连接并正在轮询：true=活跃运行中 */

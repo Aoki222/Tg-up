@@ -352,7 +352,80 @@ class TelegramTransport:
         }
         if task.destination.topic_id is not None:
             send_kwargs["reply_to"] = task.destination.topic_id
+
+        if not isinstance(file, (list, tuple)):
+            attrs = extract_video_attributes(task.artifacts.video_path)
+            if attrs:
+                send_kwargs["attributes"] = attrs
+
         return send_kwargs
+
+
+def extract_video_attributes(video_path: str | Path | None) -> list:
+    """提取视频时长与宽高，返回 DocumentAttribute 列表以便 Telegram 正确建立播放进度和流式播放。"""
+    if not video_path:
+        return []
+    path_obj = Path(video_path)
+    if not path_obj.is_file():
+        return []
+    suffix = path_obj.suffix.lower()
+    if suffix not in _VIDEO_SUFFIXES:
+        return []
+
+    try:
+        from telethon import utils
+        from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
+
+        attrs, _ = utils.get_attributes(str(path_obj), supports_streaming=True)
+        video_attrs = [a for a in attrs if isinstance(a, DocumentAttributeVideo)]
+        if video_attrs and video_attrs[0].duration > 0 and video_attrs[0].w > 1:
+            return [a for a in attrs if not isinstance(a, DocumentAttributeFilename)]
+    except Exception:
+        logger.debug("hachoir 提取视频属性失败: %s", video_path, exc_info=True)
+
+    try:
+        import json
+        import subprocess
+
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,duration",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            str(path_obj),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            data = json.loads(res.stdout)
+            streams = data.get("streams", [])
+            fmt = data.get("format", {})
+            w = int(streams[0].get("width", 1)) if streams else 1
+            h = int(streams[0].get("height", 1)) if streams else 1
+            dur_val = fmt.get("duration") or (streams[0].get("duration") if streams else None) or 0
+            dur_int = int(float(dur_val))
+            if dur_int > 0:
+                from telethon.tl.types import DocumentAttributeVideo
+
+                return [
+                    DocumentAttributeVideo(
+                        duration=dur_int,
+                        w=w,
+                        h=h,
+                        supports_streaming=True,
+                    )
+                ]
+    except Exception:
+        logger.debug("ffprobe 提取视频属性失败: %s", video_path, exc_info=True)
+
+    return []
+
 
 
 def _rename_input_file(handle, original_path: str):

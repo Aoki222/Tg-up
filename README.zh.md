@@ -48,6 +48,6 @@ docker compose up -d
 
 ## 配置放在哪
 
-`.env` 里是进程身份：`API_ID`、`API_HASH`、可选的 `TELEGRAM_PROXY`，以及目录策略没有指定目标群时使用的 `TARGET_CHAT_ID`。控制台账号存在数据库里，不写在 `.env`。
+`.env` 里是进程身份：`API_ID`、`API_HASH`、可选的 `TELEGRAM_PROXY`，以及 `TARGET_CHAT_ID`。`upload.toml` 没写 `chat_id` 时用它补上。文件只有在自己的目录或上级目录设了投递目标时才会上传。控制台账号存在数据库里，不写在 `.env`。
 
 监听目录、目录策略、封面、上传成功后的处理、上传顺序在网页里修改，写入 `data/upload.toml`，保存后生效，不用重启。

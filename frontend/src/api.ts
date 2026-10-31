@@ -148,6 +148,22 @@ export async function deleteWorker(name: string): Promise<void> {
   await apiClient.delete(`/api/workers/${encodeURIComponent(name)}`);
 }
 
+export async function openUserAccount(name: string): Promise<void> {
+  await apiClient.post(`/api/accounts/${encodeURIComponent(name)}/open`);
+}
+
+export async function closeUserAccount(name: string): Promise<void> {
+  await apiClient.post(`/api/accounts/${encodeURIComponent(name)}/close`);
+}
+
+export async function joinUserUpload(name: string): Promise<void> {
+  await apiClient.post(`/api/accounts/${encodeURIComponent(name)}/upload`);
+}
+
+export async function leaveUserUpload(name: string): Promise<void> {
+  await apiClient.delete(`/api/accounts/${encodeURIComponent(name)}/upload`);
+}
+
 // ── 上传配置 (upload.toml) 相关 API ────────────────────────────
 
 function settleDelaySeconds(value: unknown): number {
@@ -363,6 +379,15 @@ export async function fetchSessionMeta(): Promise<SessionMeta> {
   return res.data;
 }
 
+export async function hasTelegramUser(): Promise<boolean> {
+  try {
+    const meta = await fetchSessionMeta();
+    return (meta.accounts ?? []).some((item) => item.kind === "user");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 第一步：发起新的 Session 登录握手（Bot Token 校验或向手机号下发验证码）
  */
@@ -499,6 +524,10 @@ export interface SuccessRecord {
   folder_name: string | null;
   finished_at: string | null;
   part_label: string | null;
+  part_index?: number | null;
+  part_count?: number | null;
+  dest_name?: string | null;
+  message_url?: string | null;
 }
 
 export interface SuccessPage {

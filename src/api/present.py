@@ -70,6 +70,19 @@ def _board_item(row: dict, progress: UploadProgress | None) -> dict:
     return item
 
 
+def telegram_message_url(dest_id: str, remote_id: str | None) -> str | None:
+    """超级群和频道的网页链接。其它聊天没有稳定的公开地址。"""
+    if remote_id is None or not str(remote_id).isdigit():
+        return None
+    raw = str(dest_id or "").strip()
+    if not raw.lstrip("-").isdigit():
+        return None
+    text = str(int(raw))
+    if not text.startswith("-100") or len(text) <= 4:
+        return None
+    return f"https://t.me/c/{text[4:]}/{int(remote_id)}"
+
+
 def _resolve_dest_name(platform: str, dest_id: str, settings) -> str:
     if platform == "telegram":
         try:

@@ -4,7 +4,14 @@ import json
 
 from src.adapters.progress import ProgressHub
 from src.api.app import create_api
+from src.api.present import telegram_message_url
 from src.api.stream_ticket import StreamTickets
+
+
+def test_telegram_message_url_uses_the_public_channel_id() -> None:
+    assert telegram_message_url("-1001234567890", "42") == "https://t.me/c/1234567890/42"
+    assert telegram_message_url("123", "42") is None
+    assert telegram_message_url("-1001234567890", None) is None
 
 
 def test_stream_ticket_expires() -> None:
