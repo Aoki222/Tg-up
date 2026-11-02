@@ -190,6 +190,8 @@ class TelegramTransport:
         on_progress: Callable[[float, float], None] | None,
     ) -> SendResult:
         """先上传所有媒体句柄，再用同一次 send_file 提交单文件或相册。"""
+        video_path = task.artifacts.video_path or files[0]
+        page_path = task.artifacts.page_path
         total_size = sum(Path(path).stat().st_size for path in files)
         completed_size = 0
         handles = []
@@ -226,8 +228,9 @@ class TelegramTransport:
             handles.append(_rename_input_file(handle, path))
             completed_size += Path(path).stat().st_size
 
+        thumb_handle = await self._upload_thumb(video_path, page_path)
         try:
-            return await self._submit_media(task, handles)
+            return await self._submit_media(task, handles, thumb_handle=thumb_handle)
         except FloodWaitError:
             raise
         except Exception as error:
@@ -235,13 +238,15 @@ class TelegramTransport:
                 raise _FastMessageError(str(error)) from error
             if _is_disconnect_error(error):
                 raise
-            return await self._send_album_failure_fallback(task, handles, error)
+            return await self._send_album_failure_fallback(task, handles, error, thumb_handle=thumb_handle)
 
-    async def _send_album_failure_fallback(self, task: Task, handles: list, album_error: Exception) -> SendResult:
+    async def _send_album_failure_fallback(self, task: Task, handles: list, album_error: Exception, thumb_handle=None) -> SendResult:
         """相册失败后优先保住视频，再尝试用两个句柄重新提交相册。"""
         logger.warning("相册提交失败，先单独发送视频: %s", album_error)
         try:
-            video_message = await self.telegram_client.send_file(**self._send_kwargs(task, handles[0]))
+            video_message = await self.telegram_client.send_file(
+                **self._send_kwargs(task, handles[0], thumb_handle=thumb_handle)
+            )
         except FloodWaitError:
             raise
         except Exception as video_error:
@@ -249,7 +254,7 @@ class TelegramTransport:
                 raise
             logger.warning("单独发送视频失败，重新尝试整组句柄: %s", video_error)
             try:
-                messages = await self.telegram_client.send_file(**self._send_kwargs(task, handles))
+                messages = await self.telegram_client.send_file(**self._send_kwargs(task, handles, thumb_handle=thumb_handle))
             except FloodWaitError:
                 raise
             except Exception as retry_error:
@@ -268,8 +273,12 @@ class TelegramTransport:
         on_progress: Callable[[float, float], None] | None,
     ) -> SendResult:
         """FastTelethon 分块失败后的原生整组回退路径。"""
+        video_path = task.artifacts.video_path or files[0]
+        page_path = task.artifacts.page_path
+        thumb_handle = await self._upload_thumb(video_path, page_path)
+
         prepared, cleanup = _prepare_native_files(files)
-        send_kwargs = self._send_kwargs(task, prepared if len(prepared) > 1 else prepared[0])
+        send_kwargs = self._send_kwargs(task, prepared if len(prepared) > 1 else prepared[0], thumb_handle=thumb_handle)
         if on_progress is not None:
             send_kwargs["progress_callback"] = on_progress
         try:
@@ -289,7 +298,7 @@ class TelegramTransport:
             if len(prepared) > 1 and _is_album_invalid(error):
                 logger.warning("原生相册提交失败，改为只发视频: %s", error)
                 return await self._send_native_video_only(
-                    task, files[0], timeout_seconds, on_progress
+                    task, files[0], timeout_seconds, on_progress, thumb_handle=thumb_handle
                 )
             logger.exception("Telegram 原生发送失败: %s", files[0])
             return SendFailed(str(error))
@@ -305,10 +314,11 @@ class TelegramTransport:
         video_path: str,
         timeout_seconds: int,
         on_progress: Callable[[float, float], None] | None,
+        thumb_handle=None,
     ) -> SendResult:
         """相册被拒后只发视频，避免 500MB+ 传完却整组失败。"""
         prepared, cleanup = _prepare_native_files([video_path])
-        send_kwargs = self._send_kwargs(task, prepared[0])
+        send_kwargs = self._send_kwargs(task, prepared[0], thumb_handle=thumb_handle)
         if on_progress is not None:
             send_kwargs["progress_callback"] = on_progress
         try:
@@ -333,15 +343,46 @@ class TelegramTransport:
         logger.warning("视频已发送，封面未随相册发送: %s", task.file_path)
         return SendOk(video_message.id)
 
-    async def _submit_media(self, task: Task, handles: list) -> SendResult:
+    async def _upload_thumb(self, video_path: str, page_path: str | None = None):
+        """确保本地有 _thumb.jpg 并上传，返回 InputFile 句柄。"""
+        if not hasattr(self.telegram_client, "upload_file"):
+            return None
+        try:
+            from ..utils.video_preview import resolve_thumb_path, VideoThumbnail
+            thumb_file = resolve_thumb_path(video_path)
+            if not thumb_file.is_file():
+                await VideoThumbnail().ensure_thumbnail_async(
+                    Path(video_path), Path(page_path) if page_path else None
+                )
+            if thumb_file.is_file():
+                return await self.telegram_client.upload_file(str(thumb_file))
+        except Exception:
+            logger.debug("上传视频缩略图失败: %s", video_path, exc_info=True)
+        return None
+
+    async def _submit_media(self, task: Task, handles: list, thumb_handle=None) -> SendResult:
+        if len(handles) > 1:
+            from telethon.tl.types import InputMediaUploadedDocument
+            attrs = extract_video_attributes(task.artifacts.video_path)
+            v_media = InputMediaUploadedDocument(
+                file=handles[0],
+                mime_type="video/mp4",
+                attributes=attrs,
+                thumb=thumb_handle,
+                nosound_video=None,
+            )
+            files = [v_media, *handles[1:]]
+        else:
+            files = handles[0]
+
         sent_messages = await self.telegram_client.send_file(
-            **self._send_kwargs(task, handles if len(handles) > 1 else handles[0])
+            **self._send_kwargs(task, files, thumb_handle=thumb_handle)
         )
         video_message = sent_messages[0] if isinstance(sent_messages, list) else sent_messages
         return SendOk(video_message.id)
 
     @staticmethod
-    def _send_kwargs(task: Task, file) -> dict:
+    def _send_kwargs(task: Task, file, thumb_handle=None) -> dict:
         """构建 Fast 和原生路径共用的目标、caption、话题参数。"""
         send_kwargs: dict = {
             "entity": task.destination.chat_id,
@@ -357,6 +398,8 @@ class TelegramTransport:
             attrs = extract_video_attributes(task.artifacts.video_path)
             if attrs:
                 send_kwargs["attributes"] = attrs
+            if thumb_handle is not None:
+                send_kwargs["thumb"] = thumb_handle
 
         return send_kwargs
 

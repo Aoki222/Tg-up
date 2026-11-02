@@ -283,12 +283,47 @@ def test_send_kwargs_includes_video_attributes(tmp_path: Path, monkeypatch) -> N
         lambda _p: [dummy_attr],
     )
 
-    # 1. 单文件 handle 传参，attributes 应该被正确注入
-    single_kwargs = TelegramTransport._send_kwargs(task, "dummy_handle")
+    # 1. 单文件 handle 传参，attributes 和 thumb 应该被正确注入
+    single_kwargs = TelegramTransport._send_kwargs(task, "dummy_handle", thumb_handle="my_thumb")
     assert "attributes" in single_kwargs
     assert single_kwargs["attributes"] == [dummy_attr]
     assert single_kwargs["supports_streaming"] is True
+    assert single_kwargs["thumb"] == "my_thumb"
 
-    # 2. 列表（相册）传参，不应包含 attributes（避免 Telethon _send_album 崩溃）
+    # 2. 列表（相册）传参，不应在最外层包含 attributes（避免 Telethon _send_album 崩溃）
     album_kwargs = TelegramTransport._send_kwargs(task, ["handle1", "handle2"])
     assert "attributes" not in album_kwargs
+
+
+async def test_submit_media_wraps_video_with_thumb_in_album(tmp_path: Path, monkeypatch) -> None:
+    from telethon.tl.types import InputMediaUploadedDocument, DocumentAttributeVideo
+
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"dummy-video-data")
+    task = _task(video)
+
+    dummy_attr = DocumentAttributeVideo(duration=120, w=1920, h=1080, supports_streaming=True)
+    monkeypatch.setattr(
+        "src.adapters.telegram_transport.extract_video_attributes",
+        lambda _p: [dummy_attr],
+    )
+
+    client = _FakeClient()
+    client.fail_lists = False
+    transport = TelegramTransport(client)
+
+    handles = ["video_handle", "photo_handle"]
+    await transport._submit_media(task, handles, thumb_handle="mock_thumb_handle")
+
+    assert len(client.calls) == 1
+    files = client.calls[0]["file"]
+    assert isinstance(files, list)
+    assert len(files) == 2
+    # 第一项应包装为带有 thumb 的 InputMediaUploadedDocument
+    v_media = files[0]
+    assert isinstance(v_media, InputMediaUploadedDocument)
+    assert v_media.file == "video_handle"
+    assert v_media.thumb == "mock_thumb_handle"
+    assert v_media.attributes == [dummy_attr]
+    # 第二项原封不动保留
+    assert files[1] == "photo_handle"

@@ -82,3 +82,48 @@ async def test_missing_duration_still_seeks_not_fps_filter(tmp_path: Path, monke
     assert len(frames) == 15
     assert all("-ss" in arguments and arguments.index("-ss") < arguments.index("-i") for arguments in seen)
     assert all("fps=" not in " ".join(arguments) for arguments in seen)
+
+
+async def test_video_thumbnail_from_image(tmp_path: Path) -> None:
+    from PIL import Image
+    from src.utils.video_preview import VideoThumbnail
+
+    # 创建一个 1920x1080 的单帧图
+    src_img = tmp_path / "movie_single.jpg"
+    img = Image.new("RGB", (1920, 1080), color="blue")
+    img.save(src_img, "JPEG")
+
+    thumb = VideoThumbnail(page_dir=tmp_path)
+    res = await thumb.ensure_thumbnail_async(tmp_path / "movie.mp4", existing_page_path=src_img)
+    assert res is not None
+    assert res.is_file()
+    assert res.name == "movie_thumb.jpg"
+
+    with Image.open(res) as out_img:
+        w, h = out_img.size
+        assert max(w, h) <= 320
+        # 1920x1080 缩放到 320 宽，高度应为 180
+        assert w == 320
+        assert h == 180
+
+
+async def test_video_thumbnail_extract_from_video(tmp_path: Path, monkeypatch) -> None:
+    from src.utils.video_preview import VideoThumbnail
+
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"dummy")
+
+    seen_args = []
+    async def fake_ffmpeg(arguments: list[str], ffmpeg_path: str = "ffmpeg") -> None:
+        seen_args.append(arguments)
+        Path(arguments[-1]).write_bytes(b"jpeg-data")
+
+    monkeypatch.setattr("src.utils.video_preview.run_ffmpeg_command", fake_ffmpeg)
+
+    thumb = VideoThumbnail(page_dir=tmp_path)
+    res = await thumb.ensure_thumbnail_async(video)
+    assert res is not None
+    assert res.is_file()
+    assert len(seen_args) == 1
+    assert "-vf" in seen_args[0]
+    assert "scale='min(320,iw)':-2" in seen_args[0]

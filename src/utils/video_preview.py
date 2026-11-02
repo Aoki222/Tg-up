@@ -322,3 +322,79 @@ class GridPreview:
                 frame_paths = await self.extract_interval_frames(video_path, Path(temp_directory))
                 return await asyncio.to_thread(self.merge_frames_to_grid, frame_paths, output_path)
 
+
+
+
+def resolve_thumb_path(video_path: Path | str, page_dir: Path | None = None) -> Path:
+    return resolve_page_output(Path(video_path), "_thumb.jpg", None, page_dir)
+
+
+class VideoThumbnail:
+    """职责：生成轻量级视频缩略图（≤320px，用于 Telegram 视频原生内嵌 thumb）。"""
+
+    MAX_DIMENSION = 320
+    JPEG_QUALITY = 80
+
+    def __init__(self, ffmpeg_path: str = "ffmpeg", page_dir: Path | None = None):
+        self.ffmpeg_path = ffmpeg_path
+        self.page_dir = page_dir
+
+    def create_from_image(self, source_image_path: Path, output_path: Path) -> Path:
+        """从已有的图片（如 _single.jpg）快速缩放生成，耗时极短（<5ms）。"""
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(source_image_path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((self.MAX_DIMENSION, self.MAX_DIMENSION), Image.Resampling.LANCZOS)
+            img.save(output_path, "JPEG", quality=self.JPEG_QUALITY, optimize=True)
+        logger.info("已生成视频缩略图（从现有图片缩放）: %s -> %s", source_image_path, output_path)
+        return output_path
+
+    async def extract_from_video(self, video_path: Path, output_path: Path | None = None) -> Path:
+        """直接从视频第 1 秒抽取 1 帧并限制最大分辨率为 320。"""
+        video_path = Path(video_path)
+        output_path = resolve_page_output(video_path, "_thumb.jpg", output_path, self.page_dir)
+        if not video_path.is_file():
+            raise FileNotFoundError(f"视频不存在：{video_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        vf_filter = f"scale='min({self.MAX_DIMENSION},iw)':-2"
+        await run_ffmpeg_command(
+            [
+                "-ss",
+                "1",
+                "-i",
+                str(video_path),
+                "-vframes",
+                "1",
+                "-vf",
+                vf_filter,
+                "-q:v",
+                "4",
+                str(output_path),
+            ],
+            self.ffmpeg_path,
+        )
+        if not output_path.is_file():
+            raise RuntimeError(f"缩略图未生成：{output_path}")
+        logger.info("单帧缩略图提取完成：%s -> %s", video_path, output_path)
+        return output_path
+
+    async def ensure_thumbnail_async(self, video_path: Path, existing_page_path: Path | None = None) -> Path | None:
+        """确保生成 _thumb.jpg：若已有 _single.jpg 则无损缩放，否则直接提取。"""
+        video_path = Path(video_path)
+        output_path = resolve_page_output(video_path, "_thumb.jpg", None, self.page_dir)
+        if output_path.is_file():
+            return output_path
+
+        if existing_page_path and Path(existing_page_path).is_file():
+            if str(existing_page_path).endswith("_single.jpg"):
+                try:
+                    return await asyncio.to_thread(self.create_from_image, Path(existing_page_path), output_path)
+                except Exception as err:
+                    logger.warning("从单帧图生成缩略图失败，尝试直接从视频提取: %s", err)
+
+        try:
+            return await self.extract_from_video(video_path, output_path)
+        except Exception as err:
+            logger.warning("从视频提取缩略图失败: %s", err)
+            return None

@@ -14,7 +14,7 @@ from ...domain.caption import resolve_grid_layout
 from ...domain.settings_hub import SettingsHub
 from ...logger import get_logger
 from ...ports.rescheduler import Rescheduler
-from ...utils.video_preview import FirstFramePreview, GridPreview, NoVideoStreamError
+from ...utils.video_preview import FirstFramePreview, GridPreview, NoVideoStreamError, VideoThumbnail
 
 logger = get_logger(__name__)
 
@@ -114,6 +114,12 @@ class PreviewPool:
                 show_metadata=settings.grid_metadata,
                 page_dir=page_dir,
             ).build_content_page_async(job.file_path, None)
+        try:
+            await VideoThumbnail(page_dir=page_dir).ensure_thumbnail_async(
+                job.file_path, Path(page_path) if page_path else None
+            )
+        except Exception:
+            logger.debug("生成视频缩略图失败（不影响主流程）", exc_info=True)
         await self.task_repository.update_preview(
             job.task_id, str(page_path) if page_path else None, True
         )
