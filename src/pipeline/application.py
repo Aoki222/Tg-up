@@ -590,6 +590,8 @@ class UploaderApplication:
             host=API_HOST,
             port=API_PORT,
             log_level="warning",
+            proxy_headers=True,
+            forwarded_allow_ips="*",
         )
         server = uvicorn.Server(config)
         # 信号由 Application 处理，避免 uvicorn 再抢 Ctrl+C

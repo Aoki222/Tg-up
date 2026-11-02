@@ -249,6 +249,28 @@ export function useTaskBoard() {
     });
   }
 
+  function onVisibilityOrFocus(): void {
+    if (!live || authRequired.value) return;
+    if (document.visibilityState === "visible") {
+      void refresh();
+      if (!source || source.readyState === EventSource.CLOSED) {
+        source?.close();
+        source = null;
+        beginLive();
+      }
+    }
+  }
+
+  function onOnline(): void {
+    if (!live || authRequired.value) return;
+    void refresh();
+    if (!source || source.readyState === EventSource.CLOSED) {
+      source?.close();
+      source = null;
+      beginLive();
+    }
+  }
+
   function start(): void {
     if (live) return;
     live = true;
@@ -256,6 +278,9 @@ export function useTaskBoard() {
       void refresh();
     }, 4000);
     if (ghosts.size > 0) scheduleGhostSweep();
+    document.addEventListener("visibilitychange", onVisibilityOrFocus);
+    window.addEventListener("focus", onVisibilityOrFocus);
+    window.addEventListener("online", onOnline);
     if (authRequired.value) {
       const stop = watch(authRequired, (blocked) => {
         if (blocked || !live) return;
@@ -270,6 +295,9 @@ export function useTaskBoard() {
   function stop(): void {
     if (!live) return;
     live = false;
+    document.removeEventListener("visibilitychange", onVisibilityOrFocus);
+    window.removeEventListener("focus", onVisibilityOrFocus);
+    window.removeEventListener("online", onOnline);
     source?.close();
     source = null;
     window.clearInterval(pollTimer);

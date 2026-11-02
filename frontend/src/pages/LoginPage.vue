@@ -69,11 +69,14 @@ async function onDone(): Promise<void> {
 
 <style scoped>
 .login-page {
+  min-height: 100vh;
+  min-height: 100dvh;
   height: 100%;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg, #f5f7f6);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .login-top {
@@ -127,5 +130,16 @@ async function onDone(): Promise<void> {
 .login-main :deep(.auth-card),
 .login-main :deep(.session-card) {
   width: min(440px, 100%);
+}
+
+@media (max-width: 640px) {
+  .login-top {
+    padding: 16px 20px 0;
+  }
+  .login-main {
+    padding: 16px;
+    align-items: flex-start;
+    padding-top: 28px;
+  }
 }
 </style>

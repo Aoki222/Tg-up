@@ -96,6 +96,14 @@ async def dummy_check(password: str) -> None:
 
 
 def client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
     return (request.client.host if request.client else "") or ""
 
 
@@ -306,13 +314,15 @@ async def change_username(current_password: str, username: str) -> str:
 
 
 def attach_session_cookie(response: Response, raw: str, request: Request) -> None:
+    proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_https = request.url.scheme == "https" or proto == "https"
     response.set_cookie(
         key=COOKIE_NAME,
         value=raw,
         max_age=int(SESSION_TTL.total_seconds()),
         httponly=True,
         samesite="lax",
-        secure=request.url.scheme == "https",
+        secure=is_https,
         path="/",
     )
 

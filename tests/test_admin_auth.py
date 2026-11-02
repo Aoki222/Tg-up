@@ -224,3 +224,60 @@ async def test_first_password_change_can_rename(app) -> None:
         body={"username": INITIAL_USERNAME, "password": "a-new-secret"},
     )
     assert status == 401
+
+
+def test_client_ip_prefers_x_forwarded_for() -> None:
+    from fastapi import Request
+    from src.adapters.admin_auth import client_ip
+
+    req = Request(
+        {
+            "type": "http",
+            "headers": [(b"x-forwarded-for", b"203.0.113.195, 70.41.3.18"), (b"x-real-ip", b"70.41.3.18")],
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+    assert client_ip(req) == "203.0.113.195"
+
+
+def test_client_ip_falls_back_to_x_real_ip_and_client_host() -> None:
+    from fastapi import Request
+    from src.adapters.admin_auth import client_ip
+
+    req_real = Request(
+        {
+            "type": "http",
+            "headers": [(b"x-real-ip", b"198.51.100.22")],
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+    assert client_ip(req_real) == "198.51.100.22"
+
+    req_direct = Request(
+        {
+            "type": "http",
+            "headers": [],
+            "client": ("192.168.1.100", 54321),
+        }
+    )
+    assert client_ip(req_direct) == "192.168.1.100"
+
+
+def test_attach_session_cookie_recognizes_forwarded_proto() -> None:
+    from fastapi import Request, Response
+    from src.adapters.admin_auth import COOKIE_NAME, attach_session_cookie
+
+    req_https = Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "path": "/",
+            "headers": [(b"x-forwarded-proto", b"https")],
+        }
+    )
+    res = Response()
+    attach_session_cookie(res, "test-token", req_https)
+    cookie_header = res.headers.get("set-cookie", "")
+    assert COOKIE_NAME in cookie_header
+    assert "secure" in cookie_header.lower()
+

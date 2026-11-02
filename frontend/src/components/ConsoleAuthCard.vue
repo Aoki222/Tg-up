@@ -80,28 +80,73 @@ async function submitChange(): Promise<void> {
 
     <el-form v-if="!mustChange" label-position="top" class="form" @submit.prevent="submitLogin">
       <el-form-item :label="t('auth.username')">
-        <el-input v-model="form.username" autocomplete="username" />
+        <el-input
+          v-model="form.username"
+          autocomplete="username"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
+        />
       </el-form-item>
       <el-form-item :label="t('auth.password')">
-        <el-input v-model="form.password" type="password" show-password autocomplete="current-password" />
+        <el-input
+          v-model="form.password"
+          type="password"
+          show-password
+          autocomplete="current-password"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
+        />
       </el-form-item>
-      <el-button type="primary" :loading="loading" native-type="submit">{{ t("auth.login") }}</el-button>
+      <el-button type="primary" :loading="loading" native-type="submit" class="submit-btn">{{ t("auth.login") }}</el-button>
     </el-form>
 
     <el-form v-else label-position="top" class="form" @submit.prevent="submitChange">
       <el-form-item :label="t('auth.username')">
-        <el-input v-model="form.username" autocomplete="username" maxlength="32" />
+        <el-input
+          v-model="form.username"
+          autocomplete="username"
+          maxlength="32"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
+        />
       </el-form-item>
       <el-form-item :label="t('auth.currentPassword')">
-        <el-input v-model="form.currentPassword" type="password" show-password autocomplete="current-password" />
+        <el-input
+          v-model="form.currentPassword"
+          type="password"
+          show-password
+          autocomplete="current-password"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
+        />
       </el-form-item>
       <el-form-item :label="t('auth.passwordNew')">
-        <el-input v-model="form.newPassword" type="password" show-password autocomplete="new-password" />
+        <el-input
+          v-model="form.newPassword"
+          type="password"
+          show-password
+          autocomplete="new-password"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
+        />
       </el-form-item>
       <el-form-item :label="t('auth.passwordAgain')">
-        <el-input v-model="form.newPasswordAgain" type="password" show-password autocomplete="new-password" />
+        <el-input
+          v-model="form.newPasswordAgain"
+          type="password"
+          show-password
+          autocomplete="new-password"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
+        />
       </el-form-item>
-      <el-button type="primary" :loading="loading" native-type="submit">{{ t("auth.changePassword") }}</el-button>
+      <el-button type="primary" :loading="loading" native-type="submit" class="submit-btn">{{ t("auth.changePassword") }}</el-button>
     </el-form>
   </el-card>
 </template>
@@ -124,5 +169,12 @@ async function submitChange(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.submit-btn {
+  min-height: 42px;
+  font-size: 15px;
+  border-radius: var(--radius-sm, 8px);
+  margin-top: 6px;
 }
 </style>
