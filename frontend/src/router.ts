@@ -39,7 +39,10 @@ function consoleReady(status: { authenticated: boolean; must_change_password: bo
   return Boolean(status?.authenticated && !status.must_change_password);
 }
 
-router.beforeEach(async (to) => {
+// 已经进过工作台之后，只改 ?settings= 这类查询时不要再整页送回登录。
+let admitted = false;
+
+router.beforeEach(async (to, from) => {
   let status = null;
   try {
     status = await fetchAuthStatus();
@@ -47,13 +50,22 @@ router.beforeEach(async (to) => {
     status = null;
   }
   const ready = consoleReady(status);
-  authRequired.value = !ready;
-  const userReady = ready ? await hasTelegramUser() : false;
-  if (to.name === "login") {
-    if (ready && userReady) return { name: "monitor" };
+  const staying =
+    admitted && ready && from.name === "monitor" && to.name === "monitor";
+  if (staying) {
+    authRequired.value = false;
     return true;
   }
-  if (!ready || !userReady) return { name: "login" };
+  const userState = ready ? await hasTelegramUser() : false;
+  // 列表请求失败时沿用上一次的结论，避免一次失败就把人送回登录页。
+  const userReady = userState === null ? admitted : userState;
+  admitted = ready && userReady;
+  authRequired.value = !admitted;
+  if (to.name === "login") {
+    if (admitted) return { name: "monitor" };
+    return true;
+  }
+  if (!admitted) return { name: "login" };
   return true;
 });
 

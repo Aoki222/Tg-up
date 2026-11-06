@@ -34,7 +34,8 @@ async function load(): Promise<void> {
     needsTelegram.value = false;
     return;
   }
-  if (await hasTelegramUser()) {
+  const hasUser = await hasTelegramUser();
+  if (hasUser !== false) {
     needsTelegram.value = false;
     await router.replace({ name: "monitor" });
     return;

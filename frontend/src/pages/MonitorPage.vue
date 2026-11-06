@@ -15,7 +15,7 @@ import ManualDispatchModal from "../components/ManualDispatchModal.vue";
 import SettingsPage from "./SettingsPage.vue";
 import WorkHeader from "../components/WorkHeader.vue";
 import WatchDock from "../components/WatchDock.vue";
-import { authRequired, fetchSystemVersion, fetchWorkers } from "../api";
+import { authRequired, fetchAuthStatus, fetchSystemVersion, fetchWorkers } from "../api";
 import { useTaskBoard } from "../composables/useTaskBoard";
 import { useSuccessHistory } from "../composables/useSuccessHistory";
 import { useTelegramIdentity } from "../composables/useTelegramIdentity";
@@ -97,10 +97,23 @@ const workerModalOpen = ref(false);
 const policyModalOpen = ref(false);
 const policyPath = ref("");
 const settingsRef = ref<InstanceType<typeof SettingsPage> | null>(null);
+let settingsHeld = false;
 const watchDockRef = ref<InstanceType<typeof WatchDock> | null>(null);
 const tomlSaving = computed(() => settingsRef.value?.saving ?? false);
 watch(authRequired, (blocked) => {
-  if (blocked) void router.replace({ name: "login" });
+  if (!blocked || route.name === "login") return;
+  // 某个接口 401 不一定是登录失效。先核对状态，避免把正在打开的设置页冲掉。
+  void fetchAuthStatus()
+    .then((status) => {
+      if (status.authenticated && !status.must_change_password) {
+        authRequired.value = false;
+        return;
+      }
+      settingsHeld = false;
+      settingsOpen.value = false;
+      return router.replace({ name: "login" });
+    })
+    .catch(() => router.replace({ name: "login" }));
 });
 const versionInfo = ref<SystemVersionInfo | null>(null);
 const workers = ref<WorkerSnapshot[]>([]);
@@ -261,15 +274,16 @@ async function onManualDispatched(_res: ManualDispatchResult): Promise<void> {
 }
 
 function openSettings(tab = "telegram"): void {
-  if (String(route.query.settings || "") === tab) {
-    settingsOpen.value = true;
-    void nextTick(() => settingsRef.value?.setSection(tab));
-    return;
-  }
-  void router.replace({ query: { ...route.query, settings: tab } });
+  // 先打开弹层。地址上的 ?settings= 只是记住页签，不能反过来把弹层关掉。
+  settingsHeld = true;
+  settingsOpen.value = true;
+  void nextTick(() => settingsRef.value?.setSection(tab));
+  if (String(route.query.settings || "") === tab) return;
+  void router.replace({ query: { ...route.query, settings: tab } }).catch(() => undefined);
 }
 
 function closeSettings(): void {
+  settingsHeld = false;
   if (!route.query.settings) {
     settingsOpen.value = false;
     void reloadWatch(false);
@@ -277,7 +291,7 @@ function closeSettings(): void {
   }
   const next = { ...route.query };
   delete next.settings;
-  void router.replace({ query: next });
+  void router.replace({ query: next }).catch(() => undefined);
 }
 
 function onSettingsSection(id: string): void {
@@ -354,11 +368,13 @@ watch(
   () => String(route.query.settings || ""),
   (requested) => {
     if (!requested) {
+      if (settingsHeld) return;
       const wasOpen = settingsOpen.value;
       settingsOpen.value = false;
       if (wasOpen) void reloadWatch(false);
       return;
     }
+    settingsHeld = true;
     settingsOpen.value = true;
     void nextTick(() => settingsRef.value?.setSection(requested));
   },
@@ -448,8 +464,9 @@ watch(
     <!-- ══════════════════════════════════════════════════════════
          系统配置模态弹窗 (In-Place Modal)
     ══════════════════════════════════════════════════════════ -->
-    <div v-show="settingsOpen" class="settings-layer" @click.self="closeSettings">
-      <div class="settings-modal" role="dialog" :aria-label="t('settings.dialog')" @click.stop>
+    <Teleport to="body">
+    <div v-if="settingsOpen" class="settings-layer" @mousedown.self="closeSettings">
+      <div class="settings-modal" role="dialog" :aria-label="t('settings.dialog')" @mousedown.stop>
         <header class="settings-head">
           <div class="settings-head-left">
             <h2>{{ t("settings.heading") }}</h2>
@@ -477,6 +494,7 @@ watch(
         />
       </div>
     </div>
+    </Teleport>
 
     <!-- 添加 Session 弹窗 -->
     <Teleport to="body">

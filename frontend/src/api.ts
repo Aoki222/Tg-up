@@ -379,12 +379,13 @@ export async function fetchSessionMeta(): Promise<SessionMeta> {
   return res.data;
 }
 
-export async function hasTelegramUser(): Promise<boolean> {
+/** true 有个人号，false 确认没有，null 是列表没读到，不能当成没登录。 */
+export async function hasTelegramUser(): Promise<boolean | null> {
   try {
     const meta = await fetchSessionMeta();
     return (meta.accounts ?? []).some((item) => item.kind === "user");
   } catch {
-    return false;
+    return null;
   }
 }
 
