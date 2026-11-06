@@ -279,14 +279,16 @@ class FastTelethon:
         is_from_pool = False
 
         if sender_pool is not None:
-            senders = await sender_pool.acquire(desired_workers)
-            if senders:
-                is_from_pool = True
-            else:
-                main = getattr(client, "_sender", None)
-                if main is None:
-                    raise RuntimeError("Telegram client 没有可用的上传连接")
-                senders = [main]
+            senders = []
+            # 池子被别的文件占满时等待空位。退回主连接会和 send_file、心跳抢同一条链路。
+            for _ in range(40):
+                senders = await sender_pool.acquire(desired_workers)
+                if senders:
+                    break
+                await asyncio.sleep(0.05)
+            if not senders:
+                raise RuntimeError("上传连接都在忙")
+            is_from_pool = True
         else:
             senders, owned_senders = await _open_upload_senders(client, desired_workers)
 

@@ -104,6 +104,7 @@ class TelegramTransport:
         task: Task,
         timeout_seconds: int,
         on_progress: Callable[[float, float], None] | None = None,
+        fast_workers: int | None = None,
     ) -> SendResult:
         """有封面则视频+图作为相册；相册时取第一条消息 id 当作视频消息。"""
         video_path = task.artifacts.video_path
@@ -123,7 +124,7 @@ class TelegramTransport:
         for attempt in range(1, FAST_UPLOAD_ATTEMPTS + 1):
             try:
                 result = await asyncio.wait_for(
-                    self._send_fast(task, files, on_progress),
+                    self._send_fast(task, files, on_progress, fast_workers=fast_workers),
                     timeout=timeout_seconds,
                 )
                 self._partial.pop(video_path, None)
@@ -188,49 +189,64 @@ class TelegramTransport:
         task: Task,
         files: list[str],
         on_progress: Callable[[float, float], None] | None,
+        fast_workers: int | None = None,
     ) -> SendResult:
         """先上传所有媒体句柄，再用同一次 send_file 提交单文件或相册。"""
         video_path = task.artifacts.video_path or files[0]
         page_path = task.artifacts.page_path
+        slots = max(1, int(fast_workers or FAST_UPLOAD_WORKERS))
+        # 时长和分辨率与分块上传同时进行，提交前再取结果。
+        attributes_task = asyncio.create_task(
+            asyncio.to_thread(extract_video_attributes, task.artifacts.video_path)
+        )
         total_size = sum(Path(path).stat().st_size for path in files)
         completed_size = 0
         handles = []
-        for path in files:
-            base = completed_size
+        try:
+            for path in files:
+                base = completed_size
 
-            def report(current: int, _total: int, base: int = base) -> None:
-                if on_progress is not None:
-                    on_progress(base + current, total_size)
+                def report(current: int, _total: int, base: int = base) -> None:
+                    if on_progress is not None:
+                        on_progress(base + current, total_size)
 
-            saved = self._partial.get(path)
-            file_size = Path(path).stat().st_size
-            resume_id = None
-            resume_parts: set[int] | None = None
-            if saved is not None and saved.file_size == file_size and saved.done:
-                resume_id = saved.file_id
-                resume_parts = set(saved.done)
-            try:
-                handle = await fast_upload_file(
-                    self.telegram_client,
-                    path,
-                    progress_callback=report,
-                    max_workers=FAST_UPLOAD_WORKERS,
-                    sender_pool=self.sender_pool,
-                    file_id=resume_id,
-                    skip_parts=resume_parts,
-                )
-            except UploadInterrupted:
-                raise
-            except FloodWaitError:
-                raise
-            except Exception as error:
-                raise _FastUploadError(describe_taskgroup_error(error)) from error
-            handles.append(_rename_input_file(handle, path))
-            completed_size += Path(path).stat().st_size
+                saved = self._partial.get(path)
+                file_size = Path(path).stat().st_size
+                resume_id = None
+                resume_parts: set[int] | None = None
+                if saved is not None and saved.file_size == file_size and saved.done:
+                    resume_id = saved.file_id
+                    resume_parts = set(saved.done)
+                workers = slots if path == video_path else 1
+                try:
+                    handle = await fast_upload_file(
+                        self.telegram_client,
+                        path,
+                        progress_callback=report,
+                        max_workers=workers,
+                        sender_pool=self.sender_pool,
+                        file_id=resume_id,
+                        skip_parts=resume_parts,
+                    )
+                except UploadInterrupted:
+                    raise
+                except FloodWaitError:
+                    raise
+                except Exception as error:
+                    raise _FastUploadError(describe_taskgroup_error(error)) from error
+                handles.append(_rename_input_file(handle, path))
+                completed_size += Path(path).stat().st_size
+        except BaseException:
+            if not attributes_task.done():
+                attributes_task.cancel()
+            raise
+        attributes = await attributes_task
 
         thumb_handle = await self._upload_thumb(video_path, page_path)
         try:
-            return await self._submit_media(task, handles, thumb_handle=thumb_handle)
+            return await self._submit_media(
+                task, handles, thumb_handle=thumb_handle, attributes=attributes
+            )
         except FloodWaitError:
             raise
         except Exception as error:
@@ -276,9 +292,15 @@ class TelegramTransport:
         video_path = task.artifacts.video_path or files[0]
         page_path = task.artifacts.page_path
         thumb_handle = await self._upload_thumb(video_path, page_path)
+        attributes = await asyncio.to_thread(extract_video_attributes, video_path)
 
         prepared, cleanup = _prepare_native_files(files)
-        send_kwargs = self._send_kwargs(task, prepared if len(prepared) > 1 else prepared[0], thumb_handle=thumb_handle)
+        send_kwargs = self._send_kwargs(
+            task,
+            prepared if len(prepared) > 1 else prepared[0],
+            thumb_handle=thumb_handle,
+            attributes=attributes,
+        )
         if on_progress is not None:
             send_kwargs["progress_callback"] = on_progress
         try:
@@ -317,8 +339,11 @@ class TelegramTransport:
         thumb_handle=None,
     ) -> SendResult:
         """相册被拒后只发视频，避免 500MB+ 传完却整组失败。"""
+        attributes = await asyncio.to_thread(extract_video_attributes, video_path)
         prepared, cleanup = _prepare_native_files([video_path])
-        send_kwargs = self._send_kwargs(task, prepared[0], thumb_handle=thumb_handle)
+        send_kwargs = self._send_kwargs(
+            task, prepared[0], thumb_handle=thumb_handle, attributes=attributes
+        )
         if on_progress is not None:
             send_kwargs["progress_callback"] = on_progress
         try:
@@ -345,8 +370,6 @@ class TelegramTransport:
 
     async def _upload_thumb(self, video_path: str, page_path: str | None = None):
         """确保本地有 _thumb.jpg 并上传，返回 InputFile 句柄。"""
-        if not hasattr(self.telegram_client, "upload_file"):
-            return None
         try:
             from ..utils.video_preview import resolve_thumb_path, VideoThumbnail
             thumb_file = resolve_thumb_path(video_path)
@@ -355,15 +378,28 @@ class TelegramTransport:
                     Path(video_path), Path(page_path) if page_path else None
                 )
             if thumb_file.is_file():
-                return await self.telegram_client.upload_file(str(thumb_file))
+                # 走分块上传的连接池。client.upload_file 占用主连接，会和正在进行的并发分块抢同一条链路。
+                if self.sender_pool is not None:
+                    return await fast_upload_file(
+                        self.telegram_client,
+                        str(thumb_file),
+                        max_workers=1,
+                        sender_pool=self.sender_pool,
+                    )
+                if hasattr(self.telegram_client, "upload_file"):
+                    return await self.telegram_client.upload_file(str(thumb_file))
         except Exception:
             logger.debug("上传视频缩略图失败: %s", video_path, exc_info=True)
         return None
 
-    async def _submit_media(self, task: Task, handles: list, thumb_handle=None) -> SendResult:
+    async def _submit_media(
+        self, task: Task, handles: list, thumb_handle=None, attributes: list | None = None
+    ) -> SendResult:
+        attrs = attributes if attributes is not None else await asyncio.to_thread(
+            extract_video_attributes, task.artifacts.video_path
+        )
         if len(handles) > 1:
             from telethon.tl.types import InputMediaUploadedDocument
-            attrs = extract_video_attributes(task.artifacts.video_path)
             v_media = InputMediaUploadedDocument(
                 file=handles[0],
                 mime_type="video/mp4",
@@ -376,13 +412,18 @@ class TelegramTransport:
             files = handles[0]
 
         sent_messages = await self.telegram_client.send_file(
-            **self._send_kwargs(task, files, thumb_handle=thumb_handle)
+            **self._send_kwargs(
+                task,
+                files,
+                thumb_handle=None if isinstance(files, list) else thumb_handle,
+                attributes=None if isinstance(files, list) else attrs,
+            )
         )
         video_message = sent_messages[0] if isinstance(sent_messages, list) else sent_messages
         return SendOk(video_message.id)
 
     @staticmethod
-    def _send_kwargs(task: Task, file, thumb_handle=None) -> dict:
+    def _send_kwargs(task: Task, file, thumb_handle=None, attributes: list | None = None) -> dict:
         """构建 Fast 和原生路径共用的目标、caption、话题参数。"""
         send_kwargs: dict = {
             "entity": task.destination.chat_id,
@@ -395,7 +436,7 @@ class TelegramTransport:
             send_kwargs["reply_to"] = task.destination.topic_id
 
         if not isinstance(file, (list, tuple)):
-            attrs = extract_video_attributes(task.artifacts.video_path)
+            attrs = attributes if attributes is not None else extract_video_attributes(task.artifacts.video_path)
             if attrs:
                 send_kwargs["attributes"] = attrs
             if thumb_handle is not None:
