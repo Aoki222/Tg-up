@@ -114,6 +114,51 @@ async def test_waits_until_session_connects(tmp_path: Path) -> None:
     assert client.creates == 1
 
 
+class NamedTopicClient:
+    def __init__(self, topics: list[tuple[int, str]]):
+        self.topics = topics
+        self.creates = 0
+
+    async def get_entity(self, _chat_id):
+        return SimpleNamespace(forum=True)
+
+    async def __call__(self, request):
+        name = type(request).__name__
+        if name == "GetForumTopicsRequest":
+            topics = [
+                SimpleNamespace(id=topic_id, title=title)
+                for topic_id, title in self.topics
+            ]
+            return SimpleNamespace(topics=topics, messages=[], count=len(topics))
+        if name == "CreateForumTopicRequest":
+            self.creates += 1
+            return SimpleNamespace(updates=[SimpleNamespace(message=SimpleNamespace(id=900))])
+        raise AssertionError(name)
+
+
+async def test_reuses_existing_topic_with_the_same_name(tmp_path: Path) -> None:
+    repo = FakeTopicRepo()
+    folder = tmp_path / "show"
+    folder.mkdir()
+    client = NamedTopicClient([(40, "other"), (12, "show"), (30, "show")])
+    creator = TopicCreator(lambda: client, repo)
+    topic_id = await creator.get_or_create_topic(str(folder), " show ", -100)
+    assert topic_id == 12
+    assert client.creates == 0
+    assert repo.topics[(-100, str(folder.resolve()))] == 12
+
+
+async def test_creates_when_no_topic_has_that_name(tmp_path: Path) -> None:
+    repo = FakeTopicRepo()
+    folder = tmp_path / "fresh"
+    folder.mkdir()
+    client = NamedTopicClient([(3, "other")])
+    creator = TopicCreator(lambda: client, repo)
+    topic_id = await creator.get_or_create_topic(str(folder), "fresh", -100)
+    assert topic_id == 900
+    assert client.creates == 1
+
+
 async def test_missing_session_raises_without_creating(tmp_path: Path) -> None:
     repo = FakeTopicRepo()
     folder = tmp_path / "empty"
