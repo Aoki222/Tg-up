@@ -263,16 +263,23 @@ class GridPreview:
 
     async def _build_via_vcsi(self, video_path: Path, output_path: Path) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        py_runner = (
+            "from PIL import ImageFont; "
+            "hasattr(ImageFont.FreeTypeFont, 'getsize') or setattr("
+            "ImageFont.FreeTypeFont, 'getsize', "
+            "lambda self, text: (self.getbbox(text)[2] - self.getbbox(text)[0], self.getbbox(text)[3] - self.getbbox(text)[1])); "
+            "from vcsi import vcsi; vcsi.main()"
+        )
         args = [
             sys.executable,
-            "-m",
-            "vcsi.vcsi",
+            "-c",
+            py_runner,
             str(video_path),
             "-g",
             self.grid_layout,
             "-w",
             "1200",
-            "-q",
+            "--quality",
             str(self.jpeg_quality),
             "-o",
             str(output_path),
@@ -357,7 +364,10 @@ class VideoThumbnail:
         if not video_path.is_file():
             raise FileNotFoundError(f"视频不存在：{video_path}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        vf_filter = f"scale='min({self.MAX_DIMENSION},iw)':-2"
+        vf_filter = (
+            f"scale=w={self.MAX_DIMENSION}:h={self.MAX_DIMENSION}:"
+            "force_original_aspect_ratio=decrease:force_divisible_by=2"
+        )
         await run_ffmpeg_command(
             [
                 "-ss",

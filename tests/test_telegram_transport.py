@@ -327,3 +327,12 @@ async def test_submit_media_wraps_video_with_thumb_in_album(tmp_path: Path, monk
     assert v_media.attributes == [dummy_attr]
     # 第二项原封不动保留
     assert files[1] == "photo_handle"
+
+
+async def test_upload_thumb_skips_when_preview_disabled(tmp_path: Path) -> None:
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"dummy")
+    client = _FakeClient()
+    transport = TelegramTransport(client)
+    res = await transport._upload_thumb(str(video), page_path=None, need_preview=False)
+    assert res is None

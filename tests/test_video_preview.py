@@ -126,4 +126,28 @@ async def test_video_thumbnail_extract_from_video(tmp_path: Path, monkeypatch) -
     assert res.is_file()
     assert len(seen_args) == 1
     assert "-vf" in seen_args[0]
-    assert "scale='min(320,iw)':-2" in seen_args[0]
+    assert any("force_original_aspect_ratio=decrease" in a for a in seen_args[0])
+    assert any("scale=w=320:h=320" in a for a in seen_args[0])
+    
+
+
+async def test_video_thumbnail_from_vertical_image(tmp_path: Path) -> None:
+    from PIL import Image
+    from src.utils.video_preview import VideoThumbnail
+
+    # 创建一个 1080x1920 的竖屏单帧图
+    src_img = tmp_path / "vertical_single.jpg"
+    img = Image.new("RGB", (1080, 1920), color="red")
+    img.save(src_img, "JPEG")
+
+    thumb = VideoThumbnail(page_dir=tmp_path)
+    res = await thumb.ensure_thumbnail_async(tmp_path / "vertical.mp4", existing_page_path=src_img)
+    assert res is not None
+    assert res.is_file()
+
+    with Image.open(res) as out_img:
+        w, h = out_img.size
+        # 宽和高必须均 <= 320
+        assert max(w, h) <= 320
+        assert w == 180
+        assert h == 320

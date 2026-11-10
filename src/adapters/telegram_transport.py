@@ -242,7 +242,9 @@ class TelegramTransport:
             raise
         attributes = await attributes_task
 
-        thumb_handle = await self._upload_thumb(video_path, page_path)
+        thumb_handle = await self._upload_thumb(
+            video_path, page_path, need_preview=task.policy.need_preview
+        )
         try:
             return await self._submit_media(
                 task, handles, thumb_handle=thumb_handle, attributes=attributes
@@ -291,7 +293,9 @@ class TelegramTransport:
         """FastTelethon 分块失败后的原生整组回退路径。"""
         video_path = task.artifacts.video_path or files[0]
         page_path = task.artifacts.page_path
-        thumb_handle = await self._upload_thumb(video_path, page_path)
+        thumb_handle = await self._upload_thumb(
+            video_path, page_path, need_preview=task.policy.need_preview
+        )
         attributes = await asyncio.to_thread(extract_video_attributes, video_path)
 
         prepared, cleanup = _prepare_native_files(files)
@@ -368,8 +372,18 @@ class TelegramTransport:
         logger.warning("视频已发送，封面未随相册发送: %s", task.file_path)
         return SendOk(video_message.id)
 
-    async def _upload_thumb(self, video_path: str, page_path: str | None = None):
-        """确保本地有 _thumb.jpg 并上传，返回 InputFile 句柄。"""
+    async def _upload_thumb(
+        self,
+        video_path: str,
+        page_path: str | None = None,
+        need_preview: bool = True,
+    ):
+        """确保本地有 _thumb.jpg 并上传，返回 InputFile 句柄。
+
+        如果任务策略关闭了预览（need_preview=False），直接跳过不生成也不上传。
+        """
+        if not need_preview:
+            return None
         try:
             from ..utils.video_preview import resolve_thumb_path, VideoThumbnail
             thumb_file = resolve_thumb_path(video_path)
