@@ -84,7 +84,19 @@ async function onDone(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 28px 0;
+  padding: calc(20px + env(safe-area-inset-top)) 20px 0;
+}
+
+@media (max-width: 860px) {
+  .login-main {
+    align-items: flex-start;
+    padding: 28px 16px calc(28px + env(safe-area-inset-bottom));
+  }
+
+  .login-main :deep(.auth-card),
+  .login-main :deep(.session-card) {
+    width: 100%;
+  }
 }
 
 .brand {

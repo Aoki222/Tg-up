@@ -654,17 +654,41 @@
 }
 
 @media (max-width: 860px) {
+  .workbench {
+    max-height: none;
+    min-height: 100dvh;
+  }
+
+  .work-body {
+    padding: 12px 14px calc(20px + env(safe-area-inset-bottom));
+    gap: 0;
+  }
+
+  .setup-banner,
+  .unmatched-banner {
+    margin: 12px 14px 0;
+    padding: 12px 14px;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .setup-banner button,
+  .unmatched-list button {
+    min-height: 36px;
+    padding: 0 8px;
+  }
+
   .dock-resizer {
     display: none;
   }
 
   .dock-scrim {
     display: block;
-    position: absolute;
+    position: fixed;
     inset: 0;
-    z-index: 15;
+    z-index: 3900;
     border: 0;
-    background: rgba(22, 34, 25, 0.18);
+    background: rgba(22, 34, 25, 0.28);
   }
 
   .settings-layer,
@@ -674,10 +698,30 @@
   }
 
   .settings-modal,
-  .session-modal {
+  .session-modal,
+  .worker-modal,
+  .success-modal {
     width: 100%;
     height: 100%;
     max-height: none;
     border-radius: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .settings-head,
+  .worker-modal-head,
+  .success-head {
+    gap: 12px;
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .success-table {
+    display: block;
+    overflow-x: auto;
+  }
+
+  .add-session-btn,
+  .save-toml-btn {
+    min-height: 40px;
   }
 }

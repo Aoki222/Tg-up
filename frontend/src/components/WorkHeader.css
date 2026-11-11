@@ -373,14 +373,93 @@
 
 @media (max-width: 860px) {
   .work-header {
-    flex-wrap: wrap;
-    align-items: flex-start;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    min-height: 0;
+    padding: calc(12px + env(safe-area-inset-top)) 16px 14px;
   }
 
-  .header-stats {
-    order: 3;
+  .header-lead,
+  .telemetry-island,
+  .header-action-island {
     width: 100%;
     margin-left: 0;
-    overflow-x: auto;
+  }
+
+  .header-lead {
+    justify-content: space-between;
+  }
+
+  .brand {
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  .sidebar-toggle-btn,
+  .settings-pill-btn,
+  .lang-switch button {
+    min-height: 44px;
+  }
+
+  .sidebar-toggle-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .version-pill {
+    max-width: 46%;
+    overflow: hidden;
+  }
+
+  .telemetry-badge,
+  .worker-chip-btn,
+  .scope-island-pill,
+  .settings-pill-btn,
+  .lang-switch {
+    min-height: 44px;
+  }
+
+  .telemetry-badge {
+    width: 100%;
+    justify-content: space-between;
+    padding: 0 14px;
+  }
+
+  .header-action-island {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .worker-chip-btn,
+  .scope-island-pill {
+    width: 100%;
+    justify-content: space-between;
+    padding-inline: 12px;
+  }
+
+  .worker-chip-action-pill {
+    display: none;
+  }
+
+  .scope-island-view-btn {
+    min-height: 44px;
+    flex: 1;
+  }
+
+  .scope-island-toggle-btn {
+    min-height: 36px;
+    padding: 0 10px;
+  }
+
+  .lang-switch,
+  .settings-pill-btn {
+    grid-column: span 1;
+    justify-content: center;
+  }
+
+  .lang-switch button {
+    flex: 1;
   }
 }

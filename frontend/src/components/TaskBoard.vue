@@ -1618,5 +1618,45 @@ async function onRemoveOversizedAll(): Promise<void> {
     padding: 5px 10px;
     font-size: 12px;
   }
+
+  .stream {
+    height: auto;
+    min-height: 60dvh;
+    overflow: visible;
+  }
+
+  .stream-scroll {
+    overflow: visible;
+    padding: 16px 14px 8px;
+    gap: 22px;
+  }
+
+  .stream-section {
+    gap: 12px;
+  }
+
+  .section-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-bottom: 8px;
+  }
+
+  .section-header-right {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .mini-action-btn {
+    min-height: 36px;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  .section-cards {
+    gap: 12px;
+  }
 }
 </style>

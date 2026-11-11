@@ -658,11 +658,24 @@
 
 @media (max-width: 860px) {
   .dock:not(.shut) {
-    position: absolute;
-    z-index: 16;
-    left: 12px;
-    top: 12px;
-    bottom: 12px;
-    width: min(300px, calc(100% - 24px));
+    position: fixed;
+    z-index: 3950;
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    height: min(78dvh, 680px);
+    border-radius: 18px 18px 0 0;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .dock-item {
+    padding: 14px;
+  }
+
+  .dock-row {
+    gap: 10px;
+    min-height: 44px;
   }
 }

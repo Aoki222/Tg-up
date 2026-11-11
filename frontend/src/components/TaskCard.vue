@@ -705,6 +705,38 @@ function speedLabel(item: BoardTask): string {
   flex-wrap: wrap;
 }
 
+@media (max-width: 860px) {
+  .task-card {
+    padding: 16px;
+    gap: 12px;
+  }
+
+  .card-head,
+  .compact-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .head-right,
+  .compact-right,
+  .footer-left,
+  .footer-right {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .action-footer {
+    gap: 10px;
+  }
+
+  .action-footer button,
+  .footer-left button,
+  .footer-right button {
+    min-height: 40px;
+  }
+}
+
 .footer-right {
   display: flex;
   align-items: center;

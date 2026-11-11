@@ -506,6 +506,47 @@ defineExpose({
   color: #9ca3af;
 }
 
+@media (max-width: 860px) {
+  .settings-main-split {
+    flex-direction: column;
+  }
+
+  .settings-sidebar {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    padding: 14px 16px 12px;
+    gap: 12px;
+  }
+
+  .sidebar-hub-footer {
+    display: none;
+  }
+
+  .sidebar-search-input {
+    min-height: 42px;
+    font-size: 14px;
+    padding: 8px 12px;
+  }
+
+  .sidebar-nav-list {
+    flex-direction: row;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .nav-tab-btn {
+    width: auto;
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 8px 14px;
+    background: #f3f4f6;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+}
+
 /* 右侧真实表单区 (局部独立滚动) */
 .settings-content-pane {
   flex: 1;
