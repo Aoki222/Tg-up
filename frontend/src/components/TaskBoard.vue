@@ -1621,8 +1621,47 @@ async function onRemoveOversizedAll(): Promise<void> {
 
   .stream {
     height: auto;
-    min-height: 60dvh;
+    min-height: 0;
     overflow: visible;
+  }
+
+  .stream-tabs {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .tabs-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+    padding: 0;
+    background: transparent;
+  }
+
+  .tab-btn {
+    min-height: 44px;
+    justify-content: center;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+  }
+
+  .tabs-actions,
+  .action-btn-group {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .action-btn {
+    flex: 1 1 100%;
+    min-height: 44px;
+    padding: 10px 14px;
+    font-size: 14px;
   }
 
   .stream-scroll {

@@ -675,7 +675,23 @@
   }
 
   .dock-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
     gap: 10px;
     min-height: 44px;
+  }
+
+  .dock-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  .dock-policy-btn,
+  .dock-delete-btn,
+  .tree-policy-btn {
+    min-height: 40px;
+    padding: 8px 14px;
   }
 }

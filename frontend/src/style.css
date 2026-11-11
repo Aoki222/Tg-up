@@ -61,7 +61,7 @@ body,
   overflow: hidden;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 860px) {
   html,
   body,
   #app {

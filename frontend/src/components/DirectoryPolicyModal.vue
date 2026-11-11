@@ -712,6 +712,24 @@ function onClose(): void {
   -webkit-backdrop-filter: blur(8px);
 }
 
+@media (max-width: 860px) {
+  .policy-overlay {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .policy-modal {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  .policy-body {
+    padding: 16px;
+  }
+}
+
 .policy-modal {
   display: flex;
   flex-direction: column;

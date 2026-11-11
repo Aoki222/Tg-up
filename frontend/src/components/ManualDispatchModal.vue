@@ -894,6 +894,46 @@ async function handleDispatch(): Promise<void> {
 }
 
 /* ── 右栏：控制台面板 ── */
+@media (max-width: 860px) {
+  .dispatch-layer {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .dispatch-modal {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  .dispatch-body {
+    flex-direction: column;
+    overflow: auto;
+    padding: 12px;
+    gap: 14px;
+  }
+
+  .tree-panel,
+  .console-panel {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex: none;
+    min-height: 280px;
+  }
+
+  .tree-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .tree-search-input,
+  .tree-action-btn,
+  .unfinished-filter-chip {
+    min-height: 40px;
+  }
+}
+
 .console-panel {
   flex: 1;
   min-width: 280px;

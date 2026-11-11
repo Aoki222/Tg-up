@@ -655,13 +655,22 @@
 
 @media (max-width: 860px) {
   .workbench {
+    height: auto;
     max-height: none;
     min-height: 100dvh;
+    overflow: visible;
   }
 
   .work-body {
-    padding: 12px 14px calc(20px + env(safe-area-inset-bottom));
+    height: auto;
+    overflow: visible;
+    padding: 12px 14px calc(28px + env(safe-area-inset-bottom));
     gap: 0;
+  }
+
+  .board-pane {
+    height: auto;
+    overflow: visible;
   }
 
   .setup-banner,
