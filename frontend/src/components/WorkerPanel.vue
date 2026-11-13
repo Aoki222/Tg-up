@@ -517,7 +517,7 @@ async function onDelete(name: string): Promise<void> {
   gap: 10px;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 860px) {
   .worker-card {
     border-radius: var(--radius-lg, 14px) !important;
   }
@@ -539,7 +539,7 @@ async function onDelete(name: string): Promise<void> {
 
   .actions :deep(.el-button) {
     flex: 1;
-    min-height: 32px;
+    min-height: 44px;
   }
 }
 

@@ -62,14 +62,12 @@ body,
 }
 
 @media (max-width: 860px) {
-  html,
-  body,
-  #app {
-    height: 100%;
-    min-height: 100dvh;
-    overflow-x: hidden;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea,
+  .el-input__inner,
+  .el-textarea__inner {
+    font-size: 16px;
   }
 }
 

@@ -1490,212 +1490,119 @@ async function onRemoveOversizedAll(): Promise<void> {
   }
 }
 
-/* ── 移动端顶部分段状态栏 ── */
-.mobile-board-tabs {
-  display: none;
-}
-
-@media (max-width: 768px) {
-  .board {
-    display: flex;
-    flex-direction: column;
-    overflow: visible;
-    height: auto;
-    gap: 8px;
-  }
-
-  .mobile-board-tabs {
-    display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-    padding: 2px 2px 4px;
-    flex-shrink: 0;
-  }
-
-  .mobile-board-tabs::-webkit-scrollbar {
-    display: none;
-  }
-
-  .mobile-tab-pill {
-    flex: 1;
-    min-width: fit-content;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: var(--radius-full, 9999px);
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text-secondary);
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: all 0.15s ease;
-  }
-
-  .mobile-tab-pill.active {
-    background: var(--surface);
-    color: var(--text);
-    border-color: var(--accent);
-    font-weight: 600;
-    box-shadow: 0 1px 4px rgba(40, 153, 90, 0.15);
-  }
-
-  .tab-count {
-    padding: 1px 6px;
-    border-radius: var(--radius-full, 9999px);
-    background: var(--hover);
-    color: var(--text-secondary);
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .tab-count.has-items {
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 600;
-  }
-
-  .mobile-tab-pill.failed.active {
-    border-color: var(--bad);
-    box-shadow: 0 1px 4px rgba(226, 77, 93, 0.15);
-  }
-
-  .mobile-tab-pill.failed .tab-count.has-items {
-    background: #fdecee;
-    color: var(--bad);
-  }
-
-  .mobile-tab-pill.oversized.active {
-    border-color: var(--warn);
-    box-shadow: 0 1px 4px rgba(217, 119, 6, 0.15);
-  }
-
-  .mobile-tab-pill.oversized .tab-count.has-items {
-    background: #f8efe0;
-    color: var(--warn);
-  }
-
-  .open-pane {
-    display: flex;
-    flex-direction: column;
-    overflow: visible;
-    height: auto;
-    flex: 1;
-    min-height: 0;
-  }
-
-  .well {
-    width: 100%;
-    flex: 1;
-    min-width: 0;
-    height: auto;
-    min-height: 280px;
-    padding: 12px 14px;
-    border-radius: var(--radius-md, 10px);
-  }
-
-  .well-body {
-    overflow: visible;
-    height: auto;
-  }
-
-  .well.failed .well-head,
-  .well.oversized .well-head {
-    row-gap: 6px;
-  }
-
-  .well.failed .well-actions,
-  .well.oversized .well-actions {
-    gap: 4px;
-  }
-
-  .retry-all-btn {
-    padding: 5px 10px;
-    font-size: 12px;
-  }
-
+@media (max-width: 860px) {
   .stream {
-    height: auto;
+    height: 100%;
+    min-width: 0;
+    max-width: 100%;
     min-height: 0;
-    overflow: visible;
+    overflow: hidden;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    box-shadow: none;
   }
 
   .stream-tabs {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 12px;
-    padding: 14px;
+    display: contents;
   }
 
   .tabs-group {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    width: 100%;
-    padding: 0;
-    background: transparent;
+    order: 0;
+    display: flex;
+    flex-shrink: 0;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    align-self: stretch;
+    width: auto;
+    min-width: 0;
+    max-width: calc(100% - 24px);
+    margin: 8px 12px 0;
+    padding: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tabs-group::-webkit-scrollbar {
+    display: none;
   }
 
   .tab-btn {
-    min-height: 44px;
-    justify-content: center;
-    background: #ffffff;
-    border: 1px solid var(--border);
-    padding: 8px 10px;
-  }
-
-  .tabs-actions,
-  .action-btn-group {
-    width: 100%;
-    margin-left: 0;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
-  .action-btn {
-    flex: 1 1 100%;
-    min-height: 44px;
-    padding: 10px 14px;
-    font-size: 14px;
+    flex: 0 0 auto;
+    min-height: 40px;
+    white-space: nowrap;
   }
 
   .stream-scroll {
-    overflow: visible;
-    padding: 16px 14px 8px;
-    gap: 22px;
+    order: 1;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding: 12px;
   }
 
-  .stream-section {
-    gap: 12px;
+  .tabs-actions {
+    order: 2;
+    flex-shrink: 0;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
+    background: var(--surface, #ffffff);
+  }
+
+  .summary-text {
+    display: none;
+  }
+
+  .tabs-actions:not(:has(.action-btn-group)) {
+    display: none;
+  }
+
+  .action-btn-group {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: nowrap;
+    gap: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .action-btn {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 14px;
+    white-space: nowrap;
   }
 
   .section-header {
     align-items: flex-start;
     flex-wrap: wrap;
-    gap: 10px;
-    padding-bottom: 8px;
+    gap: 8px;
   }
 
   .section-header-right {
     width: 100%;
     justify-content: flex-start;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 8px;
+    overflow-x: auto;
   }
 
   .mini-action-btn {
-    min-height: 36px;
+    flex: 0 0 auto;
+    min-height: 40px;
     padding: 6px 12px;
     font-size: 13px;
-  }
-
-  .section-cards {
-    gap: 12px;
   }
 }
 </style>

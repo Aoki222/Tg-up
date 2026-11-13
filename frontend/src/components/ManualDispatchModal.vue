@@ -907,9 +907,20 @@ async function handleDispatch(): Promise<void> {
     border-radius: 0;
   }
 
+  .dispatch-head {
+    padding-top: calc(12px + env(safe-area-inset-top));
+  }
+
+  .head-close-btn {
+    width: 44px;
+    height: 44px;
+  }
+
   .dispatch-body {
     flex-direction: column;
     overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
     padding: 12px;
     gap: 14px;
   }

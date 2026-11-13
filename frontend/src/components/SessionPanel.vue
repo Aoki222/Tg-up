@@ -611,7 +611,7 @@ onUnmounted(() => {
   width: 100%;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 860px) {
   .qr-image,
   .qr-loading {
     width: 220px;

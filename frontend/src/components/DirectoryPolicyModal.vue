@@ -712,24 +712,6 @@ function onClose(): void {
   -webkit-backdrop-filter: blur(8px);
 }
 
-@media (max-width: 860px) {
-  .policy-overlay {
-    align-items: stretch;
-    padding: 0;
-  }
-
-  .policy-modal {
-    width: 100%;
-    height: 100%;
-    max-height: none;
-    border-radius: 0;
-  }
-
-  .policy-body {
-    padding: 16px;
-  }
-}
-
 .policy-modal {
   display: flex;
   flex-direction: column;
@@ -1247,6 +1229,44 @@ function onClose(): void {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 860px) {
+  .policy-overlay {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .policy-modal {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  .policy-head {
+    padding-top: calc(10px + env(safe-area-inset-top));
+  }
+
+  .close-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .policy-body {
+    padding: 16px;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .segmented-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .seg-btn {
+    min-height: 44px;
+    white-space: normal;
   }
 }
 </style>

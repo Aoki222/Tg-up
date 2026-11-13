@@ -33,6 +33,9 @@ const router = useRouter();
 const { configured, refresh: refreshIdentity } = useTelegramIdentity();
 const dockMedia = window.matchMedia("(max-width: 860px)");
 const dockOpen = ref(!dockMedia.matches);
+const isPhone = ref(dockMedia.matches);
+type PhonePane = "tasks" | "dock" | "workers" | "more";
+const phonePane = ref<PhonePane>("tasks");
 
 // ── 目录树自由拖拽拉伸 ──────────────────────────────────────────
 const DOCK_WIDTH_KEY = "uploader_dock_width";
@@ -162,7 +165,15 @@ const {
 } = useSuccessHistory(successToday);
 
 function applyDock(): void {
+  isPhone.value = dockMedia.matches;
   dockOpen.value = !dockMedia.matches;
+}
+
+const dockShown = computed(() => (isPhone.value ? phonePane.value === "dock" : dockOpen.value));
+
+function closeDock(): void {
+  if (isPhone.value) phonePane.value = "tasks";
+  else dockOpen.value = false;
 }
 
 dockMedia.addEventListener("change", applyDock);
@@ -341,7 +352,8 @@ const totalWorkersCount = computed(() => uploadWorkers.value.length);
 function onKeydown(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
     event.preventDefault();
-    dockOpen.value = !dockOpen.value;
+    if (isPhone.value) phonePane.value = phonePane.value === "dock" ? "tasks" : "dock";
+    else dockOpen.value = !dockOpen.value;
   } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "h") {
     event.preventDefault();
     openSuccess();
@@ -356,13 +368,6 @@ function onKeydown(event: KeyboardEvent): void {
     else if (showSessionForm.value) closeSessionForm();
   }
 }
-
-watch(
-  [showSessionForm, successOpen, settingsOpen, workerModalOpen, policyModalOpen],
-  ([sessionOpen, historyOpen, settings, workerOpen, policyOpen]) => {
-    document.body.style.overflow = sessionOpen || historyOpen || settings || workerOpen || policyOpen ? "hidden" : "";
-  },
-);
 
 watch(
   () => String(route.query.settings || ""),
@@ -383,7 +388,7 @@ watch(
 </script>
 
 <template>
-  <div class="workbench">
+  <div class="workbench" :class="{ 'is-phone': isPhone, [`phone-${phonePane}`]: isPhone }">
     <WorkHeader
       :dock-open="dockOpen"
       :version-label="versionLabel"
@@ -421,7 +426,7 @@ watch(
 
     <div class="work-body">
       <button
-        v-if="dockOpen"
+        v-if="dockOpen && !isPhone"
         type="button"
         class="dock-scrim"
         :aria-label="t('banner.closeDock')"
@@ -430,16 +435,16 @@ watch(
 
       <WatchDock
         ref="watchDockRef"
-        :open="dockOpen"
-        :width="dockWidth"
+        :open="dockShown"
+        :width="isPhone ? undefined : dockWidth"
         :is-resizing="isResizing"
-        @close="dockOpen = false"
+        @close="closeDock"
         @open-policy="openPolicy"
         @open-manual="manualDispatchOpen = true"
       />
 
       <div
-        v-if="dockOpen"
+        v-if="dockOpen && !isPhone"
         class="dock-resizer"
         :class="{ 'is-dragging': isResizing }"
         :title="t('banner.resizeDock')"
@@ -449,6 +454,7 @@ watch(
       </div>
 
       <TaskBoard
+        v-show="!isPhone || phonePane === 'tasks'"
         class="board-pane"
         :items="boardItems"
         :failed-page="failedPage"
@@ -459,7 +465,42 @@ watch(
         @change-failed-page="setFailedPage"
         @change-oversized-page="setOversizedPage"
       />
+
+      <section v-if="isPhone && phonePane === 'workers'" class="phone-panel">
+        <header class="phone-panel-head">
+          <h2>{{ t("workers.heading") }}</h2>
+          <button type="button" class="add-session-btn" @click="openSessionForm">{{ t("workers.add") }}</button>
+        </header>
+        <div class="phone-panel-body">
+          <WorkerPanel @add="openSessionForm" @update-workers="onUpdateWorkers" />
+        </div>
+      </section>
+
+      <section v-if="isPhone && phonePane === 'more'" class="phone-panel">
+        <header class="phone-panel-head">
+          <h2>{{ t("phone.more") }}</h2>
+        </header>
+        <div class="phone-panel-body phone-more-list">
+          <button type="button" @click="openSettings('telegram')">
+            {{ t("header.settings") }}
+            <span v-if="settingsDirty" class="dirty-dot" :aria-label="t('header.dirty')"></span>
+          </button>
+          <button type="button" @click="openSuccess()">{{ t("history.heading") }}</button>
+          <button type="button" @click="manualDispatchOpen = true">{{ t("phone.manual") }}</button>
+          <button type="button" @click="onVersionClick()">{{ versionLabel || t("header.versionFallback") }}</button>
+        </div>
+      </section>
     </div>
+
+    <nav v-if="isPhone" class="mobile-tabbar" :aria-label="t('phone.nav')">
+      <button type="button" :class="{ on: phonePane === 'tasks' }" :aria-current="phonePane === 'tasks' ? 'page' : undefined" @click="phonePane = 'tasks'">{{ t("phone.tasks") }}</button>
+      <button type="button" :class="{ on: phonePane === 'dock' }" :aria-current="phonePane === 'dock' ? 'page' : undefined" @click="phonePane = 'dock'">{{ t("phone.folders") }}</button>
+      <button type="button" :class="{ on: phonePane === 'workers' }" :aria-current="phonePane === 'workers' ? 'page' : undefined" @click="phonePane = 'workers'">{{ t("phone.accounts") }}</button>
+      <button type="button" :class="{ on: phonePane === 'more' }" :aria-current="phonePane === 'more' ? 'page' : undefined" @click="phonePane = 'more'">
+        {{ t("phone.more") }}
+        <span v-if="settingsDirty" class="dirty-dot" :aria-label="t('header.dirty')"></span>
+      </button>
+    </nav>
 
     <!-- ══════════════════════════════════════════════════════════
          系统配置模态弹窗 (In-Place Modal)
@@ -555,18 +596,18 @@ watch(
               </thead>
               <tbody>
                 <tr v-for="item in filteredSuccessItems" :key="item.id">
-                  <td class="col-file" :title="item.file_name">
+                  <td class="col-file" :data-label="t('history.file')" :title="item.file_name">
                     <span class="file-name">{{ item.file_name }}</span>
                     <span v-if="historyPart(item)" class="part-chip">{{ historyPart(item) }}</span>
                   </td>
-                  <td class="col-folder font-mono" :title="item.folder_name || t('history.root')">{{ item.folder_name || "—" }}</td>
-                  <td class="col-dest">
+                  <td class="col-folder" :data-label="t('history.source')" :title="item.folder_name || t('history.root')">{{ item.folder_name || "—" }}</td>
+                  <td class="col-dest" :data-label="t('history.dest')">
                     <a v-if="item.message_url" :href="item.message_url" target="_blank" rel="noopener">{{ item.dest_name || t("history.openMessage") }}</a>
                     <span v-else>{{ item.dest_name || "—" }}</span>
                   </td>
-                  <td class="col-size font-mono">{{ item.file_size > 0 ? formatBytes(item.file_size) : "—" }}</td>
-                  <td class="col-status"><span class="status-pill ok">{{ t("history.delivered") }}</span></td>
-                  <td class="col-time font-mono">{{ item.finished_at || "—" }}</td>
+                  <td class="col-size" :data-label="t('history.size')">{{ item.file_size > 0 ? formatBytes(item.file_size) : "—" }}</td>
+                  <td class="col-status" :data-label="t('history.status')"><span class="status-pill ok">{{ t("history.delivered") }}</span></td>
+                  <td class="col-time" :data-label="t('history.finished')">{{ item.finished_at || "—" }}</td>
                 </tr>
               </tbody>
             </table>

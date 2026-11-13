@@ -62,21 +62,6 @@ import { elementLocale } from "./i18n";
   box-shadow: 0 24px 64px -12px rgba(18, 30, 20, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
-@media (max-width: 768px) {
-  .session-overlay {
-    align-items: flex-end;
-    padding: 0;
-  }
-
-  .session-modal {
-    width: 100%;
-    max-height: 90vh;
-    border-radius: var(--radius-xl, 16px) var(--radius-xl, 16px) 0 0;
-    box-shadow: 0 -8px 32px rgba(18, 30, 20, 0.16);
-    padding-bottom: max(16px, env(safe-area-inset-bottom));
-  }
-}
-
 /* ── 统一版本更新浮层样式 ── */
 .version-tooltip-content {
   display: flex;

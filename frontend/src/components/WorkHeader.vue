@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import type { SystemVersionInfo } from "../types";
 import { locale, setLocale, t } from "../i18n";
+
+const menuOpen = ref(false);
 
 defineProps<{
   dockOpen: boolean;
@@ -63,6 +66,38 @@ const emit = defineEmits<{
         </svg>
         <span class="telemetry-label">{{ t("header.live") }}</span>
         <b class="telemetry-val font-mono">{{ liveSpeed }}</b>
+      </div>
+    </div>
+
+    <button
+      type="button"
+      class="header-more-btn"
+      :aria-expanded="menuOpen"
+      :aria-label="t('header.more')"
+      @click.stop="menuOpen = !menuOpen"
+    >
+      <span aria-hidden="true">···</span>
+      <span v-if="settingsDirty" class="dirty-dot" :aria-label="t('header.dirty')"></span>
+    </button>
+    <button
+      v-if="menuOpen"
+      type="button"
+      class="header-more-backdrop"
+      :aria-label="t('common.close')"
+      @click="menuOpen = false"
+    ></button>
+    <div v-if="menuOpen" class="header-more-menu" @click.stop>
+      <button
+        v-if="versionLabel"
+        type="button"
+        class="header-more-item"
+        @click="menuOpen = false; emit('open-version')"
+      >
+        {{ versionLabel }}
+      </button>
+      <div class="lang-switch" role="group" :aria-label="t('header.language')">
+        <button type="button" :class="{ on: locale === 'en' }" :aria-pressed="locale === 'en'" @click="setLocale('en')">EN</button>
+        <button type="button" :class="{ on: locale === 'zh' }" :aria-pressed="locale === 'zh'" @click="setLocale('zh')">中文</button>
       </div>
     </div>
 

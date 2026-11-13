@@ -539,11 +539,30 @@ defineExpose({
   .nav-tab-btn {
     width: auto;
     flex: 0 0 auto;
-    min-height: 40px;
+    min-height: 44px;
     padding: 8px 14px;
     background: #f3f4f6;
     white-space: nowrap;
     font-size: 14px;
+  }
+
+  .settings-main-split,
+  .settings-content-pane {
+    min-height: 0;
+  }
+
+  .settings-content-pane {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .grid-2-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .field-input {
+    min-height: 44px;
+    font-size: 16px;
   }
 }
 
@@ -743,6 +762,18 @@ defineExpose({
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 860px) {
+  .grid-2-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .field-input,
+  .sidebar-search-input {
+    min-height: 44px;
+    font-size: 16px;
   }
 }
 </style>

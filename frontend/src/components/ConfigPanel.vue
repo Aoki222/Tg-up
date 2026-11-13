@@ -2043,7 +2043,7 @@ defineExpose({
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 860px) {
   .head {
     flex-wrap: wrap;
     gap: 8px;

@@ -371,24 +371,32 @@
   background: var(--warn, #d97706);
 }
 
+.header-more-btn,
+.header-more-backdrop,
+.header-more-menu {
+  display: none;
+}
+
 @media (max-width: 860px) {
   .work-header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 12px;
-    min-height: 0;
-    padding: calc(12px + env(safe-area-inset-top)) 16px 14px;
-  }
-
-  .header-lead,
-  .telemetry-island,
-  .header-action-island {
-    width: 100%;
-    margin-left: 0;
+    position: relative;
+    z-index: 40;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-height: 52px;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
   }
 
   .header-lead {
-    justify-content: space-between;
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+
+  .sidebar-toggle-btn,
+  .version-pill,
+  .header-action-island {
+    display: none;
   }
 
   .brand {
@@ -396,72 +404,86 @@
     padding-right: 0;
   }
 
-  .sidebar-toggle-btn,
-  .settings-pill-btn,
-  .lang-switch button {
-    min-height: 44px;
-  }
-
-  .sidebar-toggle-btn {
-    width: 44px;
-    height: 44px;
-  }
-
-  .version-pill {
-    max-width: 46%;
-    overflow: hidden;
-  }
-
-  .telemetry-badge,
-  .worker-chip-btn,
-  .scope-island-pill,
-  .settings-pill-btn,
-  .lang-switch {
-    min-height: 44px;
+  .telemetry-island {
+    flex: 1;
+    min-width: 0;
+    margin-left: 0;
   }
 
   .telemetry-badge {
     width: 100%;
+    min-height: 40px;
     justify-content: space-between;
-    padding: 0 14px;
+    padding: 0 12px;
   }
 
-  .header-action-island {
+  .header-more-btn .dirty-dot {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+
+  .header-more-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 18px;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+
+  .header-more-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    border: 0;
+    background: transparent;
+  }
+
+  .header-more-menu {
     display: flex;
     flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
+    gap: 8px;
+    position: absolute;
+    z-index: 31;
+    top: calc(100% + 6px);
+    right: 12px;
+    min-width: 180px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--surface);
+    box-shadow: var(--shadow-md);
   }
 
-  .worker-chip-btn,
-  .scope-island-pill,
-  .settings-pill-btn,
-  .lang-switch {
-    width: 100%;
-    justify-content: space-between;
-    padding-inline: 12px;
-  }
-
-  .worker-chip-action-pill {
-    display: none;
-  }
-
-  .scope-island-view-btn {
+  .header-more-item,
+  .header-more-menu .lang-switch {
     min-height: 44px;
-    flex: 1;
   }
 
-  .scope-island-toggle-btn {
-    min-height: 36px;
-    padding: 0 10px;
+  .header-more-item {
+    border: 0;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--hover);
+    color: var(--text);
+    font-weight: 600;
+    cursor: pointer;
   }
 
-  .lang-switch,
-  .settings-pill-btn {
-    justify-content: center;
+  .header-more-menu .lang-switch {
+    display: flex;
+    width: 100%;
   }
 
-  .lang-switch button {
+  .header-more-menu .lang-switch button {
     flex: 1;
     min-height: 44px;
   }

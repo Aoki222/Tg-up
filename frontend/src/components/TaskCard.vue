@@ -39,6 +39,7 @@ const emit = defineEmits<{
 }>();
 
 const showErrorLog = ref(false);
+const moreOpen = ref(false);
 
 function pendingHint(item: BoardTask): string | null {
   const text = item.message || item.error || "";
@@ -102,6 +103,7 @@ function speedLabel(item: BoardTask): string {
       {
         selected: selected,
         compact: task.status === 'pending' || task.status === 'preparing' || task.status === 'assigned',
+        'more-open': moreOpen,
       },
     ]"
   >
@@ -227,6 +229,7 @@ function speedLabel(item: BoardTask): string {
             v-if="showDispatch(task)"
             type="button"
             class="btn-amber-outline"
+            :class="{ 'card-secondary': showSlice(task) || showContinue(task) }"
             :disabled="retrying"
             @click="emit('dispatch', task.id)"
           >
@@ -236,8 +239,18 @@ function speedLabel(item: BoardTask): string {
 
         <div class="footer-right">
           <button
+            v-if="showSlice(task) || showContinue(task) || showDispatch(task)"
+            type="button"
+            class="card-more-btn"
+            :aria-expanded="moreOpen"
+            @click="moreOpen = !moreOpen"
+          >
+            {{ t("card.more") }}
+          </button>
+          <button
             type="button"
             class="btn-red-outline"
+            :class="{ 'card-secondary': showSlice(task) || showContinue(task) || showDispatch(task) }"
             :disabled="retrying"
             @click="emit('remove', task.id)"
           >
@@ -300,7 +313,7 @@ function speedLabel(item: BoardTask): string {
           <button
             v-if="task.error || task.message"
             type="button"
-            class="btn-gray-outline"
+            class="btn-gray-outline card-secondary"
             @click="showErrorLog = !showErrorLog"
           >
             {{ showErrorLog ? t("card.hideLog") : t("card.showLog") }}
@@ -310,7 +323,15 @@ function speedLabel(item: BoardTask): string {
         <div class="footer-right">
           <button
             type="button"
-            class="btn-red-outline"
+            class="card-more-btn"
+            :aria-expanded="moreOpen"
+            @click="moreOpen = !moreOpen"
+          >
+            {{ t("card.more") }}
+          </button>
+          <button
+            type="button"
+            class="btn-red-outline card-secondary"
             :disabled="retrying"
             @click="emit('remove', task.id)"
           >
@@ -705,35 +726,73 @@ function speedLabel(item: BoardTask): string {
   flex-wrap: wrap;
 }
 
+.card-more-btn {
+  display: none;
+}
+
 @media (max-width: 860px) {
   .task-card {
-    padding: 16px;
-    gap: 12px;
+    padding: 14px;
+    gap: 10px;
   }
 
   .card-head,
   .compact-row {
     align-items: flex-start;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
-  .head-right,
-  .compact-right,
-  .footer-left,
-  .footer-right {
-    width: 100%;
-    justify-content: flex-start;
+    gap: 8px;
   }
 
   .action-footer {
-    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .footer-left {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+  }
+
+  .footer-right {
+    width: auto;
+    margin-left: auto;
   }
 
   .action-footer button,
-  .footer-left button,
-  .footer-right button {
-    min-height: 40px;
+  .card-more-btn,
+  .btn-compact-clear {
+    min-height: 44px;
+  }
+
+  .card-more-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 14px;
+    border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+    border-radius: var(--radius-sm, 6px);
+    background: #ffffff;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .card-secondary {
+    display: none;
+  }
+
+  .task-card.more-open .card-secondary {
+    display: inline-flex;
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+
+  .task-card.more-open .footer-left,
+  .task-card.more-open .footer-right {
+    width: 100%;
+    margin-left: 0;
   }
 }
 
