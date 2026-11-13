@@ -738,7 +738,7 @@ class UploaderApplication:
     ) -> None:
         if name in scheduler.worker_map:
             return
-        sender_pool = SenderPool(client, max_senders=6, idle_timeout=120.0)
+        sender_pool = SenderPool(client, max_senders=8, idle_timeout=120.0)
         worker = UploadWorker(
             worker_name=name,
             task_repository=repository,

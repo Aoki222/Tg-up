@@ -32,8 +32,8 @@ logger = get_logger(__name__)
 # MTProto 规范中单块的最大物理上限：512 KB
 CHUNK_SIZE = 512 * 1024
 # 同一条连接上同时在飞的分片。1 表示发出去就干等应答，高延迟时带宽填不满。
-# 不靠再开 TCP：额外连接在小机器上更容易被对端重置，也多占内存。
-PARTS_PER_CONNECTION = 2
+# 4 块约 2MB。CPU 还有空时用它把窗口垫大，而不是先把连接数堆很高。
+PARTS_PER_CONNECTION = 4
 # 进度回调走控制台和 SSE，不必每个 512KB 都打一次。
 PROGRESS_INTERVAL_SECONDS = 0.2
 
@@ -318,7 +318,9 @@ class FastTelethon:
             active_crypto_backend(),
             is_from_pool,
         )
-        queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=worker_count * 2)
+        queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(
+            maxsize=worker_count * PARTS_PER_CONNECTION
+        )
         uploaded_bytes = 0
         lock = asyncio.Lock()
         last_report_at = 0.0

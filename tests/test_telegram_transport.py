@@ -284,8 +284,9 @@ class _OneSenderPool:
         return None
 
 
-async def test_one_connection_keeps_two_parts_in_flight(tmp_path: Path) -> None:
-    payload = b"a" * (CHUNK_SIZE * 2 + 32)
+async def test_one_connection_keeps_pipeline_full(tmp_path: Path) -> None:
+    part_count = PARTS_PER_CONNECTION + 1
+    payload = b"a" * (CHUNK_SIZE * (part_count - 1) + 32)
     path = tmp_path / "wide.bin"
     path.write_bytes(payload)
     sender = _PipelineSender()
@@ -296,8 +297,8 @@ async def test_one_connection_keeps_two_parts_in_flight(tmp_path: Path) -> None:
         sender_pool=_OneSenderPool(sender),
     )
     assert sender.peak == PARTS_PER_CONNECTION
-    assert sender.parts == [0, 1, 2]
-    assert result.parts == 3
+    assert sender.parts == list(range(part_count))
+    assert result.parts == part_count
 
 
 async def test_resume_failure_keeps_parts_and_skips_native(tmp_path: Path, monkeypatch) -> None:

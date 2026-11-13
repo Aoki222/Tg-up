@@ -23,7 +23,7 @@ from ..utils.FastTelethon import UploadInterrupted, describe_taskgroup_error, up
 
 logger = get_logger(__name__)
 
-FAST_UPLOAD_WORKERS = 6
+FAST_UPLOAD_WORKERS = 8
 FAST_UPLOAD_ATTEMPTS = 2
 
 _VIDEO_SUFFIXES = frozenset({
