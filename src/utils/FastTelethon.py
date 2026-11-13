@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import math
 import os
+import time
 from typing import Any, AsyncGenerator, Awaitable, BinaryIO, Callable, Optional, Union
 
 from telethon import TelegramClient, helpers
@@ -30,6 +31,20 @@ logger = get_logger(__name__)
 
 # MTProto 规范中单块的最大物理上限：512 KB
 CHUNK_SIZE = 512 * 1024
+# 同一条连接上同时在飞的分片。1 表示发出去就干等应答，高延迟时带宽填不满。
+# 不靠再开 TCP：额外连接在小机器上更容易被对端重置，也多占内存。
+PARTS_PER_CONNECTION = 2
+# 进度回调走控制台和 SSE，不必每个 512KB 都打一次。
+PROGRESS_INTERVAL_SECONDS = 0.2
+
+
+def active_crypto_backend() -> str:
+    """Telethon 有 cryptg 就用 C 做 AES-IGE，否则退回纯 Python pyaes。"""
+    try:
+        import cryptg  # noqa: F401
+    except ImportError:
+        return "pyaes"
+    return "cryptg"
 
 TypeLocation = Union[
     Document,
@@ -294,16 +309,20 @@ class FastTelethon:
 
         worker_count = len(senders)
         logger.info(
-            "FastTelethon 分块上传 name=%s size=%s parts=%s connections=%s (pool=%s)",
+            "FastTelethon 分块上传 name=%s size=%s parts=%s connections=%s depth=%s crypto=%s (pool=%s)",
             file_name,
             file_size,
             total_parts,
             worker_count,
+            PARTS_PER_CONNECTION,
+            active_crypto_backend(),
             is_from_pool,
         )
         queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=worker_count * 2)
         uploaded_bytes = 0
         lock = asyncio.Lock()
+        last_report_at = 0.0
+        last_reported = -1
 
         async def report_progress(current: int) -> None:
             if progress_callback is None:
@@ -313,49 +332,89 @@ class FastTelethon:
             else:
                 progress_callback(current, file_size)
 
+        async def maybe_report(current: int, *, force: bool = False) -> None:
+            """进度节流。锁里只改计数，回调放到锁外，避免堵住正在发包的连接。"""
+            nonlocal last_report_at, last_reported
+            if progress_callback is None:
+                return
+            async with lock:
+                if current == last_reported:
+                    return
+                now = time.monotonic()
+                if (
+                    not force
+                    and last_reported >= 0
+                    and (now - last_report_at) < PROGRESS_INTERVAL_SECONDS
+                ):
+                    return
+                last_report_at = now
+                last_reported = current
+            await report_progress(current)
+
         async def upload_worker(sender: MTProtoSender) -> None:
             nonlocal uploaded_bytes
-            while True:
-                item = await queue.get()
+            inflight: list[tuple[int, int, Any]] = []
+
+            def enqueue_send(part_idx: int, chunk_data: bytes) -> None:
+                if is_big:
+                    request = SaveBigFilePartRequest(
+                        file_id=file_id,
+                        file_part=part_idx,
+                        file_total_parts=total_parts,
+                        bytes=chunk_data,
+                    )
+                else:
+                    request = SaveFilePartRequest(
+                        file_id=file_id,
+                        file_part=part_idx,
+                        bytes=chunk_data,
+                    )
+                inflight.append((part_idx, len(chunk_data), sender.send(request)))
+
+            async def ack_oldest() -> None:
+                nonlocal uploaded_bytes
+                part_idx, size, pending = inflight.pop(0)
                 try:
-                    if item is None:
-                        return
-                    part_idx, chunk_data = item
-                    if is_big:
-                        req = SaveBigFilePartRequest(
-                            file_id=file_id,
-                            file_part=part_idx,
-                            file_total_parts=total_parts,
-                            bytes=chunk_data,
-                        )
-                    else:
-                        req = SaveFilePartRequest(
-                            file_id=file_id,
-                            file_part=part_idx,
-                            bytes=chunk_data,
-                        )
-                    pending = sender.send(req)
-                    try:
-                        result = await pending
-                    except asyncio.CancelledError:
-                        if asyncio.isfuture(pending):
-                            _consume_future_exception(pending)
-                        raise
+                    result = await pending
+                except asyncio.CancelledError:
                     if asyncio.isfuture(pending):
                         _consume_future_exception(pending)
-                    if not result:
-                        raise RuntimeError(f"分块 {part_idx}/{total_parts} 上传失败")
-                    async with lock:
-                        completed.add(part_idx)
-                        uploaded_bytes += len(chunk_data)
-                        await report_progress(uploaded_bytes)
-                finally:
-                    queue.task_done()
+                    raise
+                if asyncio.isfuture(pending):
+                    _consume_future_exception(pending)
+                if not result:
+                    raise RuntimeError(f"分块 {part_idx}/{total_parts} 上传失败")
+                async with lock:
+                    completed.add(part_idx)
+                    uploaded_bytes += size
+                    current = uploaded_bytes
+                await maybe_report(current)
+
+            try:
+                while True:
+                    while len(inflight) < PARTS_PER_CONNECTION:
+                        item = await queue.get()
+                        queue.task_done()
+                        if item is None:
+                            while inflight:
+                                await ack_oldest()
+                            async with lock:
+                                current = uploaded_bytes
+                            await maybe_report(current, force=True)
+                            return
+                        part_idx, chunk_data = item
+                        enqueue_send(part_idx, chunk_data)
+                    await ack_oldest()
+            finally:
+                for _, _, pending in inflight:
+                    if asyncio.isfuture(pending):
+                        _consume_future_exception(pending)
 
         async def produce() -> None:
             nonlocal uploaded_bytes
             for part_index in range(total_parts):
-                chunk = file_handle.read(CHUNK_SIZE)
+                # 磁盘读放进线程，事件循环才能继续收应答、把下一块发出去。
+                chunk = await asyncio.to_thread(file_handle.read, CHUNK_SIZE)
                 if not chunk and file_size:
                     raise OSError("读取文件分块失败")
                 if not is_big and chunk:
@@ -363,7 +422,8 @@ class FastTelethon:
                 if part_index in done_parts:
                     async with lock:
                         uploaded_bytes += len(chunk)
-                        await report_progress(uploaded_bytes)
+                        current = uploaded_bytes
+                    await maybe_report(current)
                     continue
                 await queue.put((part_index, chunk or b""))
             for _ in range(worker_count):

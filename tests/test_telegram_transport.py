@@ -15,6 +15,8 @@ from src.adapters.telegram_transport import (
 from src.domain.task import AfterSuccess, Task, TaskArtifacts, TaskDestination, TaskPolicy, TaskStatus
 from src.ports.transport import SendDisconnected, SendFailed, SendOk, SendOversized
 from src.utils.FastTelethon import (
+    CHUNK_SIZE,
+    PARTS_PER_CONNECTION,
     UploadInterrupted,
     _consume_future_exception,
     describe_taskgroup_error,
@@ -241,6 +243,61 @@ async def test_skipped_parts_count_as_uploaded_bytes(tmp_path: Path) -> None:
     assert seen == [len(payload)]
     assert result.id == 99
     assert result.parts == 1
+
+
+class _PipelineSender:
+    """应答故意晚一点，用来观察同一条连接上有几块同时在飞。"""
+
+    def __init__(self) -> None:
+        self.peak = 0
+        self.live = 0
+        self.parts: list[int] = []
+        self._opened = asyncio.Event()
+
+    def send(self, request):
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self.live += 1
+        self.peak = max(self.peak, self.live)
+        self.parts.append(request.file_part)
+        if self.live >= PARTS_PER_CONNECTION:
+            self._opened.set()
+
+        async def finish() -> None:
+            await self._opened.wait()
+            self.live -= 1
+            if not future.done():
+                future.set_result(True)
+
+        loop.create_task(finish())
+        return future
+
+
+class _OneSenderPool:
+    def __init__(self, sender: _PipelineSender) -> None:
+        self.sender = sender
+
+    async def acquire(self, count: int):
+        return [self.sender for _ in range(count)]
+
+    async def release(self, senders) -> None:
+        return None
+
+
+async def test_one_connection_keeps_two_parts_in_flight(tmp_path: Path) -> None:
+    payload = b"a" * (CHUNK_SIZE * 2 + 32)
+    path = tmp_path / "wide.bin"
+    path.write_bytes(payload)
+    sender = _PipelineSender()
+    result = await upload_file(
+        None,
+        str(path),
+        max_workers=1,
+        sender_pool=_OneSenderPool(sender),
+    )
+    assert sender.peak == PARTS_PER_CONNECTION
+    assert sender.parts == [0, 1, 2]
+    assert result.parts == 3
 
 
 async def test_resume_failure_keeps_parts_and_skips_native(tmp_path: Path, monkeypatch) -> None:

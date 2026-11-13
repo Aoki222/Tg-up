@@ -72,7 +72,12 @@ class NoVideoStreamError(RuntimeError):
 
 
 async def run_ffmpeg_command(arguments: list[str], ffmpeg_path: str = "ffmpeg") -> None:
-    """异步跑一条 ffmpeg；CancelledError 时 kill 子进程。"""
+    """异步跑一条 ffmpeg；CancelledError 时 kill 子进程。
+
+    抽一帧用不到多核。不限制的话 ffmpeg 会占满 2 核，上传的事件循环抢不到 CPU。
+    """
+    if "-threads" not in arguments:
+        arguments = ["-threads", "1", *arguments]
     command = [ffmpeg_path, "-y", *arguments]
     logger.info("执行 ffmpeg：%s", " ".join(command))
     process = await asyncio.create_subprocess_exec(

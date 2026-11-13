@@ -470,17 +470,14 @@ def extract_video_attributes(video_path: str | Path | None) -> list:
     if suffix not in _VIDEO_SUFFIXES:
         return []
 
-    try:
-        from telethon import utils
-        from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
+    probed = _attributes_from_ffprobe(path_obj)
+    if probed:
+        return probed
+    return _attributes_from_hachoir(path_obj)
 
-        attrs, _ = utils.get_attributes(str(path_obj), supports_streaming=True)
-        video_attrs = [a for a in attrs if isinstance(a, DocumentAttributeVideo)]
-        if video_attrs and video_attrs[0].duration > 0 and video_attrs[0].w > 1:
-            return [a for a in attrs if not isinstance(a, DocumentAttributeFilename)]
-    except Exception:
-        logger.debug("hachoir 提取视频属性失败: %s", video_path, exc_info=True)
 
+def _attributes_from_ffprobe(path_obj: Path) -> list:
+    """ffprobe 只读容器头，子进程不占 GIL。上传时优先走它，别用 hachoir 扫整文件。"""
     try:
         import json
         import subprocess
@@ -500,28 +497,43 @@ def extract_video_attributes(video_path: str | Path | None) -> list:
             str(path_obj),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        if res.returncode == 0:
-            data = json.loads(res.stdout)
-            streams = data.get("streams", [])
-            fmt = data.get("format", {})
-            w = int(streams[0].get("width", 1)) if streams else 1
-            h = int(streams[0].get("height", 1)) if streams else 1
-            dur_val = fmt.get("duration") or (streams[0].get("duration") if streams else None) or 0
-            dur_int = int(float(dur_val))
-            if dur_int > 0:
-                from telethon.tl.types import DocumentAttributeVideo
+        if res.returncode != 0:
+            return []
+        data = json.loads(res.stdout)
+        streams = data.get("streams", [])
+        fmt = data.get("format", {})
+        width = int(streams[0].get("width", 1)) if streams else 1
+        height = int(streams[0].get("height", 1)) if streams else 1
+        duration_value = fmt.get("duration") or (streams[0].get("duration") if streams else None) or 0
+        duration = int(float(duration_value))
+        if duration <= 0:
+            return []
+        from telethon.tl.types import DocumentAttributeVideo
 
-                return [
-                    DocumentAttributeVideo(
-                        duration=dur_int,
-                        w=w,
-                        h=h,
-                        supports_streaming=True,
-                    )
-                ]
+        return [
+            DocumentAttributeVideo(
+                duration=duration,
+                w=width,
+                h=height,
+                supports_streaming=True,
+            )
+        ]
     except Exception:
-        logger.debug("ffprobe 提取视频属性失败: %s", video_path, exc_info=True)
+        logger.debug("ffprobe 提取视频属性失败: %s", path_obj, exc_info=True)
+        return []
 
+
+def _attributes_from_hachoir(path_obj: Path) -> list:
+    try:
+        from telethon import utils
+        from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
+
+        attrs, _ = utils.get_attributes(str(path_obj), supports_streaming=True)
+        video_attrs = [item for item in attrs if isinstance(item, DocumentAttributeVideo)]
+        if video_attrs and video_attrs[0].duration > 0 and video_attrs[0].w > 1:
+            return [item for item in attrs if not isinstance(item, DocumentAttributeFilename)]
+    except Exception:
+        logger.debug("hachoir 提取视频属性失败: %s", path_obj, exc_info=True)
     return []
 
 

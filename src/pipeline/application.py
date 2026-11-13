@@ -110,6 +110,16 @@ class UploaderApplication:
         不把 TaskGroup 取消当作第一退出路径，避免把在途 send_file 直接掐掉。
         """
         logger.info("正在启动")
+        from ..utils.FastTelethon import active_crypto_backend
+
+        crypto_backend = active_crypto_backend()
+        if crypto_backend == "cryptg":
+            logger.info("上传加密走 cryptg")
+        else:
+            logger.warning(
+                "上传加密没有 cryptg，正在用纯 Python（%s）。小机器上这会把速度卡在几百 KB/s",
+                crypto_backend,
+            )
         self._install_stop_signals()
         await init_db()
         from ..adapters.admin_auth import ensure_initial_admin

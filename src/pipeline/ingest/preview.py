@@ -1,6 +1,7 @@
 """独立预览池：入库后异步截图，不堵 FileIngestor。
 
-并发默认 2，避免小 CPU 上同时开太多 ffmpeg。
+封面和上传抢同一台机器的 CPU。默认只跑 1 路，再配合 ffmpeg 单线程，
+把另一颗核留给分块加密和发包。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from ...utils.video_preview import FirstFramePreview, GridPreview, NoVideoStream
 
 logger = get_logger(__name__)
 
-PREVIEW_CONCURRENCY = 2
+PREVIEW_CONCURRENCY = 1
 
 
 @dataclass(frozen=True)
