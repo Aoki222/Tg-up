@@ -73,6 +73,17 @@ async def test_manual_dispatch_file_not_found(tmp_path: Path) -> None:
     assert rescheduler.calls == 0
 
 
+async def test_manual_dispatch_rejects_tiny_file(tmp_path: Path) -> None:
+    ingestor, repo, rescheduler, _ = _create_env(tmp_path)
+    stub = tmp_path / "stub.mp4"
+    stub.write_bytes(b"x" * 262)
+    res = await ingestor.manual_dispatch(stub, chat_id=-100)
+    assert res["ok"] is False
+    assert "过小" in res["reason"]
+    assert len(repo.tasks) == 0
+    assert rescheduler.calls == 0
+
+
 async def test_manual_dispatch_transient_file(tmp_path: Path) -> None:
     ingestor, repo, rescheduler, _ = _create_env(tmp_path)
     tmp_file = tmp_path / "download.mp4.crdownload"
@@ -112,7 +123,7 @@ async def test_manual_dispatch_explicit_chat_id_success(tmp_path: Path) -> None:
     # 没有配置路由，但显式指定了 chat_id
     ingestor, repo, rescheduler, hub = _create_env(tmp_path, routes=())
     file = tmp_path / "video.mp4"
-    file.write_bytes(b"data")
+    file.write_bytes(b"v" * 8192)
 
     res = await ingestor.manual_dispatch(file, chat_id=-100888)
     assert res["ok"] is True
@@ -134,7 +145,7 @@ async def test_manual_dispatch_route_inheritance_even_when_disabled(tmp_path: Pa
     ingestor, repo, rescheduler, _ = _create_env(tmp_path, routes=(route,))
 
     file = sub_dir / "clip.mp4"
-    file.write_bytes(b"clip content")
+    file.write_bytes(b"v" * 8192)
 
     res = await ingestor.manual_dispatch(file)
     assert res["ok"] is True
@@ -148,7 +159,7 @@ async def test_manual_dispatch_route_inheritance_even_when_disabled(tmp_path: Pa
 async def test_manual_dispatch_custom_options(tmp_path: Path) -> None:
     ingestor, repo, rescheduler, hub = _create_env(tmp_path)
     file = tmp_path / "movie.mp4"
-    file.write_bytes(b"movie content")
+    file.write_bytes(b"v" * 8192)
 
     res = await ingestor.manual_dispatch(
         file,
@@ -223,9 +234,9 @@ async def test_api_dispatch_endpoint(tmp_path: Path) -> None:
     endpoint = find_endpoint("/api/tasks/dispatch", "POST")
 
     f1 = tmp_path / "video1.mp4"
-    f1.write_bytes(b"v1")
+    f1.write_bytes(b"v" * 8192)
     f2 = tmp_path / "video2.mp4"
-    f2.write_bytes(b"v2")
+    f2.write_bytes(b"v" * 8192)
     non_existent = tmp_path / "none.mp4"
 
     # 1. 批量投递：2 个成功，1 个不存在跳过

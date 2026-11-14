@@ -6,6 +6,7 @@
 落稳等待在信号量外面，分钟级安静不会堵住其他文件。
 需要封面时写成 preparing 后立刻返回；截图由 PreviewPool 做完再转 pending。
 封面失败不丢视频：page_path 置空，仍然上传。
+小于 MIN_PLAYABLE_BYTES 的文件没有画面，不入库、不上传。
 """
 
 from __future__ import annotations
@@ -337,6 +338,12 @@ class FileIngestor:
 
         file_name = resolved_path.name
         folder_name = resolved_path.parent.name
+        if file_size < limits.MIN_PLAYABLE_BYTES:
+            return {
+                "ok": False,
+                "reason": limits.EMPTY_MEDIA_REASON,
+                "file_path": path_str,
+            }
 
         async with self._insert_lock:
             existing = await self.task_repository.find_active_by_file_path(path_str)
@@ -456,6 +463,9 @@ class FileIngestor:
             logger.info("跳过非目标文件: %s", file_path)
             return None
         await self.task_repository.clear_unmatched(str(file_path))
+        if file_size < limits.MIN_PLAYABLE_BYTES:
+            logger.info("文件过小，不入库: %s (%s 字节)", file_path, file_size)
+            return None
 
         file_name = file_path.name
         folder_name = file_path.parent.name

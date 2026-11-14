@@ -12,6 +12,9 @@ TELEGRAM_BOT_MAX_BYTES = TELEGRAM_PART_BYTES * TELEGRAM_MAX_PARTS
 
 OVERSIZED_REASON = "超过 2GB，不自动分配给 Bot"
 PARTS_INVALID_REASON = "超过 Telegram 单文件分片上限"
+# 现场的空 mp4 固定是 262 字节，只有容器头。4KB 以下没有可播放的画面。
+MIN_PLAYABLE_BYTES = 4096
+EMPTY_MEDIA_REASON = "文件过小，没有可播放的视频"
 
 
 def telegram_bot_blocked(file_size: int, platform: str | None = "telegram") -> bool:

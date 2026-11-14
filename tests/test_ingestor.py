@@ -103,9 +103,9 @@ def _ingestor(tmp_path: Path) -> tuple[FileIngestor, FakeRepo]:
     return ingestor, repo
 
 
-def _video(tmp_path: Path, name: str) -> Path:
+def _video(tmp_path: Path, name: str, content: bytes = b"v" * 8192) -> Path:
     path = tmp_path / name
-    path.write_bytes(b"video")
+    path.write_bytes(content)
     return path
 
 
@@ -119,7 +119,7 @@ async def _size_now(file_path: Path, **_kwargs) -> int | None:
 
 
 async def test_old_file_rechecks_once(tmp_path: Path) -> None:
-    path = _video(tmp_path, "old.mp4")
+    path = _video(tmp_path, "old.mp4", b"video")
     past = time.time() - 60
     os.utime(path, (past, past))
     started = time.monotonic()
@@ -130,7 +130,7 @@ async def test_old_file_rechecks_once(tmp_path: Path) -> None:
 
 
 async def test_old_file_growth_restarts_stable_rounds(tmp_path: Path, monkeypatch) -> None:
-    path = _video(tmp_path, "grow.mp4")
+    path = _video(tmp_path, "grow.mp4", b"video")
     past = time.time() - 60
     os.utime(path, (past, past))
     calls = {"n": 0}
@@ -147,7 +147,7 @@ async def test_old_file_growth_restarts_stable_rounds(tmp_path: Path, monkeypatc
 
 
 async def test_fresh_file_counts_first_stat(tmp_path: Path, monkeypatch) -> None:
-    path = _video(tmp_path, "fresh.mp4")
+    path = _video(tmp_path, "fresh.mp4", b"video")
     frozen = path.stat().st_mtime
     monkeypatch.setattr("src.pipeline.ingest.ingestor.time.time", lambda: frozen)
     started = time.monotonic()
@@ -155,6 +155,17 @@ async def test_fresh_file_counts_first_stat(tmp_path: Path, monkeypatch) -> None
     assert size == 5
     elapsed = time.monotonic() - started
     assert 0.07 <= elapsed < 0.5
+
+
+async def test_tiny_file_is_not_ingested(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("src.pipeline.ingest.ingestor.wait_until_file_stable", _size_now)
+    ingestor, repo = _ingestor(tmp_path)
+    path = _video(tmp_path, "stub.mp4", b"x" * 262)
+    past = time.time() - 60
+    os.utime(path, (past, past))
+    assert await ingestor.handle_new_file(path) is None
+    assert repo.tasks == []
+    assert ingestor.rescheduler.calls == 0
 
 
 async def test_missing_file_returns_none(tmp_path: Path) -> None:
@@ -233,8 +244,8 @@ async def test_insert_lock_does_not_cover_topic_wait(tmp_path: Path, monkeypatch
     dir_b.mkdir()
     file_a = dir_a / "a.mp4"
     file_b = dir_b / "b.mp4"
-    file_a.write_bytes(b"a")
-    file_b.write_bytes(b"b")
+    file_a.write_bytes(b"v" * 8192)
+    file_b.write_bytes(b"v" * 8192)
     past = time.time() - 60
     os.utime(file_a, (past, past))
     os.utime(file_b, (past, past))
@@ -288,7 +299,7 @@ async def test_oversized_file_is_stored_without_schedule(tmp_path: Path, monkeyp
     task_id = await ingestor.handle_new_file(path)
     assert task_id == 1
     assert repo.tasks[0]["status"] == "oversized"
-    assert repo.tasks[0]["file_size"] == 5
+    assert repo.tasks[0]["file_size"] == 8192
     assert "2GB" in (repo.tasks[0]["error_msg"] or "")
     assert ingestor.rescheduler.calls == 0
 
@@ -427,7 +438,7 @@ async def test_settle_parks_outside_the_gate_and_resets_when_size_shrinks(
     ingestor = FileIngestor(repo, FakeRescheduler(), hub, concurrency=1)
     try:
         parked = live / "stream.mp4"
-        parked.write_bytes(b"video")
+        parked.write_bytes(b"v" * 8192)
         normal = _video(tmp_path, "done.mp4")
         assert await ingestor.handle_new_file(parked) is None
         assert str(parked.resolve()) not in ingestor._inflight_paths
@@ -437,10 +448,10 @@ async def test_settle_parks_outside_the_gate_and_resets_when_size_shrinks(
         key = str(parked.resolve())
         item = ingestor._settle[key]
         first_ready = item.ready_at
-        parked.write_bytes(b"vi")
+        parked.write_bytes(b"v" * 5000)
         assert await ingestor.handle_new_file(parked) is None
         item = ingestor._settle[key]
-        assert item.last_size == 2
+        assert item.last_size == 5000
         assert item.ready_at >= first_ready
 
         item.ready_at = time.monotonic() - 1
@@ -451,7 +462,7 @@ async def test_settle_parks_outside_the_gate_and_resets_when_size_shrinks(
             task_id = await ingestor.handle_new_file(Path(path_key), caption, settled=True)
         assert task_id == 2
         assert len(repo.tasks) == 2
-        assert repo.tasks[1]["file_size"] == 2
+        assert repo.tasks[1]["file_size"] == 5000
         assert repo.tasks[1]["source_mtime"] == parked.stat().st_mtime
     finally:
         await ingestor.stop()

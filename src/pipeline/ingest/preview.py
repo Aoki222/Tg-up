@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...adapters.task_store import TaskRepository
+from ...domain import limits
 from ...domain.caption import resolve_grid_layout
 from ...domain.settings_hub import SettingsHub
 from ...logger import get_logger
@@ -81,7 +82,10 @@ class PreviewPool:
                 await self._run(job)
         except asyncio.CancelledError:
             await self.task_repository.update_preview(job.task_id, None, False, "preview cancelled")
-        except (NoVideoStreamError, FileNotFoundError) as error:
+        except NoVideoStreamError as error:
+            await self._reject_unplayable(job.task_id, str(error))
+            logger.warning("没有视频流，不再上传 task=%s: %s", job.task_id, error)
+        except FileNotFoundError as error:
             await self.task_repository.update_preview(job.task_id, None, False, str(error))
             logger.warning("预览跳过 task=%s: %s", job.task_id, error)
         except Exception as error:
@@ -99,7 +103,19 @@ class PreviewPool:
                 self._inflight.discard(current)
             self.rescheduler.request_reschedule()
 
+    async def _reject_unplayable(self, task_id: int, reason: str) -> None:
+        """没有画面的文件停在失败，不再放进上传队列。"""
+        row = await self.task_repository.get_task_by_id(task_id)
+        max_retries = int((row or {}).get("max_retries") or 1)
+        await self.task_repository.mark_task_failed(task_id, max_retries, max_retries, reason)
+
     async def _run(self, job: PreviewJob) -> None:
+        try:
+            size = job.file_path.stat().st_size
+        except OSError:
+            size = None
+        if size is not None and size < limits.MIN_PLAYABLE_BYTES:
+            raise NoVideoStreamError(f"{limits.EMPTY_MEDIA_REASON}: {job.file_path.name}")
         page_dir = self.settings_hub.get().page_dir
         page_path = None
         if job.need_single:

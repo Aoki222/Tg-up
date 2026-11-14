@@ -13,7 +13,7 @@ def _task(path: Path, *, retry_count: int = 0) -> Task:
         id=7,
         file_path=str(path),
         file_name=path.name,
-        file_size=8,
+        file_size=1_000_000,
         destination=TaskDestination(chat_id=-100, dest_id="-100", platform="telegram"),
         artifacts=TaskArtifacts(video_path=str(path)),
         policy=TaskPolicy(need_preview=False, after_success=AfterSuccess.KEEP, max_retries=3),
@@ -83,6 +83,20 @@ async def test_ordinary_failure_still_counts_one_retry(tmp_path: Path) -> None:
     worker = UploadWorker("Homa", repo, transport, SimpleNamespace(), _Hub(), account_kind="bot")
     await _drive(worker, _task(tmp_path / "觉醒.webm", retry_count=1))
     assert repo.failed == (7, 2, 3, "boom")
+
+
+async def test_tiny_file_is_not_uploaded(tmp_path: Path) -> None:
+    repo = _Repo()
+    transport = _Transport(SendFailed("should-not-send"))
+    worker = UploadWorker("Homa", repo, transport, SimpleNamespace(), _Hub(), account_kind="bot")
+    stub = tmp_path / "stub.mp4"
+    stub.write_bytes(b"x" * 262)
+    await _drive(worker, _task(stub))
+    assert transport.calls == 0
+    assert repo.uploads == 0
+    assert repo.failed is not None
+    assert repo.failed[1] == repo.failed[2] == 3
+    assert "过小" in repo.failed[3]
 
 
 async def test_queued_dash_split_is_not_uploaded(tmp_path: Path) -> None:

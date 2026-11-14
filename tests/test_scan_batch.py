@@ -16,7 +16,7 @@ def _old_videos(directory: Path, count: int) -> None:
     past = time.time() - 3600
     for index in range(count):
         path = directory / f"{index}.mp4"
-        path.write_bytes(b"x")
+        path.write_bytes(b"v" * 8192)
         os.utime(path, (past, past))
 
 

@@ -187,6 +187,21 @@ class UploadWorker:
                     self._forget_progress(task.id)
                 await self._handle_upload_failure(task, reason, retryable=False)
                 return
+            media_path = Path(task.artifacts.video_path or task.file_path)
+            try:
+                too_small = media_path.is_file() and media_path.stat().st_size < limits.MIN_PLAYABLE_BYTES
+            except OSError:
+                too_small = False
+            if too_small:
+                reason = limits.EMPTY_MEDIA_REASON
+                logger.warning(
+                    "[%s] 跳过过小文件，不再重试: %s",
+                    self.worker_name,
+                    task.file_path,
+                )
+                self._emit_progress(task, 0, 1, "failed", reason)
+                await self._handle_upload_failure(task, reason, retryable=False)
+                return
             settings = self.settings_hub.get()
             async with self.concurrency_gate:
                 started = await self.task_repository.mark_task_uploading(
