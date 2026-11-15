@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from ...pipeline.ingest.policy import inspect_path_route, path_is_inside_roots, watch_roots
 from ..app_auth import require_token
+from ..fs_browser import fs_browser
 from ..present import _resolve_dest_name
 from ..responses import SettingsPublicModel, publish
 from ..settings import SettingsPayload
@@ -184,28 +185,20 @@ def register(app: FastAPI) -> None:
 
         # 当未传 path 时，返回配置的所有监听根目录
         if not path:
+            raw_roots = await fs_browser.list_roots(settings.observer_paths)
             items = []
-            for root in settings.observer_paths:
-                resolved = root.resolve()
-                exists = resolved.is_dir()
-                has_children = False
-                if exists:
-                    try:
-                        with os.scandir(resolved) as it:
-                            has_children = any(not e.name.startswith(".") for e in it)
-                    except OSError:
-                        pass
-                route_info = inspect_path_route(resolved, settings)
+            for node in raw_roots:
+                route_info = inspect_path_route(Path(node.path), settings)
                 if route_info.get("matched"):
                     route_info["dest_name"] = _resolve_dest_name(
                         route_info["platform"], route_info["dest_id"], settings
                     )
                 items.append({
-                    "path": str(resolved),
-                    "name": resolved.name or str(resolved),
+                    "path": node.path,
+                    "name": node.name,
                     "is_dir": True,
-                    "has_children": has_children,
-                    "exists": exists,
+                    "has_children": node.has_children,
+                    "exists": node.exists,
                     "is_root": True,
                     "current_route": route_info,
                 })
@@ -227,57 +220,12 @@ def register(app: FastAPI) -> None:
         if not req_path.is_dir():
             raise HTTPException(status_code=404, detail="目录不存在")
 
-        dir_items = []
-        file_entries = []
         try:
-            with os.scandir(req_path) as it:
-                for entry in it:
-                    if entry.name.startswith("."):
-                        continue
-                    try:
-                        entry_path = Path(entry.path)
-                        if not path_is_inside_roots(entry_path, watch_roots(settings)):
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            dir_items.append(entry)
-                        elif entry.is_file(follow_symlinks=False):
-                            file_entries.append(entry)
-                        elif entry.is_symlink():
-                            if entry_path.resolve().is_dir():
-                                dir_items.append(entry)
-                            elif entry_path.resolve().is_file():
-                                file_entries.append(entry)
-                    except OSError:
-                        continue
+            raw_nodes = await fs_browser.list_dir(req_path, watch_roots(settings))
         except OSError as err:
-            raise HTTPException(status_code=500, detail=f"读取目录失败: {err}") from err
+            raise HTTPException(status_code=500, detail=str(err)) from err
 
-        nodes = []
-        # 处理子目录
-        for d in sorted(dir_items, key=lambda e: e.name.lower()):
-            d_path = Path(d.path).resolve()
-            has_children = False
-            try:
-                with os.scandir(d_path) as sub_it:
-                    has_children = any(not e.name.startswith(".") for e in sub_it)
-            except OSError:
-                pass
-            route_info = inspect_path_route(d_path, settings)
-            if route_info.get("matched"):
-                route_info["dest_name"] = _resolve_dest_name(
-                    route_info["platform"], route_info["dest_id"], settings
-                )
-            nodes.append({
-                "path": str(d_path),
-                "name": d.name,
-                "is_dir": True,
-                "has_children": has_children,
-                "is_root": False,
-                "current_route": route_info,
-            })
-
-        # 批量获取当前层级文件的任务状态
-        file_paths = [str(Path(f.path).resolve()) for f in file_entries]
+        file_paths = [node.path for node in raw_nodes if not node.is_dir]
         status_map = {}
         if repo is not None and file_paths:
             try:
@@ -285,33 +233,41 @@ def register(app: FastAPI) -> None:
             except Exception:
                 status_map = {}
 
-        # 处理文件
-        for f in sorted(file_entries, key=lambda e: e.name.lower()):
-            f_path = Path(f.path).resolve()
-            f_str = str(f_path)
-            stat = f.stat()
-            ext = f_path.suffix.lstrip(".").lower()
-            supported_ext = bool(not settings.watch_extensions or f".{ext}" in settings.watch_extensions)
-            route_info = inspect_path_route(f_path, settings)
+        nodes = []
+        for node in raw_nodes:
+            node_path = Path(node.path)
+            route_info = inspect_path_route(node_path, settings)
             if route_info.get("matched"):
                 route_info["dest_name"] = _resolve_dest_name(
                     route_info["platform"], route_info["dest_id"], settings
                 )
-            task_info = status_map.get(f_str) or {}
-            task_status = task_info.get("status", "not_ingested")
 
-            nodes.append({
-                "path": f_str,
-                "name": f.name,
-                "is_dir": False,
-                "has_children": False,
-                "size": stat.st_size,
-                "ext": ext,
-                "supported_ext": supported_ext,
-                "current_route": route_info,
-                "task_status": task_status,
-                "task_id": task_info.get("task_id"),
-                "task_error": task_info.get("error"),
-            })
+            if node.is_dir:
+                nodes.append({
+                    "path": node.path,
+                    "name": node.name,
+                    "is_dir": True,
+                    "has_children": node.has_children,
+                    "is_root": False,
+                    "current_route": route_info,
+                })
+            else:
+                task_info = status_map.get(node.path) or {}
+                supported_ext = bool(
+                    not settings.watch_extensions or f".{node.ext}" in settings.watch_extensions
+                )
+                nodes.append({
+                    "path": node.path,
+                    "name": node.name,
+                    "is_dir": False,
+                    "has_children": False,
+                    "size": node.size,
+                    "ext": node.ext,
+                    "supported_ext": supported_ext,
+                    "current_route": route_info,
+                    "task_status": task_info.get("status", "not_ingested"),
+                    "task_id": task_info.get("task_id"),
+                    "task_error": task_info.get("error"),
+                })
 
         return {"items": nodes, "path": str(req_path)}
