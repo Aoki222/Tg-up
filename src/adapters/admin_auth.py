@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -42,6 +43,24 @@ class AdminSession:
     username: str
     session_id: int
     must_change_password: bool
+
+
+@dataclass
+class _CachedSession:
+    session: AdminSession
+    expires_at: datetime
+    cached_at: float
+    last_db_sync: float
+
+
+_SESSION_CACHE: dict[str, _CachedSession] = {}
+SESSION_CACHE_TTL = 60.0  # 内存缓存有效期 60 秒
+LAST_SEEN_SYNC_INTERVAL = 300.0  # 数据库更新 last_seen_at 最小间隔 5 分钟
+
+
+def clear_session_cache() -> None:
+    """清空内存中的 Session 缓存（供单测或连接池重置调用）。"""
+    _SESSION_CACHE.clear()
 
 
 def validate_username(raw: str) -> str:
@@ -179,6 +198,7 @@ async def issue_session(username: str, request: Request) -> str:
     token_hash = _hash_token(raw)
     now = _utc_now()
     expires = now + SESSION_TTL
+    await purge_expired()
     async with get_db() as db:
         await db.execute(
             """INSERT INTO admin_sessions
@@ -208,9 +228,44 @@ async def purge_expired() -> None:
 async def load_session(raw: str | None) -> AdminSession | None:
     if not raw:
         return None
-    await purge_expired()
     token_hash = _hash_token(raw)
-    now = _utc_now()
+    now_mono = time.monotonic()
+    now_utc = _utc_now()
+
+    # 1. 尝试从内存缓存中获取
+    cached = _SESSION_CACHE.get(token_hash)
+    if cached is not None:
+        if cached.expires_at <= now_utc:
+            _SESSION_CACHE.pop(token_hash, None)
+            async with get_db() as db:
+                await db.execute("DELETE FROM admin_sessions WHERE id = ?", (cached.session.session_id,))
+                await db.commit()
+            return None
+
+        # 缓存仍然新鲜（在 60 秒内）
+        if now_mono - cached.cached_at < SESSION_CACHE_TTL:
+            # 只有距离上次更新超过 5 分钟，才低频同步一次 last_seen_at
+            if now_mono - cached.last_db_sync >= LAST_SEEN_SYNC_INTERVAL:
+                cached.last_db_sync = now_mono
+                new_expires = cached.expires_at
+                if cached.expires_at - now_utc < RENEW_IF_LEFT:
+                    new_expires = now_utc + SESSION_TTL
+                    cached.expires_at = new_expires
+                async with get_db() as db:
+                    await db.execute(
+                        """UPDATE admin_sessions
+                           SET last_seen_at = ?, expires_at = ?
+                           WHERE id = ?""",
+                        (
+                            now_utc.isoformat(sep=" ", timespec="seconds"),
+                            new_expires.isoformat(sep=" ", timespec="seconds"),
+                            cached.session.session_id,
+                        ),
+                    )
+                    await db.commit()
+            return cached.session
+
+    # 2. 内存未命中或缓存需要刷新，从 SQLite 数据库兜底加载
     async with get_db() as db:
         cursor = await db.execute(
             """SELECT s.id, s.expires_at, u.username, u.must_change_password
@@ -221,44 +276,58 @@ async def load_session(raw: str | None) -> AdminSession | None:
         )
         row = await cursor.fetchone()
         if row is None:
+            _SESSION_CACHE.pop(token_hash, None)
             return None
         expires = datetime.fromisoformat(str(row["expires_at"]))
-        if expires <= now:
+        if expires <= now_utc:
+            _SESSION_CACHE.pop(token_hash, None)
             await db.execute("DELETE FROM admin_sessions WHERE id = ?", (row["id"],))
             await db.commit()
             return None
+
         new_expires = expires
-        if expires - now < RENEW_IF_LEFT:
-            new_expires = now + SESSION_TTL
-        await db.execute(
-            """UPDATE admin_sessions
-               SET last_seen_at = ?, expires_at = ?
-               WHERE id = ?""",
-            (
-                now.isoformat(sep=" ", timespec="seconds"),
-                new_expires.isoformat(sep=" ", timespec="seconds"),
-                row["id"],
-            ),
+        need_renew = (expires - now_utc < RENEW_IF_LEFT)
+        if need_renew:
+            new_expires = now_utc + SESSION_TTL
+            await db.execute(
+                """UPDATE admin_sessions
+                   SET last_seen_at = ?, expires_at = ?
+                   WHERE id = ?""",
+                (
+                    now_utc.isoformat(sep=" ", timespec="seconds"),
+                    new_expires.isoformat(sep=" ", timespec="seconds"),
+                    row["id"],
+                ),
+            )
+            await db.commit()
+
+        session = AdminSession(
+            user_id=1,
+            username=str(row["username"]),
+            session_id=int(row["id"]),
+            must_change_password=bool(row["must_change_password"]),
         )
-        await db.commit()
-    return AdminSession(
-        user_id=1,
-        username=str(row["username"]),
-        session_id=int(row["id"]),
-        must_change_password=bool(row["must_change_password"]),
-    )
+        _SESSION_CACHE[token_hash] = _CachedSession(
+            session=session,
+            expires_at=new_expires,
+            cached_at=now_mono,
+            last_db_sync=now_mono if need_renew else (cached.last_db_sync if cached else now_mono),
+        )
+        return session
 
 
 async def revoke_session(raw: str | None) -> None:
     if not raw:
         return
     token_hash = _hash_token(raw)
+    _SESSION_CACHE.pop(token_hash, None)
     async with get_db() as db:
         await db.execute("DELETE FROM admin_sessions WHERE token_hash = ?", (token_hash,))
         await db.commit()
 
 
 async def revoke_all_sessions() -> None:
+    _SESSION_CACHE.clear()
     async with get_db() as db:
         await db.execute("DELETE FROM admin_sessions WHERE user_id = 1")
         await db.commit()
@@ -290,6 +359,7 @@ async def change_password(current: str, new_password: str, username: str | None 
         )
         await db.execute("DELETE FROM admin_sessions WHERE user_id = 1")
         await db.commit()
+    _SESSION_CACHE.clear()
     return name
 
 
@@ -310,6 +380,7 @@ async def change_username(current_password: str, username: str) -> str:
             (name, now),
         )
         await db.commit()
+    _SESSION_CACHE.clear()
     return name
 
 

@@ -83,3 +83,21 @@ async def test_telegram_channel_cache_roundtrip(tmp_path: Path, monkeypatch) -> 
         assert restored.snapshot("user_1") == cache.snapshot("user_1")
     finally:
         await close_pool()
+
+
+async def test_pool_replenishes_broken_connections(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    await open_pool(path)
+    try:
+        for _ in range(POOL_SIZE):
+            async with get_db() as db:
+                await db.close()
+
+        async with AsyncExitStack() as stack:
+            connections = [await stack.enter_async_context(get_db()) for _ in range(POOL_SIZE)]
+            assert len(connections) == POOL_SIZE
+            for conn in connections:
+                cursor = await conn.execute("SELECT 1")
+                assert (await cursor.fetchone())[0] == 1
+    finally:
+        await close_pool()

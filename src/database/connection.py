@@ -39,6 +39,12 @@ async def _configure(db: aiosqlite.Connection) -> None:
     await db.execute("PRAGMA synchronous = NORMAL")
 
 
+async def _create_connection(path: Path) -> aiosqlite.Connection:
+    db = await aiosqlite.connect(path)
+    await _configure(db)
+    return db
+
+
 async def open_pool(path: Path | None = None) -> None:
     """打开固定数量的长连接。同一路径重复调用是空操作。"""
     global _pool, _connections, _pool_path
@@ -52,8 +58,7 @@ async def open_pool(path: Path | None = None) -> None:
         pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue()
         connections: list[aiosqlite.Connection] = []
         for _ in range(POOL_SIZE):
-            db = await aiosqlite.connect(db_path)
-            await _configure(db)
+            db = await _create_connection(db_path)
             connections.append(db)
             await pool.put(db)
         _connections = connections
@@ -73,6 +78,12 @@ async def _close_pool_locked() -> None:
             await db.close()
         except Exception:
             logger.exception("关闭 SQLite 连接失败")
+    try:
+        from ..adapters.admin_auth import clear_session_cache
+
+        clear_session_cache()
+    except Exception:
+        pass
 
 
 def pool_is_open() -> bool:
@@ -110,3 +121,14 @@ async def get_db():
                 pass
         if _return_to_pool:
             await pool.put(db)
+        else:
+            try:
+                if _pool_path is not None and _pool is not None:
+                    new_db = await _create_connection(_pool_path)
+                    if db in _connections:
+                        _connections.remove(db)
+                    _connections.append(new_db)
+                    await pool.put(new_db)
+                    logger.info("已重建并补充一条 SQLite 连接到连接池")
+            except Exception:
+                logger.exception("重建 SQLite 连接失败")

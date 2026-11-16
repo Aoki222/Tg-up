@@ -281,3 +281,29 @@ def test_attach_session_cookie_recognizes_forwarded_proto() -> None:
     assert COOKIE_NAME in cookie_header
     assert "secure" in cookie_header.lower()
 
+
+
+async def test_session_cache_avoids_database_load_session(app) -> None:
+    from src.adapters import admin_auth
+
+    status, payload, cookie = await _call(
+        app,
+        "POST",
+        "/api/auth/login",
+        body={"username": INITIAL_USERNAME, "password": INITIAL_PASSWORD},
+    )
+    assert status == 200
+    assert cookie
+
+    sess1 = await admin_auth.load_session(cookie)
+    assert sess1 is not None
+
+    token_hash = admin_auth._hash_token(cookie)
+    assert token_hash in admin_auth._SESSION_CACHE
+
+    sess2 = await admin_auth.load_session(cookie)
+    assert sess2 == sess1
+
+    await admin_auth.revoke_session(cookie)
+    assert token_hash not in admin_auth._SESSION_CACHE
+    assert await admin_auth.load_session(cookie) is None
