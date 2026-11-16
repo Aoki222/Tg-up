@@ -18,6 +18,10 @@ _LOGIN_MAX = 5
 _attempts: dict[str, list[float]] = defaultdict(list)
 _attempts_lock = Lock()
 
+_GLOBAL_LOGIN_WINDOW = 10 * 60
+_GLOBAL_LOGIN_MAX = 10
+_global_attempts: list[float] = []
+
 
 class LoginBody(BaseModel):
     username: str
@@ -34,6 +38,33 @@ class PasswordBody(BaseModel):
 class UsernameBody(BaseModel):
     current_password: str
     username: str
+
+
+def _check_global_blocked() -> bool:
+    now = time.monotonic()
+    global _global_attempts
+    with _attempts_lock:
+        _global_attempts = [item for item in _global_attempts if now - item < _GLOBAL_LOGIN_WINDOW]
+        return len(_global_attempts) >= _GLOBAL_LOGIN_MAX
+
+
+def _record_global_fail() -> None:
+    with _attempts_lock:
+        _global_attempts.append(time.monotonic())
+
+
+def _clear_global_fails() -> None:
+    global _global_attempts
+    with _attempts_lock:
+        _global_attempts.clear()
+
+
+def reset_login_attempts() -> None:
+    """供单测重置登录限流状态。"""
+    global _global_attempts
+    with _attempts_lock:
+        _attempts.clear()
+        _global_attempts.clear()
 
 
 def _too_many(ip: str) -> bool:
@@ -68,14 +99,18 @@ def register(app: FastAPI) -> None:
 
     @app.post("/api/auth/login")
     async def login(payload: LoginBody, request: Request) -> JSONResponse:
+        if _check_global_blocked():
+            raise HTTPException(status_code=429, detail="登录失败次数过多，接口已锁定，请稍后再试")
         ip = admin_auth.client_ip(request) or "unknown"
         if _too_many(ip):
             raise HTTPException(status_code=429, detail="登录失败次数过多，请稍后再试")
         username = await admin_auth.verify_login(payload.username, payload.password)
         if username is None:
             _record_fail(ip)
+            _record_global_fail()
             raise HTTPException(status_code=401, detail="用户名或密码不正确")
         _clear_fails(ip)
+        _clear_global_fails()
         raw = await admin_auth.issue_session(username, request)
         session = await admin_auth.load_session(raw)
         body = JSONResponse({

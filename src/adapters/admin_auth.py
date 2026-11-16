@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 from fastapi import Request, Response
 
+from ..config import TRUST_PROXY
 from ..database.connection import get_db
 from ..logger import get_logger
 
@@ -115,14 +116,15 @@ async def dummy_check(password: str) -> None:
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip and real_ip.strip():
-        return real_ip.strip()
+    if TRUST_PROXY:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            first = forwarded.split(",")[0].strip()
+            if first:
+                return first
+        real_ip = request.headers.get("x-real-ip")
+        if real_ip and real_ip.strip():
+            return real_ip.strip()
     return (request.client.host if request.client else "") or ""
 
 

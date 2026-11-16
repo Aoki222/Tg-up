@@ -10,6 +10,7 @@ import pytest
 from src.adapters.admin_auth import INITIAL_PASSWORD, INITIAL_USERNAME, ensure_initial_admin
 from src.adapters.progress import ProgressHub
 from src.api.app import create_api
+from src.api.routes.auth import reset_login_attempts
 from src.database.connection import close_pool, open_pool
 from src.database.init import init_db
 
@@ -21,6 +22,7 @@ async def _call(
     *,
     body: dict | None = None,
     cookie: str | None = None,
+    client: tuple[str, int] = ("127.0.0.1", 12345),
 ) -> tuple[int, dict | None, str | None]:
     payload = b"" if body is None else json.dumps(body).encode()
     headers = []
@@ -56,7 +58,7 @@ async def _call(
             "raw_path": path.encode(),
             "query_string": b"",
             "headers": headers,
-            "client": ("127.0.0.1", 12345),
+            "client": client,
             "server": ("test", 80),
         },
         receive,
@@ -71,6 +73,7 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "app.db"
     monkeypatch.setattr("src.config.DATABASE_PATH", db_path)
     monkeypatch.setattr("src.database.connection.DATABASE_PATH", db_path)
+    reset_login_attempts()
     await close_pool()
     await open_pool(db_path)
     await init_db()
@@ -78,6 +81,7 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     application = create_api(ProgressHub())
     yield application
     await close_pool()
+    reset_login_attempts()
 
 
 async def test_initial_login_cannot_open_tasks(app) -> None:
@@ -226,7 +230,7 @@ async def test_first_password_change_can_rename(app) -> None:
     assert status == 401
 
 
-def test_client_ip_prefers_x_forwarded_for() -> None:
+def test_client_ip_prefers_x_forwarded_for(monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi import Request
     from src.adapters.admin_auth import client_ip
 
@@ -237,10 +241,15 @@ def test_client_ip_prefers_x_forwarded_for() -> None:
             "client": ("127.0.0.1", 12345),
         }
     )
+    # 默认未开启 TRUST_PROXY 时，不信任伪造头，返回真实客户端 IP
+    assert client_ip(req) == "127.0.0.1"
+
+    # 显式开启 TRUST_PROXY 时，才读取 X-Forwarded-For
+    monkeypatch.setattr("src.adapters.admin_auth.TRUST_PROXY", True)
     assert client_ip(req) == "203.0.113.195"
 
 
-def test_client_ip_falls_back_to_x_real_ip_and_client_host() -> None:
+def test_client_ip_falls_back_to_x_real_ip_and_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi import Request
     from src.adapters.admin_auth import client_ip
 
@@ -251,6 +260,11 @@ def test_client_ip_falls_back_to_x_real_ip_and_client_host() -> None:
             "client": ("127.0.0.1", 12345),
         }
     )
+    # 默认未开启 TRUST_PROXY 时，不信任 X-Real-IP
+    assert client_ip(req_real) == "127.0.0.1"
+
+    # 显式开启 TRUST_PROXY 时，才读取 X-Real-IP
+    monkeypatch.setattr("src.adapters.admin_auth.TRUST_PROXY", True)
     assert client_ip(req_real) == "198.51.100.22"
 
     req_direct = Request(
@@ -282,7 +296,6 @@ def test_attach_session_cookie_recognizes_forwarded_proto() -> None:
     assert "secure" in cookie_header.lower()
 
 
-
 async def test_session_cache_avoids_database_load_session(app) -> None:
     from src.adapters import admin_auth
 
@@ -307,3 +320,49 @@ async def test_session_cache_avoids_database_load_session(app) -> None:
     await admin_auth.revoke_session(cookie)
     assert token_hash not in admin_auth._SESSION_CACHE
     assert await admin_auth.load_session(cookie) is None
+
+
+async def test_single_ip_login_rate_limit(app) -> None:
+    for _ in range(5):
+        status, _, _ = await _call(
+            app,
+            "POST",
+            "/api/auth/login",
+            body={"username": INITIAL_USERNAME, "password": "wrong-password"},
+            client=("192.168.2.1", 12345),
+        )
+        assert status == 401
+
+    status, payload, _ = await _call(
+        app,
+        "POST",
+        "/api/auth/login",
+        body={"username": INITIAL_USERNAME, "password": "wrong-password"},
+        client=("192.168.2.1", 12345),
+    )
+    assert status == 429
+    assert payload and "稍后再试" in payload.get("detail", "")
+
+
+async def test_global_login_rate_limit(app) -> None:
+    # 模拟攻击者使用 10 个不同的 IP 尝试暴力破解（每个 IP 仅试 1 次，未触发单 IP 限制）
+    for i in range(10):
+        status, _, _ = await _call(
+            app,
+            "POST",
+            "/api/auth/login",
+            body={"username": INITIAL_USERNAME, "password": "wrong-password"},
+            client=(f"192.168.1.{i + 1}", 12345),
+        )
+        assert status == 401
+
+    # 第 11 次尝试（哪怕换成一个全新的第 11 个 IP）也应触发全局总闸拦截，返回 429
+    status, payload, _ = await _call(
+        app,
+        "POST",
+        "/api/auth/login",
+        body={"username": INITIAL_USERNAME, "password": "wrong-password"},
+        client=("192.168.1.99", 12345),
+    )
+    assert status == 429
+    assert payload and "接口已锁定" in payload.get("detail", "")

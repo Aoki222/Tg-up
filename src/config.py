@@ -52,6 +52,7 @@ API_HASH = (os.getenv("API_HASH") or "").strip()
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8421"))
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY") or None
+TRUST_PROXY = os.getenv("TRUST_PROXY", "0").strip().lower() in ("1", "true", "yes")
 
 
 def mask_api_hash(value: str) -> str:
