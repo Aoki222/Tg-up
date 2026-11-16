@@ -159,6 +159,7 @@ const {
   successPages,
   successTotalRows,
   successLoading,
+  successPlaceholder,
   successSearchText,
   filteredSuccessItems,
   onSuccessScopeChange,
@@ -585,9 +586,9 @@ watch(
           </div>
 
           <div class="success-body">
-            <p v-if="successLoading" class="success-empty">{{ t("history.loading") }}</p>
+            <p v-if="successLoading && filteredSuccessItems.length === 0" class="success-empty">{{ t("history.loading") }}</p>
             <p v-else-if="filteredSuccessItems.length === 0" class="success-empty">{{ t("history.empty") }}</p>
-            <table v-else class="success-table">
+            <table v-else class="success-table" :class="{ 'is-placeholder': successPlaceholder }">
               <thead>
                 <tr>
                   <th>{{ t("history.file") }}</th>

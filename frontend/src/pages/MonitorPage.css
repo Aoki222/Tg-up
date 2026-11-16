@@ -534,6 +534,10 @@
   text-align: left;
 }
 
+.success-table.is-placeholder {
+  opacity: 0.55;
+}
+
 .success-table thead {
   position: sticky;
   top: 0;

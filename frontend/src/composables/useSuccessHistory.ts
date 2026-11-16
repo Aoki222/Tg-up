@@ -1,8 +1,10 @@
 /**
  * 传输历史弹层：今天 / 累计口径、分页和本地过滤。
+ * 翻页时用 keepPreviousData 留着上一页，避免列表先被清空成「正在读取」。
  */
 import { computed, onMounted, ref, watch, type Ref } from "vue";
-import { fetchSuccessPage, type SuccessRecord } from "../api";
+import { keepPreviousData, useQuery } from "@tanstack/vue-query";
+import { fetchSuccessPage } from "../api";
 
 const SUCCESS_SCOPE_KEY = "uploader.success-scope";
 
@@ -13,11 +15,20 @@ export function useSuccessHistory(successToday: Ref<number>) {
   const successOpen = ref(false);
   const successPage = ref(1);
   const successPageSize = 50;
-  const successTotalRows = ref(0);
-  const successItems = ref<SuccessRecord[]>([]);
-  const successLoading = ref(false);
   const successSearchText = ref("");
 
+  const historyQuery = useQuery({
+    queryKey: computed(() => ["success-history", successScope.value, successPage.value] as const),
+    queryFn: () => fetchSuccessPage(successScope.value, successPage.value, successPageSize),
+    placeholderData: keepPreviousData,
+    enabled: computed(() => successOpen.value),
+    staleTime: 0,
+  });
+
+  const successItems = computed(() => historyQuery.data.value?.items ?? []);
+  const successTotalRows = computed(() => historyQuery.data.value?.total ?? 0);
+  const successLoading = computed(() => historyQuery.isFetching.value);
+  const successPlaceholder = computed(() => historyQuery.isPlaceholderData.value);
   const successPages = computed(() =>
     Math.max(1, Math.ceil(successTotalRows.value / successPageSize)),
   );
@@ -50,7 +61,6 @@ export function useSuccessHistory(successToday: Ref<number>) {
     localStorage.setItem(SUCCESS_SCOPE_KEY, value);
     if (successOpen.value) {
       successPage.value = 1;
-      void loadSuccess();
     }
   }
 
@@ -60,28 +70,13 @@ export function useSuccessHistory(successToday: Ref<number>) {
     onSuccessScopeChange(next);
   }
 
-  async function loadSuccess(): Promise<void> {
-    successLoading.value = true;
-    try {
-      const data = await fetchSuccessPage(successScope.value, successPage.value, successPageSize);
-      successItems.value = data.items;
-      successTotalRows.value = data.total;
-      successPage.value = data.page;
-      if (successScope.value === "all") {
-        successAllTotal.value = data.total;
-      }
-    } catch {
-      successItems.value = [];
-      successTotalRows.value = 0;
-    } finally {
-      successLoading.value = false;
-    }
+  function loadSuccess(): Promise<unknown> {
+    return historyQuery.refetch();
   }
 
   function openSuccess(): void {
     successOpen.value = true;
     successPage.value = 1;
-    void loadSuccess();
   }
 
   function closeSuccess(): void {
@@ -93,16 +88,21 @@ export function useSuccessHistory(successToday: Ref<number>) {
     const next = successPage.value + step;
     if (next < 1 || next > successPages.value) return;
     successPage.value = next;
-    await loadSuccess();
   }
 
   onMounted(() => {
     void refreshSuccessTotals();
   });
 
+  watch(historyQuery.data, (data) => {
+    if (!data || historyQuery.isPlaceholderData.value) return;
+    if (data.page !== successPage.value) successPage.value = data.page;
+    if (successScope.value === "all") successAllTotal.value = data.total;
+  });
+
   watch(successCount, () => {
     void refreshSuccessTotals();
-    if (successOpen.value && successPage.value === 1) void loadSuccess();
+    if (successOpen.value && successPage.value === 1) void historyQuery.refetch();
   });
 
   return {
@@ -115,6 +115,7 @@ export function useSuccessHistory(successToday: Ref<number>) {
     successTotalRows,
     successItems,
     successLoading,
+    successPlaceholder,
     successSearchText,
     filteredSuccessItems,
     onSuccessScopeChange,
