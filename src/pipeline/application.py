@@ -512,13 +512,24 @@ class UploaderApplication:
         return None, None, "请先在监控页用个人账号登录"
 
     async def _resolve_chat_title(self, chat_id: int) -> str:
+        cached_title = self._channel_cache.find_title(chat_id)
+        if cached_title:
+            return cached_title
+
         pool = self._session_pool
         if pool is None or not pool.clients:
             return ""
         client = next(iter(pool.clients.values()), None)
         if client is None:
             return ""
-        return await resolve_chat_title(client, chat_id)
+        title = await resolve_chat_title(client, chat_id)
+        if title:
+            account_name = next(iter(pool.clients.keys()), "default")
+            await self._channel_cache.upsert(
+                account_name,
+                {"id": chat_id, "title": title, "type": "group", "username": "", "is_active": True},
+            )
+        return title
 
     async def apply_credentials(self, credentials: TelegramCredentials) -> str:
         """把新凭据注入会话池和登录服务。值没变则不断开；从空到有则立刻连；换了 API 则卸掉旧客户端。"""

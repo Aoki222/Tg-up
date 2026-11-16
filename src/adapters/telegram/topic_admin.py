@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 from ...domain.route_topic import routes_fixed_on_topic
 from ...logger import get_logger
 from ..db.topics import deactivate_topic, list_topics, replace_topics, upsert_topic
@@ -24,33 +27,65 @@ class TopicAdmin:
         # user_client() -> (account_name, client, reason)
         self._user_client = user_client
         self._settings = settings_hub
+        self._chat_locks: dict[int, asyncio.Lock] = {}
+        self._locks_guard = asyncio.Lock()
+        self._last_refresh_time: dict[int, float] = {}
+
+    async def _get_chat_lock(self, chat_id: int) -> asyncio.Lock:
+        async with self._locks_guard:
+            lock = self._chat_locks.get(chat_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._chat_locks[chat_id] = lock
+            return lock
 
     async def list_topics(self, chat_id: int, *, refresh: bool) -> dict:
         cached = await list_topics(chat_id)
         if cached and not refresh:
             return {"forum": True, "topics": cached, "cached": True, "online": True, "reason": ""}
-        account_name, client, reason = await self._user_client()
-        if client is None:
-            if cached:
-                return {"forum": True, "topics": cached, "cached": True, "online": False, "reason": reason}
-            return {"forum": False, "topics": [], "cached": False, "online": False, "reason": reason}
-        try:
-            fresh = await forum_topics(client, chat_id)
-        except Exception as error:
-            logger.warning("读取话题失败 chat=%s: %s", chat_id, error)
-            if cached:
-                return {"forum": True, "topics": cached, "cached": True, "online": True, "reason": str(error)}
-            raise TopicAdminError("这个个人号不能管理该群的话题") from error
-        if fresh is None:
-            return {"forum": False, "topics": [], "cached": False, "online": True, "reason": ""}
-        await replace_topics(account_name or "", chat_id, fresh)
-        return {
-            "forum": True,
-            "topics": await list_topics(chat_id),
-            "cached": False,
-            "online": True,
-            "reason": "",
-        }
+
+        # 针对同一群的话题刷新加锁，防止并发重复向 Telegram 发起多页全量拉取导致 FloodWait
+        lock = await self._get_chat_lock(chat_id)
+        async with lock:
+            now_mono = time.monotonic()
+            # 短时间内（3 秒内）如果前序并发请求刚刷新过话题，直接复用最新数据库结果，避免连续请求 Telegram
+            if refresh and now_mono - self._last_refresh_time.get(chat_id, 0) < 3.0:
+                latest = await list_topics(chat_id)
+                if latest:
+                    return {"forum": True, "topics": latest, "cached": True, "online": True, "reason": ""}
+
+            if not refresh:
+                rechecked = await list_topics(chat_id)
+                if rechecked:
+                    return {"forum": True, "topics": rechecked, "cached": True, "online": True, "reason": ""}
+
+            account_name, client, reason = await self._user_client()
+            if client is None:
+                cached = await list_topics(chat_id)
+                if cached:
+                    return {"forum": True, "topics": cached, "cached": True, "online": False, "reason": reason}
+                return {"forum": False, "topics": [], "cached": False, "online": False, "reason": reason}
+
+            try:
+                fresh = await forum_topics(client, chat_id)
+                self._last_refresh_time[chat_id] = time.monotonic()
+            except Exception as error:
+                logger.warning("读取话题失败 chat=%s: %s", chat_id, error)
+                cached = await list_topics(chat_id)
+                if cached:
+                    return {"forum": True, "topics": cached, "cached": True, "online": True, "reason": str(error)}
+                raise TopicAdminError("这个个人号不能管理该群的话题") from error
+
+            if fresh is None:
+                return {"forum": False, "topics": [], "cached": False, "online": True, "reason": ""}
+            await replace_topics(account_name or "", chat_id, fresh)
+            return {
+                "forum": True,
+                "topics": await list_topics(chat_id),
+                "cached": False,
+                "online": True,
+                "reason": "",
+            }
 
     async def create_topic(self, chat_id: int, title: str) -> dict:
         account_name, client, reason = await self._require_client()

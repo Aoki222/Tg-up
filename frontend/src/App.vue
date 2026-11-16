@@ -12,7 +12,7 @@ import { elementLocale } from "./i18n";
     <div class="app-shell">
       <main class="main-viewport">
         <router-view v-slot="{ Component }">
-          <keep-alive include="MonitorPage">
+          <keep-alive include="MonitorPage,SettingsPage">
             <component :is="Component" />
           </keep-alive>
         </router-view>

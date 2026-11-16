@@ -95,6 +95,10 @@ function onResizeStart(e: MouseEvent): void {
 }
 
 const settingsOpen = ref(false);
+const settingsRendered = ref(false);
+watch(settingsOpen, (open) => {
+  if (open) settingsRendered.value = true;
+}, { immediate: true });
 const settingsDirty = ref(false);
 const workerModalOpen = ref(false);
 const policyModalOpen = ref(false);
@@ -506,7 +510,7 @@ watch(
          系统配置模态弹窗 (In-Place Modal)
     ══════════════════════════════════════════════════════════ -->
     <Teleport to="body">
-    <div v-if="settingsOpen" class="settings-layer" @mousedown.self="closeSettings">
+    <div v-if="settingsRendered" v-show="settingsOpen" class="settings-layer" @mousedown.self="closeSettings">
       <div class="settings-modal" role="dialog" :aria-label="t('settings.dialog')" @mousedown.stop>
         <header class="settings-head">
           <div class="settings-head-left">

@@ -43,17 +43,30 @@ export type AuthStatus = {
   must_change_password: boolean;
 };
 
-export async function fetchAuthStatus(): Promise<AuthStatus> {
+let _authStatusCache: { data: AuthStatus; time: number } | null = null;
+
+export function clearAuthStatusCache(): void {
+  _authStatusCache = null;
+}
+
+export async function fetchAuthStatus(force = false): Promise<AuthStatus> {
+  const now = Date.now();
+  if (!force && _authStatusCache && now - _authStatusCache.time < 5000) {
+    return _authStatusCache.data;
+  }
   const res = await apiClient.get<AuthStatus>("/api/auth/status");
+  _authStatusCache = { data: res.data, time: now };
   return res.data;
 }
 
 export async function loginAdmin(payload: { username: string; password: string }): Promise<AuthStatus> {
+  clearAuthStatusCache();
   const res = await apiClient.post<AuthStatus & { ok: boolean }>("/api/auth/login", payload);
   return res.data;
 }
 
 export async function logoutAdmin(): Promise<void> {
+  clearAuthStatusCache();
   await apiClient.post("/api/auth/logout");
 }
 
@@ -61,6 +74,7 @@ export async function changeAdminUsername(payload: {
   current_password: string;
   username: string;
 }): Promise<string> {
+  clearAuthStatusCache();
   const res = await apiClient.post<{ username: string }>("/api/auth/username", payload);
   return res.data.username;
 }
@@ -71,6 +85,7 @@ export async function changeAdminPassword(payload: {
   new_password_again: string;
   username?: string;
 }): Promise<void> {
+  clearAuthStatusCache();
   await apiClient.post("/api/auth/password", payload);
 }
 
@@ -291,9 +306,21 @@ export async function resolveChat(chatId: number): Promise<{ id: number; title: 
 /**
  * 读取当前系统正在运行的生效配置参数
  */
-export async function fetchSettings(): Promise<UploadConfig> {
+let _settingsCache: { data: UploadConfig; time: number } | null = null;
+
+export function clearSettingsCache(): void {
+  _settingsCache = null;
+}
+
+export async function fetchSettings(force = false): Promise<UploadConfig> {
+  const now = Date.now();
+  if (!force && _settingsCache && now - _settingsCache.time < 10000) {
+    return JSON.parse(JSON.stringify(_settingsCache.data));
+  }
   const res = await apiClient.get<UploadConfig>("/api/settings");
-  return normalizeSettings(res.data);
+  const normalized = normalizeSettings(res.data);
+  _settingsCache = { data: normalized, time: now };
+  return normalized;
 }
 
 /**
@@ -305,7 +332,9 @@ export async function saveSettings(payload: UploadConfig): Promise<UploadConfig>
     ...payload,
     observer_paths: payload.observer_paths,
   });
-  return normalizeSettings(res.data);
+  const normalized = normalizeSettings(res.data);
+  _settingsCache = { data: normalized, time: Date.now() };
+  return normalized;
 }
 
 /**
@@ -616,8 +645,12 @@ export async function openProgressStream(
   return source;
 }
 
+let _versionCache: SystemVersionInfo | null = null;
+
 export async function fetchSystemVersion(): Promise<SystemVersionInfo> {
+  if (_versionCache) return _versionCache;
   const res = await apiClient.get<SystemVersionInfo>("/api/system/version");
+  _versionCache = res.data;
   return res.data;
 }
 

@@ -53,6 +53,15 @@ class TelegramChannelCache:
         items = self._items.get(account_name, {}).values()
         return [dict(item) for item in items if item["is_active"]]
 
+    def find_title(self, chat_id: int) -> str | None:
+        """从内存快照中根据 chat_id 检索群组/频道标题。"""
+        target = int(chat_id)
+        for account_items in self._items.values():
+            item = account_items.get(target)
+            if item and item.get("title"):
+                return str(item["title"])
+        return None
+
     async def full_sync(self, account_name: str, client: TelegramClient) -> list[dict[str, Any]]:
         """从 Telegram 全量读取账号会话，覆盖本地 active 状态并刷新内存。"""
         async with self._lock:
