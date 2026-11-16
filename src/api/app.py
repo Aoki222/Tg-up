@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from ..adapters.progress import ProgressHub
 from ..adapters.session_login import SessionLoginService
@@ -114,6 +115,11 @@ def create_api(
     app.state.session_login = SessionLoginService(
         config.SESSION_DIR, initial.api_id, initial.api_hash, config.TELEGRAM_PROXY
     )
+
+    # 放在登录中间件内侧，才能看到路由原始的响应体。
+    # 级别 5，避免在 2 核上和上传加密抢 CPU。
+    # Starlette 默认跳过 text/event-stream，进度流不会被攒包。小于 500 字节不压。
+    app.add_middleware(GZipMiddleware, compresslevel=5)
 
     @app.middleware("http")
     async def protect_api(request: Request, call_next):
