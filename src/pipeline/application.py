@@ -47,7 +47,7 @@ from ..adapters.sessions import SessionPool
 from ..adapters.telegram.chats import list_dialog_chats, resolve_chat_title
 from ..adapters.telegram.topic_admin import TopicAdmin
 from ..adapters.task_store import TaskRepository
-from ..adapters.telegram_transport import TelegramTransport
+from ..adapters.telegram_transport import FAST_UPLOAD_WORKERS, TelegramTransport
 from ..api.app import create_api
 from ..api.workers import snapshot_workers
 from ..config import API_HOST, API_PORT, PROJECT_DIR, SESSION_DIR
@@ -749,7 +749,7 @@ class UploaderApplication:
     ) -> None:
         if name in scheduler.worker_map:
             return
-        sender_pool = SenderPool(client, max_senders=8, idle_timeout=120.0)
+        sender_pool = SenderPool(client, max_senders=FAST_UPLOAD_WORKERS, idle_timeout=120.0)
         worker = UploadWorker(
             worker_name=name,
             task_repository=repository,

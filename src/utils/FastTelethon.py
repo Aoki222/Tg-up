@@ -31,11 +31,25 @@ logger = get_logger(__name__)
 
 # MTProto 规范中单块的最大物理上限：512 KB
 CHUNK_SIZE = 512 * 1024
-# 同一条连接上同时在飞的分片。1 表示发出去就干等应答，高延迟时带宽填不满。
-# 4 块约 2MB。CPU 还有空时用它把窗口垫大，而不是先把连接数堆很高。
-PARTS_PER_CONNECTION = 4
+# 同一条连接上同时在飞的分片。默认 3 块约 1.5MB。TGUP_PARTS_PER_CONNECTION 可覆盖。
+PART_ACK_TIMEOUT_SECONDS = 25.0
 # 进度回调走控制台和 SSE，不必每个 512KB 都打一次。
 PROGRESS_INTERVAL_SECONDS = 0.2
+
+
+def _parts_per_connection() -> int:
+    raw = os.getenv("TGUP_PARTS_PER_CONNECTION", "").strip()
+    if not raw:
+        return 3
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("TGUP_PARTS_PER_CONNECTION=%s 不是整数，改用 3", raw)
+        return 3
+    return max(1, value)
+
+
+PARTS_PER_CONNECTION = _parts_per_connection()
 
 
 def active_crypto_backend() -> str:
@@ -281,8 +295,11 @@ class FastTelethon:
             should_close = False
 
         total_parts = math.ceil(file_size / CHUNK_SIZE) if file_size else 1
-        is_big = file_size > 10 * 1024 * 1024  # > 10MB
-        done_parts = {index for index in (skip_parts or set()) if 0 <= index < total_parts}
+        is_big = file_size > 10 * 1024 * 1024  # > 10MB，InputFileBig 不需要 MD5
+        if is_big:
+            done_parts = {index for index in (skip_parts or set()) if 0 <= index < total_parts}
+        else:
+            done_parts = set()
         if file_id is None or not done_parts:
             file_id = helpers.generate_random_long()
             done_parts = set()
@@ -377,7 +394,14 @@ class FastTelethon:
                 nonlocal uploaded_bytes
                 part_idx, size, pending = inflight.pop(0)
                 try:
-                    result = await pending
+                    result = await asyncio.wait_for(pending, timeout=PART_ACK_TIMEOUT_SECONDS)
+                except TimeoutError:
+                    if asyncio.isfuture(pending):
+                        _consume_future_exception(pending)
+                    raise ConnectionError(
+                        f"disconnect timeout: 分块 {part_idx}/{total_parts} 等待回执超过 "
+                        f"{PART_ACK_TIMEOUT_SECONDS:.0f} 秒"
+                    )
                 except asyncio.CancelledError:
                     if asyncio.isfuture(pending):
                         _consume_future_exception(pending)
@@ -414,19 +438,25 @@ class FastTelethon:
 
         async def produce() -> None:
             nonlocal uploaded_bytes
+            must_seek = False
             for part_index in range(total_parts):
+                if part_index in done_parts:
+                    part_bytes = min(CHUNK_SIZE, max(0, file_size - part_index * CHUNK_SIZE))
+                    async with lock:
+                        uploaded_bytes += part_bytes
+                        current = uploaded_bytes
+                    await maybe_report(current)
+                    must_seek = True
+                    continue
+                if must_seek:
+                    await asyncio.to_thread(file_handle.seek, part_index * CHUNK_SIZE)
+                    must_seek = False
                 # 磁盘读放进线程，事件循环才能继续收应答、把下一块发出去。
                 chunk = await asyncio.to_thread(file_handle.read, CHUNK_SIZE)
                 if not chunk and file_size:
                     raise OSError("读取文件分块失败")
                 if not is_big and chunk:
                     hash_md5.update(chunk)
-                if part_index in done_parts:
-                    async with lock:
-                        uploaded_bytes += len(chunk)
-                        current = uploaded_bytes
-                    await maybe_report(current)
-                    continue
                 await queue.put((part_index, chunk or b""))
             for _ in range(worker_count):
                 await queue.put(None)

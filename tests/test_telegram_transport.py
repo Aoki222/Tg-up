@@ -156,6 +156,77 @@ async def test_disconnect_does_not_retry_or_fall_back_to_native(tmp_path: Path, 
     assert client.calls == []
 
 
+def _large_file(path: Path) -> None:
+    with path.open("wb") as handle:
+        handle.seek(20 * 1024 * 1024)
+        handle.write(b"x")
+
+
+async def test_large_file_chunk_failure_retries_fast_without_native(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "big.mp4"
+    _large_file(video)
+    seen: list[tuple[int | None, set[int]]] = []
+
+    async def fail_fast(*_args, **kwargs):
+        seen.append((kwargs.get("file_id"), set(kwargs.get("skip_parts") or ())))
+        raise RuntimeError("分块上传失败")
+
+    monkeypatch.setattr("src.adapters.telegram_transport.fast_upload_file", fail_fast)
+    monkeypatch.setattr("src.adapters.telegram_transport.extract_video_attributes", lambda _path: [])
+    client = _FakeClient()
+    transport = TelegramTransport(client)
+    transport._partial[str(video)] = UploadInterrupted(
+        77,
+        40,
+        video.stat().st_size,
+        {0, 1, 2},
+        ConnectionResetError(104, "Connection reset by peer"),
+    )
+    result = await transport.send(_task(video), timeout_seconds=30)
+    assert isinstance(result, SendFailed)
+    assert client.calls == []
+    assert seen == [(77, {0, 1, 2}), (77, {0, 1, 2})]
+    assert set(transport._partial[str(video)].done) == {0, 1, 2}
+
+
+async def test_album_failure_returns_video_error_without_second_album(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "clip.mp4"
+    cover = tmp_path / "clip.jpg"
+    video.write_bytes(b"video-bytes")
+    cover.write_bytes(b"jpeg")
+
+    async def ok_fast(*_args, **_kwargs):
+        return InputFileBig(id=1, parts=1, name="clip.mp4")
+
+    monkeypatch.setattr("src.adapters.telegram_transport.fast_upload_file", ok_fast)
+    monkeypatch.setattr("src.adapters.telegram_transport.extract_video_attributes", lambda _path: [])
+    client = _FakeClient()
+
+    async def send_file(**kwargs):
+        client.calls.append(kwargs)
+        if isinstance(kwargs["file"], list):
+            raise RuntimeError("Media invalid (caused by SendMultiMediaRequest)")
+        raise RuntimeError("video send boom")
+
+    client.send_file = send_file
+    task = Task(
+        id=1,
+        file_path=str(video),
+        file_name=video.name,
+        file_size=video.stat().st_size,
+        destination=TaskDestination(chat_id=-100, dest_id="-100"),
+        artifacts=TaskArtifacts(video_path=str(video), page_path=str(cover)),
+        policy=TaskPolicy(need_preview=False, after_success=AfterSuccess.KEEP, max_retries=3),
+        status=TaskStatus.UPLOADING,
+    )
+    result = await TelegramTransport(client).send(task, timeout_seconds=30)
+    assert isinstance(result, SendFailed)
+    assert "video send boom" in result.reason
+    assert len(client.calls) == 2
+    assert isinstance(client.calls[0]["file"], list)
+    assert not isinstance(client.calls[1]["file"], list)
+
+
 async def test_reconnect_resumes_finished_parts(tmp_path: Path, monkeypatch) -> None:
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"video-bytes" * 20)
@@ -214,34 +285,45 @@ async def test_missing_file_fails_without_sending(tmp_path: Path) -> None:
     assert client.calls == []
 
 
-class _ResumePool:
+class _OkSender:
+    def __init__(self) -> None:
+        self.parts: list[int] = []
+
+    def send(self, request):
+        self.parts.append(request.file_part)
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(True)
+        return future
+
+
+class _OneShotPool:
+    def __init__(self, sender: _OkSender) -> None:
+        self.sender = sender
+
     async def acquire(self, count: int):
-        return [object() for _ in range(count)]
+        return [self.sender]
 
     async def release(self, senders) -> None:
         return None
 
 
-async def test_skipped_parts_count_as_uploaded_bytes(tmp_path: Path) -> None:
+async def test_small_file_ignores_skip_parts_and_hashes_full_content(tmp_path: Path) -> None:
+    import hashlib
+
     payload = b"a" * 1000
     path = tmp_path / "track.webm"
     path.write_bytes(payload)
-    seen: list[int] = []
-
-    def on_progress(current: int, _total: int) -> None:
-        seen.append(current)
-
+    sender = _OkSender()
     result = await upload_file(
         None,
         str(path),
-        progress_callback=on_progress,
         max_workers=1,
-        sender_pool=_ResumePool(),
+        sender_pool=_OneShotPool(sender),
         file_id=99,
         skip_parts={0},
     )
-    assert seen == [len(payload)]
-    assert result.id == 99
+    assert sender.parts == [0]
+    assert result.md5_checksum == hashlib.md5(payload).hexdigest()
     assert result.parts == 1
 
 

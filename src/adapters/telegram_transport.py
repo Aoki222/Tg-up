@@ -23,8 +23,10 @@ from ..utils.FastTelethon import UploadInterrupted, describe_taskgroup_error, up
 
 logger = get_logger(__name__)
 
-FAST_UPLOAD_WORKERS = 8
+FAST_UPLOAD_WORKERS = 6
 FAST_UPLOAD_ATTEMPTS = 2
+# 大于这个大小的分块失败不再退回单连接 send_file。
+_NATIVE_FALLBACK_LIMIT = 20 * 1024 * 1024
 
 _VIDEO_SUFFIXES = frozenset({
     ".mp4", ".m4v", ".mov", ".mkv", ".avi", ".wmv", ".webm",
@@ -150,7 +152,8 @@ class TelegramTransport:
                     logger.warning("FastTelethon 连接断开，保持已完成分片，不立刻重传: %s", error)
                     await self.invalidate_pool()
                     return SendDisconnected(str(error))
-                if video_path in self._partial:
+                large = _file_exceeds_native_fallback(video_path)
+                if not large and video_path in self._partial:
                     logger.warning(
                         "续传失败，保留已完成分片，不退回原生上传: %s",
                         error,
@@ -164,13 +167,13 @@ class TelegramTransport:
                 )
                 if attempt < FAST_UPLOAD_ATTEMPTS:
                     continue
+                if large:
+                    logger.warning("大文件分块上传失败，不回退原生单连接: %s", video_path)
+                    return SendFailed(str(error))
                 logger.warning("FastTelethon 连续失败，回退原生 send_file: %s", video_path)
                 self._partial.pop(video_path, None)
                 return await self._send_native(task, files, timeout_seconds, on_progress)
             except _FastMessageError as error:
-                if len(files) > 1:
-                    logger.warning("FastTelethon 视频优先补偿也失败，回退原生整组发送")
-                    return await self._send_native(task, files, timeout_seconds, on_progress)
                 return _classify_send_error(error.__cause__ or error, "FastTelethon 消息提交失败")
             except FloodWaitError as flood_error:
                 return SendRetryLater(flood_error.seconds)
@@ -259,7 +262,7 @@ class TelegramTransport:
             return await self._send_album_failure_fallback(task, handles, error, thumb_handle=thumb_handle)
 
     async def _send_album_failure_fallback(self, task: Task, handles: list, album_error: Exception, thumb_handle=None) -> SendResult:
-        """相册失败后优先保住视频，再尝试用两个句柄重新提交相册。"""
+        """相册失败后先单独保住视频。单独发送也失败就返回这次的错误。"""
         logger.warning("相册提交失败，先单独发送视频: %s", album_error)
         try:
             video_message = await self.telegram_client.send_file(
@@ -270,15 +273,8 @@ class TelegramTransport:
         except Exception as video_error:
             if _is_disconnect_error(video_error):
                 raise
-            logger.warning("单独发送视频失败，重新尝试整组句柄: %s", video_error)
-            try:
-                messages = await self.telegram_client.send_file(**self._send_kwargs(task, handles, thumb_handle=thumb_handle))
-            except FloodWaitError:
-                raise
-            except Exception as retry_error:
-                raise _FastMessageError(str(retry_error)) from retry_error
-            first = messages[0] if isinstance(messages, list) else messages
-            return SendOk(first.id)
+            logger.warning("单独发送视频失败: %s", video_error)
+            return _classify_send_error(video_error, "相册失败后单独发送视频失败")
 
         logger.warning("视频已发送，封面未随相册发送，按方案 B 结束本任务: %s", task.file_path)
         return SendOk(video_message.id)
@@ -601,6 +597,13 @@ def _is_parts_invalid(error: BaseException) -> bool:
         if nested:
             stack.extend(item for item in nested if isinstance(item, BaseException))
     return False
+
+
+def _file_exceeds_native_fallback(path: str) -> bool:
+    try:
+        return Path(path).stat().st_size > _NATIVE_FALLBACK_LIMIT
+    except OSError:
+        return False
 
 
 def _is_album_invalid(error: BaseException) -> bool:
