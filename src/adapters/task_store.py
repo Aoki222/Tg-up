@@ -579,27 +579,70 @@ class TaskRepository:
             ) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 
-    async def update_preview(self, task_id: int, page_path: str | None, success: bool, error_message: str = "") -> None:
+    async def update_preview(
+        self,
+        task_id: int,
+        page_path: str | None,
+        success: bool,
+        error_message: str = "",
+        actual_size: int | None = None,
+    ) -> None:
         """截图结束的放行点。小文件转 pending；超过 Bot 上限转 oversized，不进调度。"""
         limit = _bot_limit()
         preview_note = "" if success else f"preview failed: {error_message}"[:500]
         oversized_note = preview_note or limits.OVERSIZED_REASON
         async with get_db() as database:
-            await database.execute(
-                """UPDATE upload_tasks SET page_path = ?,
-                   status = CASE
-                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
-                           THEN 'oversized'
-                       ELSE 'pending'
-                   END,
-                   error_msg = CASE
-                       WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
-                           THEN ?
-                       ELSE ?
-                   END
-                   WHERE id = ?""",
-                (page_path, limit, limit, oversized_note[:500], preview_note, task_id),
-            )
+            if actual_size is not None and actual_size > 0:
+                await database.execute(
+                    """UPDATE upload_tasks SET page_path = ?,
+                       file_size = CASE
+                           WHEN file_size < ? THEN ?
+                           ELSE file_size
+                       END,
+                       status = CASE
+                           WHEN (CASE WHEN file_size < ? THEN ? ELSE file_size END) > ?
+                                AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                               THEN 'oversized'
+                           ELSE 'pending'
+                       END,
+                       error_msg = CASE
+                           WHEN (CASE WHEN file_size < ? THEN ? ELSE file_size END) > ?
+                                AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                               THEN ?
+                           ELSE ?
+                       END
+                       WHERE id = ?""",
+                    (
+                        page_path,
+                        actual_size,
+                        actual_size,
+                        actual_size,
+                        actual_size,
+                        limit,
+                        actual_size,
+                        actual_size,
+                        limit,
+                        oversized_note[:500],
+                        preview_note,
+                        task_id,
+                    ),
+                )
+            else:
+                await database.execute(
+                    """UPDATE upload_tasks SET page_path = ?,
+                       status = CASE
+                           WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                               THEN 'oversized'
+                           ELSE 'pending'
+                       END,
+                       error_msg = CASE
+                           WHEN file_size > ? AND COALESCE(NULLIF(platform, ''), 'telegram') = 'telegram'
+                               THEN ?
+                           ELSE ?
+                       END
+                       WHERE id = ?""",
+                    (page_path, limit, limit, oversized_note[:500], preview_note, task_id),
+                )
             await database.commit()
 
     async def get_task_by_id(self, task_id: int) -> dict | None:

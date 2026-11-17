@@ -39,6 +39,8 @@ class PreviewPool:
         settings_hub: SettingsHub,
         concurrency: int = PREVIEW_CONCURRENCY,
         on_settled=None,
+        video_stream_retries: int = 3,
+        retry_delays: tuple[float, ...] = (3.0, 6.0, 10.0),
     ):
         self.task_repository = task_repository
         self.rescheduler = rescheduler
@@ -49,6 +51,8 @@ class PreviewPool:
         self._inflight: set[asyncio.Task] = set()
         self._gate = asyncio.Semaphore(self.concurrency)
         self.on_settled = on_settled
+        self.video_stream_retries = max(1, video_stream_retries)
+        self.retry_delays = retry_delays
 
     def submit(self, job: PreviewJob) -> None:
         self.queue.put_nowait(job)
@@ -79,7 +83,7 @@ class PreviewPool:
     async def _run_guarded(self, job: PreviewJob) -> None:
         try:
             async with self._gate:
-                await self._run(job)
+                await self._run_with_retry(job)
         except asyncio.CancelledError:
             await self.task_repository.update_preview(job.task_id, None, False, "preview cancelled")
         except NoVideoStreamError as error:
@@ -109,6 +113,40 @@ class PreviewPool:
         max_retries = int((row or {}).get("max_retries") or 1)
         await self.task_repository.mark_task_failed(task_id, max_retries, max_retries, reason)
 
+    async def _run_with_retry(self, job: PreviewJob) -> None:
+        """执行预览生成。对媒体流尚未写入完成的情况进行有限次退避重试。"""
+        retries = self.video_stream_retries
+        for attempt in range(retries):
+            try:
+                await self._run(job)
+                return
+            except NoVideoStreamError as error:
+                if limits.EMPTY_MEDIA_REASON in str(error):
+                    raise
+                if attempt < retries - 1:
+                    delay = (
+                        self.retry_delays[attempt]
+                        if attempt < len(self.retry_delays)
+                        else self.retry_delays[-1]
+                    )
+                    logger.warning(
+                        "预览检测到媒体无视频流（可能正在写入容器尾部），%s 秒后进行第 %s/%s 次重试 task=%s: %s",
+                        delay,
+                        attempt + 2,
+                        retries,
+                        job.task_id,
+                        error,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.warning(
+                        "预览重试已耗尽 (%s 次)，媒体确认无可用视频流 task=%s: %s",
+                        retries,
+                        job.task_id,
+                        error,
+                    )
+                    raise
+
     async def _run(self, job: PreviewJob) -> None:
         try:
             size = job.file_path.stat().st_size
@@ -137,7 +175,16 @@ class PreviewPool:
             )
         except Exception:
             logger.debug("生成视频缩略图失败（不影响主流程）", exc_info=True)
-        await self.task_repository.update_preview(
-            job.task_id, str(page_path) if page_path else None, True
-        )
+        try:
+            final_size = job.file_path.stat().st_size
+        except OSError:
+            final_size = size
+        try:
+            await self.task_repository.update_preview(
+                job.task_id, str(page_path) if page_path else None, True, actual_size=final_size
+            )
+        except TypeError:
+            await self.task_repository.update_preview(
+                job.task_id, str(page_path) if page_path else None, True
+            )
         logger.info("预览完成 task=%s", job.task_id)
